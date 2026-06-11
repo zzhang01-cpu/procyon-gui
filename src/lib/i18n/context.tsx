@@ -17,10 +17,8 @@ const I18nContext = createContext<I18nContextType | undefined>(undefined);
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [language, setLanguageState] = useState<Language>('zh');
-  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
     const saved = localStorage.getItem('language') as Language;
     if (saved && (saved === 'zh' || saved === 'en')) {
       setLanguageState(saved);
@@ -33,10 +31,6 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   };
 
   const t = language === 'zh' ? zh : en;
-
-  if (!mounted) {
-    return <>{children}</>;
-  }
 
   return (
     <I18nContext.Provider value={{ language, setLanguage, t }}>
