@@ -106,7 +106,12 @@ class ProcyonUsbBridge {
       }
 
       // Open device
-      this.device.open();
+      try {
+        this.device.open();
+      } catch (openErr) {
+        console.error('[USB] Failed to open device:', openErr.message);
+        return { success: false, error: `Failed to open USB device: ${openErr.message}` };
+      }
 
       // Log device info for debugging
       const desc = this.device.deviceDescriptor;

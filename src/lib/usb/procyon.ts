@@ -97,8 +97,27 @@ export async function diagnoseUsb(): Promise<{
     productId: string;
     deviceAddress: number;
     isProcyon: boolean;
-    numConfigurations: number;
   }>;
+  procyonDetail?: {
+    vendorId: string;
+    productId: string;
+    deviceAddress: number;
+    numConfigurations: number;
+    numInterfaces: number;
+    interfaces: Array<{
+      interfaceNumber: number;
+      interfaceClass?: number;
+      endpoints: Array<{
+        address: string;
+        direction: string;
+        transferType: string;
+      }>;
+    }>;
+    canOpen: boolean;
+    openError: string;
+    canClaim: boolean;
+    claimError: string;
+  };
   error?: string;
 }> {
   const api = getAPI();
@@ -113,8 +132,27 @@ export async function diagnoseUsb(): Promise<{
       productId: string;
       deviceAddress: number;
       isProcyon: boolean;
-      numConfigurations: number;
     }>;
+    procyonDetail?: {
+      vendorId: string;
+      productId: string;
+      deviceAddress: number;
+      numConfigurations: number;
+      numInterfaces: number;
+      interfaces: Array<{
+        interfaceNumber: number;
+        interfaceClass?: number;
+        endpoints: Array<{
+          address: string;
+          direction: string;
+          transferType: string;
+        }>;
+      }>;
+      canOpen: boolean;
+      openError: string;
+      canClaim: boolean;
+      claimError: string;
+    };
     error?: string;
   }>;
 }
