@@ -3,6 +3,16 @@ const usb = require('usb');
 const PROCYON_VID = 0x2269;
 const PROCYON_PID = 0xBEEF;
 
+// On Windows, try UsbDK backend first as it handles claimInterface better than WinUSB
+if (process.platform === 'win32') {
+  try {
+    usb.useUsbDkBackend();
+    console.log('[USB] Using UsbDK backend on Windows');
+  } catch (e) {
+    console.log('[USB] UsbDK backend not available, using default backend:', e.message);
+  }
+}
+
 class ProcyonUsbBridge {
   constructor() {
     this.device = null;
