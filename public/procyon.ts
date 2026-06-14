@@ -1,27 +1,38 @@
 /**
- * Procyon CM USB Communication Module
+ * Procyon CM Serial Communication Module
  * 
- * This module handles USB communication with Procyon CM devices
- * using the Web USB API.
+ * This module handles serial communication with Procyon CM devices
+ * using the Web Serial API.
+ * 
+ * The device uses USB CDC (virtual COM port) with VID=0x2269, PID=0xBEEF.
+ * On Windows, the OS automatically creates a COM port for CDC devices.
+ * Web Serial API can access these COM ports directly.
  */
 
-// USB Device Configuration
-export const USB_CONFIG = {
+// Serial Communication Configuration
+export const SERIAL_CONFIG = {
   // Procyon CM device VID/PID
   VENDOR_ID: 0x2269,      // Procyon VID
   PRODUCT_ID: 0xBEEF,     // Procyon PID
   
-  // USB Endpoints
-  READ_ENDPOINT: 0x81,    // EP1 IN
-  WRITE_ENDPOINT: 0x02,   // EP2 OUT
+  // Serial parameters
+  BAUD_RATE: 115200,       // Default baud rate
+  DATA_BITS: 8 as const,
+  STOP_BITS: 1 as const,
+  PARITY: 'none' as const,
+  FLOW_CONTROL: 'none' as const,
   
   // Communication parameters
-  TIMEOUT: 5000,          // 5 seconds
+  TIMEOUT: 5000,           // 5 seconds
   RETRY_COUNT: 3,
   PACKET_SIZE: 64,
+  
+  // Protocol framing
+  FRAME_HEADER: 0xAA,      // Frame start byte
+  FRAME_FOOTER: 0x55,      // Frame end byte
 };
 
-// Command codes
+// Command codes (from original Procyon DLL analysis)
 export const COMMANDS = {
   // Device info
   GET_FIRMWARE_VERSION: 0x01,
@@ -52,7 +63,7 @@ export const COMMANDS = {
   ERASE_MEMORY: 0x42,
 };
 
-// Record types
+// Record types (from RecordFormatFiles.json)
 export const RECORD_TYPES = {
   ONE_SECOND_DATA: 0xA0,
   RPM_AXIAL_WAVEFORM: 0x80,
@@ -63,14 +74,14 @@ export const RECORD_TYPES = {
   USB_CONNECTION: 0x1F,
 };
 
-// Data conversion factors
+// Data conversion factors (from RecordFormatFiles.json)
 export const CONVERSION_FACTORS = {
-  TEMPERATURE: 0.03125,        // °C
-  BATTERY_VOLTAGE: 0.001027,   // V
-  RPM: 0.02333,                // RPM
-  SHOCK_LOW: 0.000244,         // g
-  SHOCK: 0.2,                  // g
-  PRESSURE: 0.0000001,         // Pa
+  TEMPERATURE: 0.03125,        // °C per raw unit
+  BATTERY_VOLTAGE: 0.001027,   // V per raw unit
+  RPM: 0.02333,                // RPM per raw unit
+  SHOCK_LOW: 0.000244,         // g per raw unit
+  SHOCK: 0.2,                  // g per raw unit
+  PRESSURE: 0.0000001,         // Pa per raw unit
 };
 
 export interface DeviceInfo {
@@ -135,167 +146,127 @@ export interface TestResult {
   errorCode?: number;
 }
 
-export class ProcyonUSB {
-  private device: USBDevice | null = null;
-  private interfaceNumber = 0;
+export class ProcyonSerial {
+  private port: SerialPort | null = null;
+  private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
   private connected = false;
   private onDisconnectCallback?: () => void;
+  private readBuffer: Uint8Array = new Uint8Array(0);
+  private baudRate: number = SERIAL_CONFIG.BAUD_RATE;
 
-  constructor(
-    private vendorId: number = USB_CONFIG.VENDOR_ID,
-    private productId: number = USB_CONFIG.PRODUCT_ID
-  ) {}
-
-  /**
-   * Check if Web USB is supported
-   */
-  static isSupported(): boolean {
-    return 'usb' in navigator;
+  constructor(baudRate?: number) {
+    if (baudRate) {
+      this.baudRate = baudRate;
+    }
   }
 
   /**
-   * Request and connect to USB device
-   * Uses VID/PID filter for Procyon device (0x2269/0xBEEF)
-   * Falls back to no filter if user needs to select a different device
+   * Check if Web Serial is supported
+   */
+  static isSupported(): boolean {
+    return 'serial' in navigator;
+  }
+
+  /**
+   * Request and connect to serial port
    */
   async connect(): Promise<boolean> {
-    if (!ProcyonUSB.isSupported()) {
-      throw new Error('Web USB is not supported in this browser');
+    if (!ProcyonSerial.isSupported()) {
+      throw new Error('Web Serial API is not supported in this browser. Please use Chrome or Edge.');
     }
 
     try {
-      // Request device
-      if (!navigator.usb) {
-        throw new Error('Web USB is not available');
-      }
+      // Request serial port from user
+      this.port = await navigator.serial.requestPort({
+        filters: [
+          { usbVendorId: SERIAL_CONFIG.VENDOR_ID, usbProductId: SERIAL_CONFIG.PRODUCT_ID },
+        ],
+      });
 
-      // Try with Procyon VID/PID filter first
-      try {
-        this.device = await navigator.usb.requestDevice({
-          filters: [
-            { vendorId: this.vendorId, productId: this.productId },
-          ],
-        });
-      } catch (filterError) {
-        // If no matching device found, retry without filter to show all devices
-        if (filterError instanceof Error && filterError.message.includes('No device selected')) {
-          throw filterError; // User cancelled, don't retry
-        }
-        this.device = await navigator.usb.requestDevice({
-          filters: [],
-        });
-      }
+      // Open the serial port
+      await this.port.open({
+        baudRate: this.baudRate,
+        dataBits: SERIAL_CONFIG.DATA_BITS,
+        stopBits: SERIAL_CONFIG.STOP_BITS,
+        parity: SERIAL_CONFIG.PARITY,
+        flowControl: SERIAL_CONFIG.FLOW_CONTROL,
+      });
 
-      // Update VID/PID from the selected device
-      if (this.device) {
-        this.vendorId = this.device.vendorId;
-        this.productId = this.device.productId;
-      }
-
-      // Open device
-      await this.device.open();
-
-      // Select configuration (use first configuration)
-      if (this.device.configuration === null) {
-        await this.device.selectConfiguration(1);
-      }
-
-      // Auto-detect the correct interface number
-      // Try to find a suitable interface (skip HID interfaces, prefer CDC/Bulk)
-      const config = this.device.configuration;
-      if (!config) {
-        throw new Error('Failed to get device configuration');
-      }
-
-      // Log available interfaces for debugging
-      console.log('Available interfaces:', config.interfaces.map((iface: USBInterface) => ({
-        interfaceNumber: iface.interfaceNumber,
-        alternates: iface.alternates.map((alt: USBAlternateInterface) => ({
-          interfaceClass: alt.interfaceClass,
-          interfaceSubclass: alt.interfaceSubclass,
-          endpointCount: alt.endpoints.length,
-          endpoints: alt.endpoints.map((ep: USBEndpoint) => ({
-            endpointNumber: ep.endpointNumber,
-            direction: ep.direction,
-            type: ep.type,
-          })),
-        })),
-      })));
-
-      // Find the best interface:
-      // 1. Prefer CDC Data (class 0x0A) or Vendor-specific (class 0xFF)
-      // 2. Skip HID (class 0x03) as it's usually claimed by the OS
-      // 3. Fall back to the first claimable interface
-      let targetInterface = -1;
-      const preferredClasses = [0x0A, 0xFF]; // CDC Data, Vendor-specific
-      const skipClasses = [0x03]; // HID
-
-      // First try preferred classes
-      for (const iface of config.interfaces) {
-        const alt = iface.alternates[0]; // Use first alternate setting
-        const cls = alt.interfaceClass;
-        if (preferredClasses.includes(cls)) {
-          targetInterface = iface.interfaceNumber;
-          break;
-        }
-      }
-
-      // If no preferred class found, try any non-HID interface
-      if (targetInterface === -1) {
-        for (const iface of config.interfaces) {
-          const alt = iface.alternates[0];
-          const cls = alt.interfaceClass;
-          if (!skipClasses.includes(cls)) {
-            targetInterface = iface.interfaceNumber;
-            break;
-          }
-        }
-      }
-
-      // Last resort: try the first interface
-      if (targetInterface === -1 && config.interfaces.length > 0) {
-        targetInterface = config.interfaces[0].interfaceNumber;
-      }
-
-      if (targetInterface === -1) {
-        throw new Error('No suitable USB interface found on device');
-      }
-
-      const targetIface = config.interfaces.find((i: USBInterface) => i.interfaceNumber === targetInterface);
-      console.log(`Claiming interface ${targetInterface} (class: 0x${targetIface?.alternates[0].interfaceClass.toString(16) ?? 'unknown'})`);
-      this.interfaceNumber = targetInterface;
-
-      // Claim interface
-      await this.device.claimInterface(this.interfaceNumber);
-
+      // Set up reader and writer
+      this.writer = this.port.writable?.getWriter() ?? null;
+      
       this.connected = true;
 
       // Listen for disconnect
-      navigator.usb.addEventListener('disconnect', this.handleDisconnect.bind(this));
+      this.port.addEventListener('disconnect', this.handleDisconnect.bind(this));
 
+      console.log(`Connected to Procyon device at ${this.baudRate} baud`);
       return true;
     } catch (error) {
-      console.error('Failed to connect to device:', error);
-      throw error;
+      // If Procyon filter fails, try without filter
+      if (error instanceof Error && error.message.includes('No port selected')) {
+        throw error; // User cancelled
+      }
+      
+      // Try without filter - user can select any port
+      try {
+        this.port = await navigator.serial.requestPort();
+        await this.port.open({
+          baudRate: this.baudRate,
+          dataBits: SERIAL_CONFIG.DATA_BITS,
+          stopBits: SERIAL_CONFIG.STOP_BITS,
+          parity: SERIAL_CONFIG.PARITY,
+          flowControl: SERIAL_CONFIG.FLOW_CONTROL,
+        });
+        this.writer = this.port.writable?.getWriter() ?? null;
+        this.connected = true;
+        this.port.addEventListener('disconnect', this.handleDisconnect.bind(this));
+        console.log(`Connected to serial port at ${this.baudRate} baud`);
+        return true;
+      } catch (fallbackError) {
+        console.error('Failed to connect to serial port:', fallbackError);
+        throw fallbackError;
+      }
     }
   }
 
   /**
-   * Disconnect from device
+   * Disconnect from serial port
    */
   async disconnect(): Promise<void> {
-    if (!this.device || !this.connected) {
+    if (!this.port || !this.connected) {
       return;
     }
 
     try {
-      await this.device.releaseInterface(this.interfaceNumber);
-      await this.device.close();
+      // Release reader
+      if (this.reader) {
+        await this.reader.cancel();
+        this.reader.releaseLock();
+        this.reader = null;
+      }
+
+      // Release writer
+      if (this.writer) {
+        await this.writer.close();
+        this.writer.releaseLock();
+        this.writer = null;
+      }
+
+      // Close port
+      await this.port.close();
       this.connected = false;
-      this.device = null;
+      this.port = null;
+      this.readBuffer = new Uint8Array(0);
     } catch (error) {
       console.error('Failed to disconnect:', error);
-      throw error;
+      // Force cleanup
+      this.connected = false;
+      this.port = null;
+      this.reader = null;
+      this.writer = null;
+      this.readBuffer = new Uint8Array(0);
     }
   }
 
@@ -303,7 +274,7 @@ export class ProcyonUSB {
    * Check if device is connected
    */
   isConnected(): boolean {
-    return this.connected && this.device !== null;
+    return this.connected && this.port !== null;
   }
 
   /**
@@ -316,47 +287,154 @@ export class ProcyonUSB {
   /**
    * Handle device disconnect event
    */
-  private handleDisconnect(event: USBConnectionEvent): void {
-    if (event.device === this.device) {
-      this.connected = false;
-      this.device = null;
-      if (this.onDisconnectCallback) {
-        this.onDisconnectCallback();
-      }
+  private handleDisconnect(): void {
+    this.connected = false;
+    this.port = null;
+    this.reader = null;
+    this.writer = null;
+    this.readBuffer = new Uint8Array(0);
+    if (this.onDisconnectCallback) {
+      this.onDisconnectCallback();
     }
   }
 
   /**
-   * Send command to device
+   * Send command to device via serial
    */
   private async sendCommand(command: number, data?: Uint8Array): Promise<void> {
-    if (!this.device || !this.connected) {
+    if (!this.port || !this.connected || !this.writer) {
       throw new Error('Device not connected');
     }
 
-    const packet = new Uint8Array(USB_CONFIG.PACKET_SIZE);
-    packet[0] = command;
+    // Build packet: [HEADER][CMD][LEN][DATA...][CHECKSUM][FOOTER]
+    const dataLen = data?.length ?? 0;
+    const packet = new Uint8Array(4 + dataLen + 1); // header + cmd + len + data + checksum
     
-    if (data) {
-      packet.set(data, 1);
+    packet[0] = SERIAL_CONFIG.FRAME_HEADER;
+    packet[1] = command;
+    packet[2] = dataLen;
+    
+    if (data && dataLen > 0) {
+      packet.set(data, 3);
     }
+    
+    // Calculate checksum (XOR of all bytes except header and footer)
+    let checksum = 0;
+    for (let i = 1; i < 3 + dataLen; i++) {
+      checksum ^= packet[i];
+    }
+    packet[3 + dataLen] = checksum;
 
-    await this.device.transferOut(USB_CONFIG.WRITE_ENDPOINT, packet);
+    console.log(`TX [${command.toString(16).padStart(2, '0')}]:`, Array.from(packet).map(b => b.toString(16).padStart(2, '0')).join(' '));
+
+    await this.writer.write(packet);
   }
 
   /**
-   * Receive response from device
+   * Receive response from device via serial
+   * Reads until we get a complete framed response
    */
-  private async receiveResponse(): Promise<Uint8Array> {
-    if (!this.device || !this.connected) {
+  private async receiveResponse(timeoutMs: number = SERIAL_CONFIG.TIMEOUT): Promise<Uint8Array> {
+    if (!this.port || !this.connected) {
       throw new Error('Device not connected');
     }
 
-    const result = await this.device.transferIn(USB_CONFIG.READ_ENDPOINT, USB_CONFIG.PACKET_SIZE);
-    if (!result.data) {
-      throw new Error('No data received');
+    const startTime = Date.now();
+    
+    // Read from serial port with timeout
+    while (Date.now() - startTime < timeoutMs) {
+      // Try to get a reader if we don't have one
+      if (!this.reader && this.port.readable) {
+        this.reader = this.port.readable.getReader();
+      }
+
+      if (this.reader) {
+        try {
+          const { value, done } = await this.reader.read();
+          if (done) {
+            this.reader.releaseLock();
+            this.reader = null;
+            continue;
+          }
+          if (value) {
+            // Append to buffer
+            const newBuffer = new Uint8Array(this.readBuffer.length + value.length);
+            newBuffer.set(this.readBuffer);
+            newBuffer.set(value, this.readBuffer.length);
+            this.readBuffer = newBuffer;
+            
+            // Try to parse a complete frame from buffer
+            const frame = this.extractFrame();
+            if (frame) {
+              console.log(`RX [${frame[1].toString(16).padStart(2, '0')}]:`, Array.from(frame).map(b => b.toString(16).padStart(2, '0')).join(' '));
+              return frame;
+            }
+          }
+        } catch (readError) {
+          // Reader might be released on disconnect
+          this.reader = null;
+          throw readError;
+        }
+      }
     }
-    return new Uint8Array(result.data.buffer);
+
+    // If we have data in buffer but no complete frame, return what we have
+    if (this.readBuffer.length > 0) {
+      const data = this.readBuffer;
+      this.readBuffer = new Uint8Array(0);
+      console.log('RX (raw, no frame):', Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' '));
+      return data;
+    }
+
+    throw new Error('Response timeout');
+  }
+
+  /**
+   * Extract a complete frame from the read buffer
+   * Frame format: [HEADER 0xAA][CMD][LEN][DATA...][CHECKSUM]
+   */
+  private extractFrame(): Uint8Array | null {
+    if (this.readBuffer.length < 3) return null;
+
+    // Find header byte
+    const headerIndex = this.readBuffer.indexOf(SERIAL_CONFIG.FRAME_HEADER);
+    if (headerIndex === -1) {
+      // No header found, discard buffer
+      this.readBuffer = new Uint8Array(0);
+      return null;
+    }
+
+    // Discard bytes before header
+    if (headerIndex > 0) {
+      this.readBuffer = this.readBuffer.slice(headerIndex);
+    }
+
+    if (this.readBuffer.length < 3) return null;
+
+    const cmd = this.readBuffer[1];
+    const dataLen = this.readBuffer[2];
+    const frameLen = 3 + dataLen + 1; // header + cmd + len + data + checksum
+
+    if (this.readBuffer.length < frameLen) return null;
+
+    const frame = this.readBuffer.slice(0, frameLen);
+    
+    // Verify checksum
+    let checksum = 0;
+    for (let i = 1; i < frameLen - 1; i++) {
+      checksum ^= frame[i];
+    }
+    
+    if (checksum !== frame[frameLen - 1]) {
+      console.warn(`Checksum mismatch: expected ${checksum.toString(16)}, got ${frame[frameLen - 1].toString(16)}`);
+      // Discard header and try again
+      this.readBuffer = this.readBuffer.slice(1);
+      return this.extractFrame();
+    }
+
+    // Remove frame from buffer
+    this.readBuffer = this.readBuffer.slice(frameLen);
+    return frame;
   }
 
   /**
@@ -366,33 +444,35 @@ export class ProcyonUSB {
     // Get firmware version
     await this.sendCommand(COMMANDS.GET_FIRMWARE_VERSION);
     const fwResponse = await this.receiveResponse();
-    const firmwareVersion = new TextDecoder().decode(fwResponse.slice(1, 33)).replace(/\0/g, '');
+    const firmwareVersion = new TextDecoder().decode(fwResponse.slice(3, 3 + fwResponse[2])).replace(/\0/g, '');
 
     // Get tool serial number
     await this.sendCommand(COMMANDS.GET_TOOL_SN);
     const snResponse = await this.receiveResponse();
-    const serialNumber = new TextDecoder().decode(snResponse.slice(1, 33)).replace(/\0/g, '');
+    const serialNumber = new TextDecoder().decode(snResponse.slice(3, 3 + snResponse[2])).replace(/\0/g, '');
 
     // Get device type
     await this.sendCommand(COMMANDS.GET_DEVICE_TYPE);
     const typeResponse = await this.receiveResponse();
-    const deviceType = new TextDecoder().decode(typeResponse.slice(1, 33)).replace(/\0/g, '');
+    const deviceType = new TextDecoder().decode(typeResponse.slice(3, 3 + typeResponse[2])).replace(/\0/g, '');
 
     // Get battery voltage
     await this.sendCommand(COMMANDS.GET_BATTERY_VOLTAGE);
     const battResponse = await this.receiveResponse();
-    const batteryRaw = new DataView(battResponse.buffer).getInt16(1, true);
+    const battData = battResponse.slice(3, 3 + battResponse[2]);
+    const batteryRaw = new DataView(battData.buffer, battData.byteOffset, battData.byteLength).getInt16(0, true);
     const batteryVoltage = batteryRaw * CONVERSION_FACTORS.BATTERY_VOLTAGE;
 
     // Get temperature
     await this.sendCommand(COMMANDS.GET_TEMPERATURE_DATA);
     const tempResponse = await this.receiveResponse();
-    const tempRaw = new DataView(tempResponse.buffer).getInt16(1, true);
+    const tempData = tempResponse.slice(3, 3 + tempResponse[2]);
+    const tempRaw = new DataView(tempData.buffer, tempData.byteOffset, tempData.byteLength).getInt16(0, true);
     const temperature = tempRaw * CONVERSION_FACTORS.TEMPERATURE;
 
     return {
-      vendorId: this.device?.vendorId ?? 0,
-      productId: this.device?.productId ?? 0,
+      vendorId: SERIAL_CONFIG.VENDOR_ID,
+      productId: SERIAL_CONFIG.PRODUCT_ID,
       serialNumber,
       firmwareVersion,
       deviceType,
@@ -462,7 +542,8 @@ export class ProcyonUSB {
   async getMemoryPartitionsCount(): Promise<number> {
     await this.sendCommand(COMMANDS.GET_NUMBER_MEMORY_PARTITIONS);
     const response = await this.receiveResponse();
-    return new DataView(response.buffer).getUint16(1, true);
+    const data = response.slice(3, 3 + response[2]);
+    return new DataView(data.buffer, data.byteOffset, data.byteLength).getUint16(0, true);
   }
 
   /**
@@ -471,7 +552,8 @@ export class ProcyonUSB {
   async getMemoryErasePercent(): Promise<number> {
     await this.sendCommand(COMMANDS.GET_MEMORY_ERASE_PERCENT);
     const response = await this.receiveResponse();
-    return new DataView(response.buffer).getUint8(1);
+    const data = response.slice(3, 3 + response[2]);
+    return data[0];
   }
 
   /**
@@ -485,7 +567,8 @@ export class ProcyonUSB {
     // Get total records count
     await this.sendCommand(COMMANDS.GET_NUMBER_MEMORY_PARTITIONS);
     const response = await this.receiveResponse();
-    const totalRecords = new DataView(response.buffer).getUint16(1, true);
+    const dataPayload = response.slice(3, 3 + response[2]);
+    const totalRecords = new DataView(dataPayload.buffer, dataPayload.byteOffset, dataPayload.byteLength).getUint16(0, true);
     
     let downloaded = 0;
     
@@ -514,12 +597,13 @@ export class ProcyonUSB {
   private parseOneSecondDataChunk(response: Uint8Array): OneSecondData[] {
     const data: OneSecondData[] = [];
     const recordSize = 58; // 29 s16 fields = 58 bytes
-    const dataView = new DataView(response.buffer);
     
-    // Skip header (first byte is record type)
-    let offset = 1;
+    // Skip frame header (3 bytes: header, cmd, len) 
+    let offset = 3;
+    const dataEnd = 3 + response[2];
+    const dataView = new DataView(response.buffer, response.byteOffset, response.byteLength);
     
-    while (offset + recordSize <= response.length) {
+    while (offset + recordSize <= dataEnd) {
       const record: OneSecondData = {
         timestamp: dataView.getUint32(offset, true),
         temperature: dataView.getInt16(offset + 4, true) * CONVERSION_FACTORS.TEMPERATURE,
@@ -582,16 +666,19 @@ export class ProcyonUSB {
     
     // Poll for completion
     let completed = false;
-    while (!completed) {
+    let elapsed = 0;
+    while (!completed && elapsed < 30000) {
       await this.sendCommand(COMMANDS.GET_SELF_TEST_MODE_STATUS);
       const response = await this.receiveResponse();
-      const status = response[1];
+      const data = response.slice(3, 3 + response[2]);
+      const status = data[0];
       
       if (status === 0) {
         completed = true;
       } else if (status === 1) {
         // Still running, wait
         await new Promise(resolve => setTimeout(resolve, 1000));
+        elapsed += 1000;
       } else {
         // Error
         throw new Error(`Self-test error: code ${status}`);
@@ -599,7 +686,6 @@ export class ProcyonUSB {
     }
     
     // Get test results
-    // Parse test results from device
     results.push({
       name: 'Sensor Test',
       status: 'pass',
@@ -717,8 +803,11 @@ export class ProcyonUSB {
       d.shockRmsZ.toFixed(2),
       d.shockLateralMax.toFixed(2),
       d.shockLateralRms.toFixed(2),
-    ]);
+    ].join(','));
     
-    return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    return [headers.join(','), ...rows].join('\n');
   }
 }
+
+// Keep backward compatibility alias
+export const ProcyonUSB = ProcyonSerial;
