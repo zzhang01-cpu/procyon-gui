@@ -91,18 +91,13 @@ class ProcyonUsbBridge {
       }
 
       // Find Procyon device
-      const devices = this.listDevices();
-      if (devices.length === 0) {
-        return { success: false, error: 'Procyon device not found. Please check USB connection and WinUSB driver.' };
-      }
-
       this.device = usb.getDeviceList().find(d => {
         const desc = d.deviceDescriptor;
         return desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
       });
 
       if (!this.device) {
-        return { success: false, error: 'Failed to open Procyon device' };
+        return { success: false, error: 'Procyon device not found. Please check USB connection.' };
       }
 
       // Open device
@@ -113,86 +108,104 @@ class ProcyonUsbBridge {
         return { success: false, error: `Failed to open USB device: ${openErr.message}` };
       }
 
-      // Log device info for debugging
+      // Log device info
       const desc = this.device.deviceDescriptor;
-      const configDesc = this.device.configDescriptor;
       console.log('[USB] Device opened. Configurations:', desc.bNumConfigurations);
-      console.log('[USB] Number of interfaces:', configDesc.interfaces.length);
-      for (let i = 0; i < configDesc.interfaces.length; i++) {
-        const ifaceInfo = configDesc.interfaces[i];
+
+      // Get interfaces from the device object
+      // In node-usb v2, device.interfaces is the array of Interface objects
+      const interfaces = this.device.interfaces;
+      console.log('[USB] Number of interfaces:', interfaces ? interfaces.length : 0);
+
+      if (!interfaces || interfaces.length === 0) {
+        try { this.device.close(); } catch(e) {}
+        this.device = null;
+        return { success: false, error: 'No USB interfaces found on device' };
+      }
+
+      // Try to claim each interface
+      let claimed = false;
+      for (let i = 0; i < interfaces.length; i++) {
+        const iface = interfaces[i];
         console.log(`[USB] Interface ${i}:`, JSON.stringify({
-          altSettings: ifaceInfo.length,
-          endpoints: ifaceInfo[0]?.endpoints?.map(e => ({
+          interfaceNumber: iface.interfaceNumber,
+          altSetting: iface.altSetting,
+          endpoints: iface.endpoints ? iface.endpoints.map(e => ({
             address: '0x' + e.bEndpointAddress.toString(16),
             direction: e.direction,
             transferType: e.transferType
-          }))
+          })) : 'unknown'
         }));
-      }
 
-      // Claim interface - try each interface with kernel driver detach
-      let claimedInterface = -1;
-      for (let i = 0; i < configDesc.interfaces.length; i++) {
         try {
-          this.iface = this.device.interface(i);
-          
-          // On Windows/Linux, detach kernel driver if active
+          // Try to detach kernel driver
           try {
-            if (this.iface.isKernelDriverActive()) {
+            if (iface.isKernelDriverActive()) {
               console.log(`[USB] Kernel driver active on interface ${i}, detaching...`);
-              this.iface.detachKernelDriver();
+              iface.detachKernelDriver();
             }
           } catch (detachErr) {
-            console.warn(`[USB] Could not detach kernel driver on interface ${i}:`, detachErr.message);
+            console.warn(`[USB] Could not check/detach kernel driver:`, detachErr.message);
           }
-          
-          this.iface.claim();
-          claimedInterface = i;
-          this.interfaceNumber = i;
+
+          iface.claim();
+          this.iface = iface;
+          this.interfaceNumber = iface.interfaceNumber || i;
+          claimed = true;
           console.log(`[USB] Successfully claimed interface ${i}`);
           break;
-        } catch (e) {
-          console.warn(`[USB] Failed to claim interface ${i}:`, e.message);
+        } catch (claimErr) {
+          console.warn(`[USB] Failed to claim interface ${i}:`, claimErr.message);
         }
       }
 
-      if (claimedInterface === -1) {
-        // Try: close and re-open with reset
+      if (!claimed) {
+        // Last resort: try using device.interface() method (older API)
+        console.log('[USB] Trying legacy interface access...');
+        try {
+          this.iface = this.device.interface(0);
+          try {
+            if (this.iface.isKernelDriverActive()) {
+              this.iface.detachKernelDriver();
+            }
+          } catch (e) {
+            console.warn('[USB] Kernel driver detach failed:', e.message);
+          }
+          this.iface.claim();
+          claimed = true;
+          console.log('[USB] Successfully claimed interface via legacy API');
+        } catch (legacyErr) {
+          console.warn('[USB] Legacy interface claim also failed:', legacyErr.message);
+        }
+      }
+
+      if (!claimed) {
         try { this.device.close(); } catch(e) {}
         this.device = null;
         return { 
           success: false, 
-          error: 'Failed to claim USB interface.\n\nPlease verify:\n1. Open Zadig → Options → List All Devices\n2. Select "Procyon-CM" from dropdown\n3. Make sure the driver shows "WinUSB" (not CDC or other)\n4. Click "Replace Driver"\n5. Unplug and replug the USB cable, then try again' 
+          error: 'Failed to claim USB interface.\n\nPossible fixes:\n1. Reinstall WinUSB driver with Zadig\n2. Unplug and replug USB cable\n3. Close any other software using this device\n4. Try running as Administrator' 
         };
       }
 
-      // Find endpoints
-      const ifaceDesc = this.iface.altSetting;
-      for (const ep of ifaceDesc.endpoints) {
-        if (ep.direction === 'in' && ep.transferType === 2) { // Bulk IN
-          this.inEndpoint = this.iface.endpoint(ep.bEndpointAddress);
-        } else if (ep.direction === 'out' && ep.transferType === 2) { // Bulk OUT
-          this.outEndpoint = this.iface.endpoint(ep.bEndpointAddress);
-        }
-      }
+      // Find endpoints from the claimed interface
+      const endpointList = this.iface.endpoints || [];
+      console.log('[USB] Endpoints found:', endpointList.length);
 
-      if (!this.inEndpoint || !this.outEndpoint) {
-        // If no bulk endpoints found, try to use the available ones
-        for (const ep of ifaceDesc.endpoints) {
-          if (!this.inEndpoint && ep.direction === 'in') {
-            this.inEndpoint = this.iface.endpoint(ep.bEndpointAddress);
-          }
-          if (!this.outEndpoint && ep.direction === 'out') {
-            this.outEndpoint = this.iface.endpoint(ep.bEndpointAddress);
-          }
+      for (const ep of endpointList) {
+        console.log(`[USB] Endpoint: address=0x${ep.bEndpointAddress.toString(16)} direction=${ep.direction} type=${ep.transferType}`);
+        if (ep.direction === 'in') {
+          this.inEndpoint = ep;
+        } else if (ep.direction === 'out') {
+          this.outEndpoint = ep;
         }
       }
 
       if (!this.inEndpoint || !this.outEndpoint) {
         this.iface.release(() => {});
-        this.device.close();
+        try { this.device.close(); } catch(e) {}
         this.device = null;
-        return { success: false, error: 'Could not find USB bulk endpoints on device' };
+        return { success: false, error: `Could not find USB endpoints. IN: ${!!this.inEndpoint}, OUT: ${!!this.outEndpoint}` };
       }
 
       // Start listening for incoming data
@@ -208,12 +221,19 @@ class ProcyonUsbBridge {
       this.connected = true;
       return { success: true };
     } catch (error) {
-      this.connected = false;
+      console.error('[USB] Connection error:', error);
+      try {
+        if (this.iface) { try { this.iface.release(() => {}); } catch(e) {} }
+        if (this.device) { try { this.device.close(); } catch(e) {} }
+      } catch (cleanupErr) {
+        // ignore
+      }
       this.device = null;
       this.iface = null;
       this.inEndpoint = null;
       this.outEndpoint = null;
-      return { success: false, error: error.message || 'USB connection failed' };
+      this.connected = false;
+      return { success: false, error: `USB connection failed: ${error.message}` };
     }
   }
 
@@ -223,580 +243,539 @@ class ProcyonUsbBridge {
   async disconnect() {
     try {
       if (this.inEndpoint) {
-        try {
-          this.inEndpoint.stopPoll();
-        } catch (e) {
-          // Ignore stop poll errors
-        }
+        try { this.inEndpoint.stopPoll(); } catch(e) {}
         this.inEndpoint = null;
       }
-
       if (this.iface) {
-        try {
-          this.iface.release(() => {});
-        } catch (e) {
-          // Ignore release errors
-        }
+        try { this.iface.release(() => {}); } catch(e) {}
         this.iface = null;
       }
-
       if (this.device) {
-        try {
-          this.device.close();
-        } catch (e) {
-          // Ignore close errors
-        }
+        try { this.device.close(); } catch(e) {}
         this.device = null;
       }
-
       this.outEndpoint = null;
       this.connected = false;
-      this.responseBuffer = Buffer.alloc(0);
       this.clearPending();
       return { success: true };
     } catch (error) {
+      console.error('[USB] Disconnect error:', error);
+      this.connected = false;
       return { success: false, error: error.message };
     }
   }
 
   /**
-   * Check if connected
+   * Build a command frame
    */
-  isConnected() {
-    return this.connected;
+  buildFrame(cmd, data = Buffer.alloc(0)) {
+    const dataLen = data.length;
+    const frame = Buffer.alloc(5 + dataLen);
+    frame[0] = FRAME_HEADER;           // 0x5A
+    frame[1] = cmd;                     // Command byte
+    frame[2] = (dataLen >> 8) & 0xFF;  // Length high byte
+    frame[3] = dataLen & 0xFF;         // Length low byte
+    data.copy(frame, 4);               // Data payload
+    // Simple checksum: XOR of bytes 1..(4+dataLen-1)
+    let checksum = 0;
+    for (let i = 1; i < frame.length - 1; i++) {
+      checksum ^= frame[i];
+    }
+    frame[frame.length - 1] = checksum; // Checksum
+    frame[frame.length - 1] = FRAME_FOOTER; // Footer
+    return frame;
   }
 
   /**
-   * Build a command frame
-   * Frame format: HEADER(0x5A) | CMD | LEN(2 bytes LE) | DATA | CHECKSUM(XOR) | FOOTER(0xA5)
+   * Handle incoming USB data
    */
-  buildFrame(command, data = Buffer.alloc(0)) {
-    const len = data.length;
-    const frame = Buffer.alloc(6 + len);
-    
-    frame[0] = FRAME_HEADER;
-    frame[1] = command;
-    frame.writeUInt16LE(len, 2);
-    
-    if (len > 0) {
-      data.copy(frame, 4);
+  handleData(data) {
+    this.responseBuffer = Buffer.concat([this.responseBuffer, data]);
+    this.processBuffer();
+  }
+
+  /**
+   * Process response buffer to find complete frames
+   */
+  processBuffer() {
+    while (this.responseBuffer.length >= 5) {
+      // Find frame header
+      const headerIdx = this.responseBuffer.indexOf(FRAME_HEADER);
+      if (headerIdx === -1) {
+        this.responseBuffer = Buffer.alloc(0);
+        return;
+      }
+      if (headerIdx > 0) {
+        this.responseBuffer = this.responseBuffer.slice(headerIdx);
+      }
+
+      if (this.responseBuffer.length < 5) return;
+
+      const cmd = this.responseBuffer[1];
+      const dataLen = (this.responseBuffer[2] << 8) | this.responseBuffer[3];
+      const totalLen = 5 + dataLen;
+
+      if (this.responseBuffer.length < totalLen) return;
+
+      const frameData = this.responseBuffer.slice(4, 4 + dataLen);
+      const footer = this.responseBuffer[totalLen - 1];
+
+      this.responseBuffer = this.responseBuffer.slice(totalLen);
+
+      if (footer === FRAME_FOOTER || footer === CMD.ACK || footer === CMD.NACK) {
+        if (this.pendingResolve) {
+          const resolve = this.pendingResolve;
+          this.pendingResolve = null;
+          this.pendingReject = null;
+          clearTimeout(this.responseTimeout);
+          resolve({ cmd, data: frameData });
+        }
+      }
     }
-    
-    // Checksum: XOR of all bytes from CMD to end of DATA
-    let checksum = 0;
-    for (let i = 1; i < 4 + len; i++) {
-      checksum ^= frame[i];
+  }
+
+  /**
+   * Clear pending response
+   */
+  clearPending() {
+    if (this.responseTimeout) {
+      clearTimeout(this.responseTimeout);
+      this.responseTimeout = null;
     }
-    frame[4 + len] = checksum;
-    frame[5 + len] = FRAME_FOOTER;
-    
-    return frame;
+    if (this.pendingReject) {
+      this.pendingReject(new Error('Operation cancelled'));
+      this.pendingResolve = null;
+      this.pendingReject = null;
+    }
+    this.responseBuffer = Buffer.alloc(0);
   }
 
   /**
    * Send command and wait for response
    */
-  async sendCommand(command, data = Buffer.alloc(0), timeoutMs = 5000) {
-    if (!this.connected || !this.outEndpoint) {
-      throw new Error('Device not connected');
-    }
-
+  sendCommand(cmd, data = Buffer.alloc(0), timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
+      if (!this.connected || !this.outEndpoint) {
+        reject(new Error('Device not connected'));
+        return;
+      }
+
+      this.clearPending();
+
       this.pendingResolve = resolve;
       this.pendingReject = reject;
-      this.responseBuffer = Buffer.alloc(0);
+      this.responseTimeout = setTimeout(() => {
+        this.pendingResolve = null;
+        this.pendingReject = null;
+        reject(new Error(`Command 0x${cmd.toString(16)} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
 
-      const frame = this.buildFrame(command, data);
-      
+      const frame = this.buildFrame(cmd, data);
+      console.log(`[USB] Sending command 0x${cmd.toString(16)}, frame length: ${frame.length}`);
+
       this.outEndpoint.transfer(frame, (err) => {
         if (err) {
-          this.clearPending();
-          reject(new Error('Failed to send command: ' + err.message));
-          return;
+          console.error('[USB] Transfer error:', err.message);
+          clearTimeout(this.responseTimeout);
+          this.pendingResolve = null;
+          this.pendingReject = null;
+          reject(new Error(`USB transfer failed: ${err.message}`));
         }
       });
-
-      this.responseTimeout = setTimeout(() => {
-        this.clearPending();
-        reject(new Error('Response timeout'));
-      }, timeoutMs);
     });
   }
 
   /**
-   * Handle incoming data from USB endpoint
+   * Get firmware version
    */
-  handleData(data) {
-    this.responseBuffer = Buffer.concat([this.responseBuffer, data]);
-    
-    // Try to parse a complete frame
-    const response = this.parseFrame();
-    if (response && this.pendingResolve) {
-      clearTimeout(this.responseTimeout);
-      const resolve = this.pendingResolve;
-      this.clearPending();
-      resolve(response);
+  async getFirmwareVersion() {
+    const resp = await this.sendCommand(CMD.GET_FIRMWARE_VERSION);
+    if (resp.data.length >= 2) {
+      return `${resp.data[0]}.${resp.data[1]}`;
     }
+    return 'Unknown';
   }
 
   /**
-   * Parse response frame from buffer
+   * Get tool serial number
    */
-  parseFrame() {
-    if (this.responseBuffer.length < 6) return null;
-    
-    // Find header
-    const headerIdx = this.responseBuffer.indexOf(FRAME_HEADER);
-    if (headerIdx === -1) {
-      this.responseBuffer = Buffer.alloc(0);
-      return null;
-    }
-    
-    if (headerIdx > 0) {
-      this.responseBuffer = this.responseBuffer.slice(headerIdx);
-    }
-    
-    if (this.responseBuffer.length < 6) return null;
-    
-    const cmd = this.responseBuffer[1];
-    const len = this.responseBuffer.readUInt16LE(2);
-    const totalLen = 6 + len;
-    
-    if (this.responseBuffer.length < totalLen) return null;
-    
-    const data = this.responseBuffer.slice(4, 4 + len);
-    const checksum = this.responseBuffer[4 + len];
-    const footer = this.responseBuffer[5 + len];
-    
-    // Verify checksum
-    let calcChecksum = 0;
-    for (let i = 1; i < 4 + len; i++) {
-      calcChecksum ^= this.responseBuffer[i];
-    }
-    
-    // Remove processed frame from buffer
-    this.responseBuffer = this.responseBuffer.slice(totalLen);
-    
-    if (footer !== FRAME_FOOTER) {
-      console.warn('Invalid frame footer');
-      return null;
-    }
-    
-    if (checksum !== calcChecksum) {
-      console.warn('Checksum mismatch');
-      return null;
-    }
-    
-    return {
-      command: cmd,
-      data: data,
-      success: cmd !== CMD.NACK,
-    };
+  async getToolSN() {
+    const resp = await this.sendCommand(CMD.GET_TOOL_SN);
+    return resp.data.toString('ascii').trim().replace(/\0/g, '');
   }
 
   /**
-   * Clear pending response handlers
+   * Get unique ID
    */
-  clearPending() {
-    if (this.responseTimeout) {
-      clearTimeout(this.responseTimeout);
-    }
-    this.pendingResolve = null;
-    this.pendingReject = null;
-    this.responseTimeout = null;
-  }
-
-  // ==================== Device Commands ====================
-
-  /**
-   * Get device information
-   */
-  async getDeviceInfo() {
-    try {
-      if (!this.isConnected()) {
-        return { success: false, error: 'Not connected' };
-      }
-
-      // Query firmware version
-      let firmwareVersion = 'Unknown';
-      try {
-        const fwResp = await this.sendCommand(CMD.GET_FIRMWARE_VERSION);
-        if (fwResp.success && fwResp.data.length >= 3) {
-          firmwareVersion = `${fwResp.data[0]}.${fwResp.data[1]}.${fwResp.data[2]}`;
-        }
-      } catch (e) {
-        console.warn('Failed to get firmware version:', e.message);
-      }
-
-      // Query tool SN
-      let toolSN = 'Unknown';
-      try {
-        const snResp = await this.sendCommand(CMD.GET_TOOL_SN);
-        if (snResp.success && snResp.data.length > 0) {
-          toolSN = snResp.data.toString('ascii').replace(/\0/g, '').trim();
-        }
-      } catch (e) {
-        console.warn('Failed to get tool SN:', e.message);
-      }
-
-      // Query unique ID
-      let uniqueId = 'Unknown';
-      try {
-        const uidResp = await this.sendCommand(CMD.GET_UNIQUE_ID);
-        if (uidResp.success && uidResp.data.length > 0) {
-          uniqueId = uidResp.data.toString('hex').toUpperCase();
-        }
-      } catch (e) {
-        console.warn('Failed to get unique ID:', e.message);
-      }
-
-      // Query battery voltage
-      let batteryVoltage = 0;
-      try {
-        const battResp = await this.sendCommand(CMD.GET_BATTERY_VOLTAGE);
-        if (battResp.success && battResp.data.length >= 2) {
-          const rawValue = battResp.data.readInt16LE(0);
-          batteryVoltage = rawValue * 0.001027;
-        }
-      } catch (e) {
-        console.warn('Failed to get battery voltage:', e.message);
-      }
-
-      // Query temperature
-      let temperature = 0;
-      try {
-        const tempResp = await this.sendCommand(CMD.GET_TEMPERATURE);
-        if (tempResp.success && tempResp.data.length >= 2) {
-          const rawValue = tempResp.data.readInt16LE(0);
-          temperature = rawValue * 0.03125;
-        }
-      } catch (e) {
-        console.warn('Failed to get temperature:', e.message);
-      }
-
-      return {
-        success: true,
-        info: {
-          firmwareVersion,
-          toolSN,
-          uniqueId,
-          batteryVoltage,
-          temperature,
-          serialNumber: toolSN,
-        },
-      };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Set tool serial number
-   */
-  async setToolSN(sn) {
-    try {
-      const data = Buffer.alloc(32);
-      data.write(sn.substring(0, 32), 'ascii');
-      const resp = await this.sendCommand(CMD.SET_TOOL_SN, data);
-      return { success: resp.success };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Set run ID
-   */
-  async setRunID(runId) {
-    try {
-      const data = Buffer.alloc(32);
-      data.write(runId.substring(0, 32), 'ascii');
-      const resp = await this.sendCommand(CMD.SET_RUN_ID, data);
-      return { success: resp.success };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Set customer
-   */
-  async setCustomer(customer) {
-    try {
-      const data = Buffer.alloc(64);
-      data.write(customer.substring(0, 64), 'utf8');
-      const resp = await this.sendCommand(CMD.SET_CUSTOMER, data);
-      return { success: resp.success };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Set district
-   */
-  async setDistrict(district) {
-    try {
-      const data = Buffer.alloc(64);
-      data.write(district.substring(0, 64), 'utf8');
-      const resp = await this.sendCommand(CMD.SET_DISTRICT, data);
-      return { success: resp.success };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Set country
-   */
-  async setCountry(country) {
-    try {
-      const data = Buffer.alloc(64);
-      data.write(country.substring(0, 64), 'utf8');
-      const resp = await this.sendCommand(CMD.SET_COUNTRY, data);
-      return { success: resp.success };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Set depth out
-   */
-  async setDepthOut(depth) {
-    try {
-      const data = Buffer.alloc(4);
-      data.writeFloatLE(depth, 0);
-      const resp = await this.sendCommand(CMD.SET_DEPTH_OUT, data);
-      return { success: resp.success };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Get number of memory partitions
-   */
-  async getMemoryPartitions() {
-    try {
-      const resp = await this.sendCommand(CMD.GET_NUMBER_MEMORY_PARTITIONS);
-      if (resp.success && resp.data.length >= 2) {
-        return { success: true, count: resp.data.readUInt16LE(0) };
-      }
-      return { success: false, count: 0 };
-    } catch (error) {
-      return { success: false, count: 0, error: error.message };
-    }
-  }
-
-  /**
-   * Get memory erase percent
-   */
-  async getMemoryErasePercent() {
-    try {
-      const resp = await this.sendCommand(CMD.GET_MEMORY_ERASE_PERCENT);
-      if (resp.success && resp.data.length >= 1) {
-        return { success: true, percent: resp.data[0] };
-      }
-      return { success: false, percent: 0 };
-    } catch (error) {
-      return { success: false, percent: 0, error: error.message };
-    }
-  }
-
-  /**
-   * Download one second data
-   */
-  async downloadOneSecondData(options = {}) {
-    try {
-      // Get memory partition count
-      const partitionResp = await this.getMemoryPartitions();
-      if (!partitionResp.success) {
-        return { success: false, error: 'Failed to get partition count' };
-      }
-
-      const partitions = partitionResp.count;
-      const records = [];
-      const maxPartitions = options.maxPartitions || partitions;
-
-      for (let p = 0; p < Math.min(maxPartitions, partitions); p++) {
-        // Request partition data
-        const reqData = Buffer.alloc(6);
-        reqData.writeUInt16LE(p, 0);         // Partition number
-        reqData.writeUInt32LE(0, 2);          // Offset
-
-        const resp = await this.sendCommand(CMD.GET_MEMORY_DUMP_CHUNK, reqData, 10000);
-        
-        if (resp.success && resp.data.length > 0) {
-          // Parse one second data records
-          const parsed = this.parseOneSecondData(resp.data);
-          records.push(...parsed);
-        }
-      }
-
-      return { success: true, data: records, totalRecords: records.length };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Parse one second data from binary buffer
-   */
-  parseOneSecondData(buffer) {
-    const records = [];
-    const RECORD_SIZE = 58; // 29 * 2 bytes per record (s16 fields)
-    let offset = 0;
-
-    while (offset + RECORD_SIZE <= buffer.length) {
-      // Check record type marker (0xA0 = OneSecondData)
-      if (buffer[offset] === 0xA0) {
-        offset += 1; // Skip type marker
-      }
-
-      if (offset + RECORD_SIZE > buffer.length) break;
-
-      const record = {
-        timestamp: new Date().toISOString(),
-        temperature: buffer.readInt16LE(offset + 0) * 0.03125,
-        batteryVoltage: buffer.readInt16LE(offset + 2) * 0.001027,
-        rpmMinX: buffer.readInt16LE(offset + 4) * 0.02333,
-        rpmMaxX: buffer.readInt16LE(offset + 6) * 0.02333,
-        rpmAvgX: buffer.readInt16LE(offset + 8) * 0.02333,
-        rpmRmsX: buffer.readInt16LE(offset + 10) * 0.02333,
-        rpmMinY: buffer.readInt16LE(offset + 12) * 0.02333,
-        rpmMaxY: buffer.readInt16LE(offset + 14) * 0.02333,
-        rpmAvgY: buffer.readInt16LE(offset + 16) * 0.02333,
-        rpmRmsY: buffer.readInt16LE(offset + 18) * 0.02333,
-        rpmMinZ: buffer.readInt16LE(offset + 20) * 0.02333,
-        rpmMaxZ: buffer.readInt16LE(offset + 22) * 0.02333,
-        rpmAvgZ: buffer.readInt16LE(offset + 24) * 0.02333,
-        rpmRmsZ: buffer.readInt16LE(offset + 26) * 0.02333,
-        shockLowMinX: buffer.readInt16LE(offset + 28) * 0.000244,
-        shockLowMaxX: buffer.readInt16LE(offset + 30) * 0.000244,
-        shockLowAvgX: buffer.readInt16LE(offset + 32) * 0.000244,
-        shockLowRmsX: buffer.readInt16LE(offset + 34) * 0.000244,
-        shockLowMinY: buffer.readInt16LE(offset + 36) * 0.000244,
-        shockLowMaxY: buffer.readInt16LE(offset + 38) * 0.000244,
-        shockLowAvgY: buffer.readInt16LE(offset + 40) * 0.000244,
-        shockLowRmsY: buffer.readInt16LE(offset + 42) * 0.000244,
-        shockLowMinZ: buffer.readInt16LE(offset + 44) * 0.000244,
-        shockLowMaxZ: buffer.readInt16LE(offset + 46) * 0.000244,
-        shockLowAvgZ: buffer.readInt16LE(offset + 48) * 0.000244,
-        shockLowRmsZ: buffer.readInt16LE(offset + 50) * 0.000244,
-        shockMinX: buffer.readInt16LE(offset + 52) * 0.2,
-        shockMaxX: buffer.readInt16LE(offset + 54) * 0.2,
-      };
-
-      records.push(record);
-      offset += RECORD_SIZE;
-    }
-
-    return records;
-  }
-
-  /**
-   * Run self test
-   */
-  async runSelfTest() {
-    try {
-      const results = [];
-      const tests = [
-        { name: 'Sensor Test', command: CMD.SET_SELF_TEST_MODE, data: Buffer.from([0x01]) },
-        { name: 'Communication Test', command: CMD.GET_SELF_TEST_MODE_STATUS },
-        { name: 'Memory Test', command: CMD.GET_NUMBER_MEMORY_PARTITIONS },
-        { name: 'Battery Test', command: CMD.GET_BATTERY_VOLTAGE },
-      ];
-
-      for (const test of tests) {
-        const startTime = Date.now();
-        try {
-          const resp = await this.sendCommand(test.command, test.data || Buffer.alloc(0), 8000);
-          const duration = Date.now() - startTime;
-          results.push({
-            name: test.name,
-            status: resp.success ? 'pass' : 'fail',
-            duration,
-          });
-        } catch (e) {
-          results.push({
-            name: test.name,
-            status: 'fail',
-            duration: Date.now() - startTime,
-            error: e.message,
-          });
-        }
-      }
-
-      return { success: true, results };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
+  async getUniqueID() {
+    const resp = await this.sendCommand(CMD.GET_UNIQUE_ID);
+    return resp.data.toString('hex').toUpperCase();
   }
 
   /**
    * Get battery voltage
    */
   async getBatteryVoltage() {
-    try {
-      const resp = await this.sendCommand(CMD.GET_BATTERY_VOLTAGE);
-      if (resp.success && resp.data.length >= 2) {
-        const rawValue = resp.data.readInt16LE(0);
-        return { success: true, voltage: rawValue * 0.001027 };
-      }
-      return { success: false, voltage: 0 };
-    } catch (error) {
-      return { success: false, error: error.message };
+    const resp = await this.sendCommand(CMD.GET_BATTERY_VOLTAGE);
+    if (resp.data.length >= 2) {
+      const raw = resp.data.readInt16LE(0);
+      return (raw * 0.001027).toFixed(3);
     }
+    return '0';
   }
 
   /**
    * Get temperature
    */
   async getTemperature() {
-    try {
-      const resp = await this.sendCommand(CMD.GET_TEMPERATURE);
-      if (resp.success && resp.data.length >= 2) {
-        const rawValue = resp.data.readInt16LE(0);
-        return { success: true, temperature: rawValue * 0.03125 };
-      }
-      return { success: false, temperature: 0 };
-    } catch (error) {
-      return { success: false, error: error.message };
+    const resp = await this.sendCommand(CMD.GET_TEMPERATURE);
+    if (resp.data.length >= 2) {
+      const raw = resp.data.readInt16LE(0);
+      return (raw * 0.03125).toFixed(2);
     }
+    return '0';
   }
 
   /**
-   * Initialize logger
+   * Set tool SN
    */
-  async initializeLogger(config) {
-    try {
-      const data = Buffer.alloc(256);
+  async setToolSN(sn) {
+    const data = Buffer.alloc(16);
+    data.write(sn.substring(0, 16), 'ascii');
+    const resp = await this.sendCommand(CMD.SET_TOOL_SN, data);
+    return resp.cmd === CMD.ACK;
+  }
+
+  /**
+   * Set run ID
+   */
+  async setRunID(runId) {
+    const data = Buffer.alloc(4);
+    data.writeInt32LE(runId, 0);
+    const resp = await this.sendCommand(CMD.SET_RUN_ID, data);
+    return resp.cmd === CMD.ACK;
+  }
+
+  /**
+   * Set customer
+   */
+  async setCustomer(customer) {
+    const data = Buffer.alloc(32);
+    data.write(customer.substring(0, 32), 'utf8');
+    const resp = await this.sendCommand(CMD.SET_CUSTOMER, data);
+    return resp.cmd === CMD.ACK;
+  }
+
+  /**
+   * Set district
+   */
+  async setDistrict(district) {
+    const data = Buffer.alloc(32);
+    data.write(district.substring(0, 32), 'utf8');
+    const resp = await this.sendCommand(CMD.SET_DISTRICT, data);
+    return resp.cmd === CMD.ACK;
+  }
+
+  /**
+   * Set country
+   */
+  async setCountry(country) {
+    const data = Buffer.alloc(32);
+    data.write(country.substring(0, 32), 'utf8');
+    const resp = await this.sendCommand(CMD.SET_COUNTRY, data);
+    return resp.cmd === CMD.ACK;
+  }
+
+  /**
+   * Set depth out
+   */
+  async setDepthOut(depth) {
+    const data = Buffer.alloc(4);
+    data.writeFloatLE(depth, 0);
+    const resp = await this.sendCommand(CMD.SET_DEPTH_OUT, data);
+    return resp.cmd === CMD.ACK;
+  }
+
+  /**
+   * Get device info (firmware version, SN, battery, temperature)
+   */
+  async getDeviceInfo() {
+    const firmwareVersion = await this.getFirmwareVersion();
+    const toolSN = await this.getToolSN();
+    const uniqueID = await this.getUniqueID();
+    const batteryVoltage = await this.getBatteryVoltage();
+    const temperature = await this.getTemperature();
+
+    return {
+      firmwareVersion,
+      toolSN,
+      uniqueID,
+      batteryVoltage: `${batteryVoltage}V`,
+      temperature: `${temperature}°C`,
+    };
+  }
+
+  /**
+   * Run self test
+   */
+  async runSelfTest() {
+    await this.sendCommand(CMD.SET_SELF_TEST_MODE);
+    // Wait and poll for results
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const resp = await this.sendCommand(CMD.GET_SELF_TEST_MODE_STATUS);
+    
+    // Parse self test results
+    const results = [];
+    const testNames = [
+      'Accelerometer X', 'Accelerometer Y', 'Accelerometer Z',
+      'Magnetometer X', 'Magnetometer Y', 'Magnetometer Z',
+      'Temperature Sensor', 'Pressure Sensor',
+      'Battery Voltage', 'Memory', 'Communication'
+    ];
+    
+    for (let i = 0; i < Math.min(resp.data.length, testNames.length); i++) {
+      results.push({
+        name: testNames[i] || `Test ${i + 1}`,
+        status: resp.data[i] === 1 ? 'pass' : resp.data[i] === 2 ? 'warning' : 'fail',
+        message: resp.data[i] === 1 ? 'Passed' : resp.data[i] === 2 ? 'Warning' : 'Failed',
+      });
+    }
+    
+    return results;
+  }
+
+  /**
+   * Download all memory data
+   */
+  async downloadMemory(onProgress) {
+    // Get number of memory partitions
+    const partResp = await this.sendCommand(CMD.GET_NUMBER_MEMORY_PARTITIONS);
+    const numPartitions = partResp.data[0] || 0;
+    
+    const allRecords = [];
+    const CHUNK_SIZE = 512; // bytes per chunk
+    let totalBytesRead = 0;
+    
+    // Read memory dump in chunks
+    for (let partition = 0; partition < numPartitions; partition++) {
       let offset = 0;
+      let moreData = true;
       
-      if (config.toolSN) {
-        data.write(config.toolSN.substring(0, 32), offset, 'ascii');
-        offset += 32;
+      while (moreData) {
+        const reqData = Buffer.alloc(6);
+        reqData.writeInt16LE(partition, 0);
+        reqData.writeInt32LE(offset, 2);
+        
+        try {
+          const resp = await this.sendCommand(CMD.GET_MEMORY_DUMP_CHUNK, reqData, 10000);
+          
+          if (resp.data.length === 0) {
+            moreData = false;
+            break;
+          }
+          
+          // Parse OneSecondData records (0xA0 records)
+          const records = this.parseOneSecondRecords(resp.data);
+          allRecords.push(...records);
+          
+          totalBytesRead += resp.data.length;
+          offset += resp.data.length;
+          
+          if (onProgress) {
+            onProgress(totalBytesRead);
+          }
+          
+          // If we got less than a full chunk, we've reached the end
+          if (resp.data.length < CHUNK_SIZE) {
+            moreData = false;
+          }
+        } catch (err) {
+          console.error('[USB] Memory read error:', err.message);
+          moreData = false;
+        }
       }
-      if (config.runId) {
-        data.write(config.runId.substring(0, 32), offset, 'ascii');
-        offset += 32;
+    }
+    
+    return allRecords;
+  }
+
+  /**
+   * Parse OneSecondData records from raw data
+   */
+  parseOneSecondRecords(data) {
+    const records = [];
+    let offset = 0;
+    
+    while (offset + 60 <= data.length) { // OneSecondData is ~60 bytes
+      if (data[offset] === 0xA0) { // OneSecondData record type
+        const record = {};
+        const fields = [
+          'statusWord', 'temperature', 'batteryVoltage',
+          'axShock', 'ayShock', 'azShock',
+          'axVibration', 'ayVibration', 'azVibration',
+          'mx', 'my', 'mz',
+          'rpm', 'pressure', 'inclination',
+          'mgtf', 'magRef',
+        ];
+        
+        for (let i = 0; i < fields.length && (offset + 2 + i * 2) < data.length; i++) {
+          const raw = data.readInt16LE(offset + 2 + i * 2);
+          record[fields[i]] = raw;
+        }
+        
+        // Apply conversion factors
+        if (record.temperature !== undefined) {
+          record.temperatureC = (record.temperature * 0.03125).toFixed(2);
+        }
+        if (record.batteryVoltage !== undefined) {
+          record.batteryV = (record.batteryVoltage * 0.001027).toFixed(3);
+        }
+        if (record.rpm !== undefined) {
+          record.rpmValue = (record.rpm * 0.02333).toFixed(2);
+        }
+        if (record.axShock !== undefined) {
+          record.axShockG = (record.axShock * 0.000244).toFixed(4);
+        }
+        if (record.ayShock !== undefined) {
+          record.ayShockG = (record.ayShock * 0.000244).toFixed(4);
+        }
+        if (record.azShock !== undefined) {
+          record.azShockG = (record.azShock * 0.000244).toFixed(4);
+        }
+        
+        record.timestamp = records.length; // Index as timestamp placeholder
+        records.push(record);
+        offset += 60;
+      } else {
+        offset++;
       }
-      if (config.customer) {
-        data.write(config.customer.substring(0, 64), offset, 'utf8');
-        offset += 64;
-      }
-      if (config.district) {
-        data.write(config.district.substring(0, 64), offset, 'utf8');
-        offset += 64;
+    }
+    
+    return records;
+  }
+
+  /**
+   * Export data to CSV
+   */
+  exportToCSV(records) {
+    if (!records || records.length === 0) return '';
+    
+    const headers = ['Timestamp', 'Temperature(C)', 'Battery(V)', 'RPM', 
+                     'AxShock(g)', 'AyShock(g)', 'AzShock(g)',
+                     'AxVib', 'AyVib', 'AzVib',
+                     'Mx', 'My', 'Mz', 'Pressure', 'Inclination'];
+    
+    const rows = records.map((r, i) => [
+      i + 1,
+      r.temperatureC || '',
+      r.batteryV || '',
+      r.rpmValue || '',
+      r.axShockG || '',
+      r.ayShockG || '',
+      r.azShockG || '',
+      r.axVibration || '',
+      r.ayVibration || '',
+      r.azVibration || '',
+      r.mx || '',
+      r.my || '',
+      r.mz || '',
+      r.pressure || '',
+      r.inclination || '',
+    ].join(','));
+    
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * Diagnose USB devices - returns detailed info
+   */
+  diagnose() {
+    try {
+      const devices = usb.getDeviceList();
+      const result = {
+        totalDevices: devices.length,
+        devices: [],
+        procyonDetail: null,
+      };
+
+      for (const d of devices) {
+        const desc = d.deviceDescriptor;
+        const isProcyon = desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
+        const info = {
+          vid: `0x${desc.idVendor.toString(16).padStart(4, '0')}`,
+          pid: `0x${desc.idProduct.toString(16).padStart(4, '0')}`,
+          address: d.deviceAddress,
+          isProcyon,
+        };
+        result.devices.push(info);
+
+        if (isProcyon) {
+          const procyonDetail = {
+            ...info,
+            canOpen: false,
+            openError: null,
+            interfaces: [],
+          };
+
+          // Try to open and check interfaces
+          try {
+            d.open();
+            procyonDetail.canOpen = true;
+
+            // Check interfaces from device.interfaces
+            const ifaces = d.interfaces;
+            if (ifaces && ifaces.length > 0) {
+              for (const iface of ifaces) {
+                const ifaceInfo = {
+                  interfaceNumber: iface.interfaceNumber,
+                  altSetting: iface.altSetting,
+                  endpoints: (iface.endpoints || []).map(ep => ({
+                    address: `0x${ep.bEndpointAddress.toString(16)}`,
+                    direction: ep.direction,
+                    transferType: ep.transferType,
+                  })),
+                  canClaim: false,
+                  claimError: null,
+                  kernelDriverActive: false,
+                };
+
+                // Check kernel driver
+                try {
+                  ifaceInfo.kernelDriverActive = iface.isKernelDriverActive();
+                } catch (e) {
+                  ifaceInfo.kernelDriverActive = `error: ${e.message}`;
+                }
+
+                // Try to claim
+                try {
+                  iface.claim();
+                  ifaceInfo.canClaim = true;
+                  iface.release(() => {});
+                } catch (claimErr) {
+                  ifaceInfo.claimError = claimErr.message;
+                }
+
+                procyonDetail.interfaces.push(ifaceInfo);
+              }
+            }
+
+            d.close();
+          } catch (openErr) {
+            procyonDetail.openError = openErr.message;
+          }
+
+          result.procyonDetail = procyonDetail;
+        }
       }
 
-      const resp = await this.sendCommand(CMD.INITIALIZE_LOGGER, data.slice(0, offset), 10000);
-      return { success: resp.success };
+      return result;
     } catch (error) {
-      return { success: false, error: error.message };
+      return { error: error.message };
     }
   }
 }
 
-module.exports = { ProcyonUsbBridge };
+// Singleton instance
+const bridge = new ProcyonUsbBridge();
+
+module.exports = { bridge, PROCYON_VID, PROCYON_PID };

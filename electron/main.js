@@ -119,103 +119,10 @@ function initUsbBridge() {
     return usbBridge.getTemperature();
   });
 
-  // Initialize logger
-  ipcMain.handle('device:initialize-logger', async (_event, config) => {
-    return usbBridge.initializeLogger(config);
-  });
-
   // Diagnose USB - list ALL devices and detailed Procyon info
   ipcMain.handle('usb:diagnose', async () => {
     try {
-      const usb = require('usb');
-      const allDevices = usb.getDeviceList();
-      let procyonDetail = null;
-      
-      // Find Procyon device and get detailed info
-      const procyonDev = allDevices.find(d => {
-        const desc = d.deviceDescriptor;
-        return desc.idVendor === 0x2269 && desc.idProduct === 0xBEEF;
-      });
-      
-      if (procyonDev) {
-        const desc = procyonDev.deviceDescriptor;
-        const configDesc = procyonDev.configDescriptor;
-        const interfaces = [];
-        
-        for (let i = 0; i < configDesc.interfaces.length; i++) {
-          const ifaceInfo = configDesc.interfaces[i];
-          const altSetting = ifaceInfo[0];
-          const endpoints = (altSetting?.endpoints || []).map(e => ({
-            address: '0x' + e.bEndpointAddress.toString(16),
-            direction: e.direction,
-            transferType: e.transferType === 2 ? 'bulk' : e.transferType === 3 ? 'interrupt' : 'other',
-          }));
-          interfaces.push({
-            interfaceNumber: i,
-            interfaceClass: altSetting?.bInterfaceClass,
-            endpoints,
-          });
-        }
-        
-        // Try to test-open the device
-        let canOpen = false;
-        let canClaim = false;
-        let claimError = '';
-        let openError = '';
-        try {
-          procyonDev.open();
-          canOpen = true;
-          
-          // Try to claim interface 0
-          try {
-            const iface = procyonDev.interface(0);
-            try {
-              if (iface.isKernelDriverActive()) {
-                iface.detachKernelDriver();
-              }
-            } catch (detachErr) {
-              claimError += `DetachKernelDriver: ${detachErr.message}; `;
-            }
-            iface.claim();
-            canClaim = true;
-            iface.release(() => {});
-          } catch (claimErr) {
-            claimError += `Claim: ${claimErr.message}`;
-          }
-          
-          procyonDev.close();
-        } catch (openErr) {
-          openError = openErr.message;
-        }
-        
-        procyonDetail = {
-          vendorId: '0x' + desc.idVendor.toString(16).padStart(4, '0'),
-          productId: '0x' + desc.idProduct.toString(16).padStart(4, '0'),
-          deviceAddress: procyonDev.deviceAddress,
-          numConfigurations: desc.bNumConfigurations,
-          numInterfaces: configDesc.interfaces.length,
-          interfaces,
-          canOpen,
-          openError,
-          canClaim,
-          claimError,
-        };
-      }
-      
-      return {
-        success: true,
-        totalDevices: allDevices.length,
-        devices: allDevices.map(d => {
-          const desc = d.deviceDescriptor;
-          return {
-            vendorId: '0x' + desc.idVendor.toString(16).padStart(4, '0'),
-            productId: '0x' + desc.idProduct.toString(16).padStart(4, '0'),
-            deviceAddress: d.deviceAddress,
-            isProcyon: desc.idVendor === 0x2269 && desc.idProduct === 0xBEEF,
-          };
-        }),
-        procyonDetail,
-      };
+      return { success: true, ...usbBridge.diagnose() };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -223,7 +130,7 @@ function initUsbBridge() {
 
   // Get connection status
   ipcMain.handle('device:is-connected', async () => {
-    return usbBridge.isConnected();
+    return usbBridge.connected;
   });
 }
 
