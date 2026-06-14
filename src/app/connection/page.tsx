@@ -97,7 +97,11 @@ export default function ConnectionPage() {
                 )}
               </div>
               <Button
-                onClick={connected ? disconnect : connect}
+                onClick={connected ? disconnect : () => {
+                  const vidNum = vid.startsWith('0x') ? parseInt(vid, 16) : parseInt(vid, 10);
+                  const pidNum = pid.startsWith('0x') ? parseInt(pid, 16) : parseInt(pid, 10);
+                  connect(isNaN(vidNum) ? undefined : vidNum, isNaN(pidNum) ? undefined : pidNum);
+                }}
                 disabled={connecting || !usbSupported}
                 variant={connected ? 'destructive' : 'default'}
                 size="lg"

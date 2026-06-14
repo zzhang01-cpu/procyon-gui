@@ -11,7 +11,7 @@ interface DeviceContextType {
   downloadedData: OneSecondData[];
   testResults: TestResult[];
   error: string | null;
-  connect: () => Promise<void>;
+  connect: (vendorId?: number, productId?: number) => Promise<void>;
   disconnect: () => Promise<void>;
   refreshDeviceInfo: () => Promise<void>;
   downloadData: (onProgress?: (progress: number) => void) => Promise<void>;
@@ -40,14 +40,14 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setError(null), []);
   const clearData = useCallback(() => setDownloadedData([]), []);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (vendorId?: number, productId?: number) => {
     if (connecting || connected) return;
 
     setConnecting(true);
     setError(null);
 
     try {
-      const usb = new ProcyonUSB();
+      const usb = new ProcyonUSB(vendorId, productId);
       await usb.connect();
       
       usb.onDisconnect(() => {

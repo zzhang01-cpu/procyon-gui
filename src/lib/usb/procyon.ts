@@ -155,6 +155,7 @@ export class ProcyonUSB {
 
   /**
    * Request and connect to USB device
+   * If vid/pid are default (0x0483/0x5740), also try without filter to list all devices
    */
   async connect(): Promise<boolean> {
     if (!ProcyonUSB.isSupported()) {
@@ -166,11 +167,31 @@ export class ProcyonUSB {
       if (!navigator.usb) {
         throw new Error('Web USB is not available');
       }
-      this.device = await navigator.usb.requestDevice({
-        filters: [
-          { vendorId: this.vendorId, productId: this.productId },
-        ],
-      });
+
+      // Try requesting device with filter first, then without if user hasn't set custom VID/PID
+      try {
+        this.device = await navigator.usb.requestDevice({
+          filters: [
+            { vendorId: this.vendorId, productId: this.productId },
+          ],
+        });
+      } catch (filterError) {
+        // If filtered request fails (no device found), try without filter
+        // This allows users to see all USB devices and select the correct one
+        if (filterError instanceof Error && filterError.message.includes('No device selected')) {
+          throw filterError; // User cancelled, don't retry
+        }
+        // Retry without filter so user can see all devices
+        this.device = await navigator.usb.requestDevice({
+          filters: [],
+        });
+      }
+
+      // Update VID/PID from the selected device
+      if (this.device) {
+        this.vendorId = this.device.vendorId;
+        this.productId = this.device.productId;
+      }
 
       // Open device
       await this.device.open();

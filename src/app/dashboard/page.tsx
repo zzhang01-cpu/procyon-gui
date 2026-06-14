@@ -35,7 +35,7 @@ export default function DashboardPage() {
             {t.connection.connectionStatus}
           </CardTitle>
           <Button
-            onClick={connected ? disconnect : connect}
+            onClick={connected ? disconnect : () => connect()}
             disabled={connecting}
             variant={connected ? 'destructive' : 'default'}
           >
