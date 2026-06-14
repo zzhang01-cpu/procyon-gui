@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const { ProcyonUsbBridge } = require('./usb-bridge');
+const { bridge, PROCYON_VID, PROCYON_PID } = require('./usb-bridge');
 
 let mainWindow = null;
 let usbBridge = null;
@@ -37,7 +37,7 @@ function createWindow() {
 
 // Initialize USB bridge
 function initUsbBridge() {
-  usbBridge = new ProcyonUsbBridge();
+  usbBridge = bridge;
 
   // List USB devices
   ipcMain.handle('usb:list-devices', async () => {
