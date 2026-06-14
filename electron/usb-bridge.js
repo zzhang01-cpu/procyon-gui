@@ -112,10 +112,44 @@ class ProcyonUsbBridge {
       const desc = this.device.deviceDescriptor;
       console.log('[USB] Device opened. Configurations:', desc.bNumConfigurations);
 
-      // Get interfaces from the device object
-      // In node-usb v2, device.interfaces is the array of Interface objects
-      const interfaces = this.device.interfaces;
-      console.log('[USB] Number of interfaces:', interfaces ? interfaces.length : 0);
+      // Try to set configuration (value 1 is typical for simple USB devices)
+      // This is crucial on Windows - without setting config, claim may fail
+      try {
+        this.device.setConfiguration(1, (err) => {
+          if (err) {
+            console.warn('[USB] setConfiguration(1) warning:', err.message);
+          } else {
+            console.log('[USB] setConfiguration(1) success');
+          }
+        });
+      } catch (configErr) {
+        console.warn('[USB] setConfiguration exception:', configErr.message);
+      }
+
+      // Wait briefly for configuration to take effect
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Get interfaces - try both direct property and method call
+      let interfaces = null;
+      
+      // Method 1: device.interfaces property (node-usb v2)
+      if (this.device.interfaces && this.device.interfaces.length > 0) {
+        interfaces = this.device.interfaces;
+        console.log('[USB] Using device.interfaces property, count:', interfaces.length);
+      }
+      
+      // Method 2: device.interface(n) method (older API)
+      if (!interfaces) {
+        try {
+          const iface0 = this.device.interface(0);
+          if (iface0) {
+            interfaces = [iface0];
+            console.log('[USB] Using device.interface(0) method');
+          }
+        } catch (methodErr) {
+          console.warn('[USB] device.interface(0) failed:', methodErr.message);
+        }
+      }
 
       if (!interfaces || interfaces.length === 0) {
         try { this.device.close(); } catch(e) {}
@@ -124,14 +158,13 @@ class ProcyonUsbBridge {
       }
 
       // Try to claim each interface
-      // node-usb v2: iface.id is the interface number, ep.address is endpoint address
       let claimed = false;
       for (let i = 0; i < interfaces.length; i++) {
         const iface = interfaces[i];
         const ifaceId = iface.id !== undefined ? iface.id : i;
-        console.log(`[USB] Interface ${i}: id=${ifaceId}`);
+        console.log(`[USB] Interface ${i}: id=${ifaceId}, altSetting=${iface.altSetting}`);
 
-        // Log endpoints (use ep.address, not ep.bEndpointAddress)
+        // Log endpoints
         if (iface.endpoints && iface.endpoints.length > 0) {
           for (const ep of iface.endpoints) {
             const epAddr = ep.address !== undefined ? `0x${ep.address.toString(16)}` : 'unknown';
@@ -139,17 +172,20 @@ class ProcyonUsbBridge {
           }
         }
 
+        // Try to detach kernel driver
         try {
-          // Try to detach kernel driver
-          try {
-            if (iface.isKernelDriverActive()) {
-              console.log(`[USB] Kernel driver active on interface ${i}, detaching...`);
-              iface.detachKernelDriver();
-            }
-          } catch (detachErr) {
-            console.warn(`[USB] Could not check/detach kernel driver:`, detachErr.message);
+          const driverActive = iface.isKernelDriverActive();
+          console.log(`[USB] Kernel driver active on interface ${i}: ${driverActive}`);
+          if (driverActive) {
+            iface.detachKernelDriver();
+            console.log(`[USB] Detached kernel driver on interface ${i}`);
           }
+        } catch (detachErr) {
+          console.warn(`[USB] Kernel driver check/detach failed:`, detachErr.message);
+        }
 
+        // Try claiming
+        try {
           iface.claim();
           this.iface = iface;
           this.interfaceNumber = ifaceId;
@@ -158,27 +194,38 @@ class ProcyonUsbBridge {
           break;
         } catch (claimErr) {
           console.warn(`[USB] Failed to claim interface ${i}:`, claimErr.message);
-        }
-      }
-
-      if (!claimed) {
-        // Last resort: try using device.interface() method (older API)
-        console.log('[USB] Trying legacy interface access...');
-        try {
-          this.iface = this.device.interface(0);
-          try {
-            if (this.iface.isKernelDriverActive()) {
-              this.iface.detachKernelDriver();
+          
+          // If claim failed with NOT_FOUND, try resetting the device first
+          if (claimErr.message && claimErr.message.includes('NOT_FOUND')) {
+            console.log('[USB] Attempting device reset before claim...');
+            try {
+              this.device.reset();
+              console.log('[USB] Device reset successful, waiting...');
+              await new Promise(resolve => setTimeout(resolve, 500));
+              
+              // Re-open and try again
+              try { this.device.close(); } catch(e) {}
+              this.device.open();
+              
+              // Re-get interfaces after reset
+              const resetInterfaces = this.device.interfaces || [];
+              if (resetInterfaces.length > 0) {
+                const resetIface = resetInterfaces[i] || resetInterfaces[0];
+                try {
+                  resetIface.claim();
+                  this.iface = resetIface;
+                  this.interfaceNumber = resetIface.id !== undefined ? resetIface.id : i;
+                  claimed = true;
+                  console.log('[USB] Successfully claimed interface after reset');
+                  break;
+                } catch (retryClaimErr) {
+                  console.warn('[USB] Claim after reset also failed:', retryClaimErr.message);
+                }
+              }
+            } catch (resetErr) {
+              console.warn('[USB] Device reset failed:', resetErr.message);
             }
-          } catch (e) {
-            console.warn('[USB] Kernel driver detach failed:', e.message);
           }
-          this.iface.claim();
-          claimed = true;
-          this.interfaceNumber = 0;
-          console.log('[USB] Successfully claimed interface via legacy API');
-        } catch (legacyErr) {
-          console.warn('[USB] Legacy interface claim also failed:', legacyErr.message);
         }
       }
 
