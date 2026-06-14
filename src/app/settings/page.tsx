@@ -33,8 +33,8 @@ export default function SettingsPage() {
   const [dataFormat, setDataFormat] = useState<'csv' | 'json' | 'excel'>('csv');
   const [autoSave, setAutoSave] = useState(false);
   const [saveInterval, setSaveInterval] = useState('60');
-  const [vendorId, setVendorId] = useState('0x0483');
-  const [productId, setProductId] = useState('0x5740');
+  const [vendorId, setVendorId] = useState('0x2269');
+  const [productId, setProductId] = useState('0xBEEF');
   const [timeoutValue, setTimeoutValue] = useState('5000');
   const [retryCount, setRetryCount] = useState('3');
   const [logLevel, setLogLevel] = useState<'debug' | 'info' | 'warning' | 'error'>('info');

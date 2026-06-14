@@ -17,7 +17,7 @@ import {
   Clock,
   Hash,
 } from 'lucide-react';
-import { ProcyonUSB } from '@/lib/usb/procyon';
+import { exportToCSV } from '@/lib/usb/procyon';
 
 export default function DownloadPage() {
   const { t, language } = useI18n();
@@ -56,7 +56,7 @@ export default function DownloadPage() {
   const handleExportCSV = () => {
     if (downloadedData.length === 0) return;
 
-    const csv = ProcyonUSB.exportToCSV(downloadedData);
+    const csv = exportToCSV(downloadedData);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -173,8 +173,8 @@ export default function DownloadPage() {
                   {t.download.timeRange}
                 </div>
                 <p className="text-2xl font-bold mt-1">
-                  {downloadedData.length > 0 
-                    ? `${Math.round(downloadedData[downloadedData.length - 1].timestamp - downloadedData[0].timestamp)}s`
+                  {downloadedData.length > 1 
+                    ? `${Math.round((new Date(downloadedData[downloadedData.length - 1].timestamp).getTime() - new Date(downloadedData[0].timestamp).getTime()) / 1000)}s`
                     : '0s'}
                 </p>
               </div>
@@ -230,7 +230,7 @@ export default function DownloadPage() {
                       <td className="py-2 px-3">{data.temperature.toFixed(2)}</td>
                       <td className="py-2 px-3">{data.batteryVoltage.toFixed(3)}</td>
                       <td className="py-2 px-3">{data.rpmAvgX.toFixed(2)}</td>
-                      <td className="py-2 px-3">{data.shockAvgX.toFixed(2)}</td>
+                      <td className="py-2 px-3">{data.shockLowAvgX.toFixed(4)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -203,8 +203,8 @@ export default function SystemTestPage() {
                     {getStatusIcon(result.status)}
                     <div>
                       <p className="font-medium">{result.name}</p>
-                      {result.message && (
-                        <p className="text-sm text-slate-500">{result.message}</p>
+                      {result.error && (
+                        <p className="text-sm text-slate-500">{result.error}</p>
                       )}
                     </div>
                   </div>

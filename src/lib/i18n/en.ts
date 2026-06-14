@@ -85,6 +85,16 @@ export const en: TranslationType = {
     connectionTime: 'Connection Time',
     signalStrength: 'Signal Strength',
     dataRate: 'Data Rate',
+    pleaseConnect: 'Please connect a device first',
+    notElectron: 'This feature requires the Electron desktop application. Please run with npm run electron:dev.',
+    portSettings: 'Port Settings',
+    selectPort: 'Select Port',
+    autoDetect: 'Auto Detect',
+    detectedPorts: 'Detected Ports',
+    baudRate: 'Baud Rate',
+    toolSN: 'Tool Serial Number',
+    uniqueId: 'Unique ID',
+    portPath: 'Port Path',
   },
 
   // Parameters

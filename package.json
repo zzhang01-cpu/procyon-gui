@@ -10,7 +10,9 @@
     "lint:build": "eslint . --quiet",
     "start": "bash ./scripts/start.sh",
     "ts-check": "tsc -p tsconfig.json",
-    "validate": "pnpm run --parallel '/^(ts-check|lint:build)$/'"
+    "validate": "pnpm run --parallel '/^(ts-check|lint:build)$/'",
+    "electron:dev": "bash ./scripts/electron-dev.sh",
+    "electron:build": "bash ./scripts/electron-build.sh"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",
@@ -68,7 +70,9 @@
     "tailwind-merge": "^2.6.0",
     "tw-animate-css": "^1.4.0",
     "vaul": "^1.1.2",
-    "zod": "^4.3.5"
+    "zod": "^4.3.5",
+    "serialport": "^13.0.0",
+    "usb": "^2.15.0"
   },
   "devDependencies": {
     "@react-dev-inspector/babel-plugin": "^2.0.1",
@@ -86,10 +90,35 @@
     "tailwindcss": "^4",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
-    "typescript": "^5"
+    "typescript": "^5",
+    "electron": "^37.1.0",
+    "electron-builder": "^26.0.12",
+    "wait-on": "^8.0.3"
   },
   "packageManager": "pnpm@9.0.0",
   "engines": {
     "pnpm": ">=9.0.0"
+  },
+  "main": "electron/main.js",
+  "build": {
+    "appId": "com.procyon.cm-gui",
+    "productName": "Procyon CM GUI",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**",
+      "out/**",
+      "public/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "public/logo.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
   }
 }

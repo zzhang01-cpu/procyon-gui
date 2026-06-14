@@ -5,14 +5,12 @@ import { useI18n } from '@/lib/i18n/context';
 import { useDevice } from '@/lib/device/context';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
 import {
   Usb,
   Thermometer,
   Battery,
   Cpu,
   HardDrive,
-  Activity,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -55,7 +53,7 @@ export default function DashboardPage() {
                 </div>
                 <div>
                   <p className="text-sm text-slate-500">{t.connection.deviceInfo}</p>
-                  <p className="font-medium">{deviceInfo.deviceType || 'Procyon CM'}</p>
+                  <p className="font-medium">Procyon CM</p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -64,7 +62,7 @@ export default function DashboardPage() {
                 </div>
                 <div>
                   <p className="text-sm text-slate-500">{t.connection.batteryVoltage}</p>
-                  <p className="font-medium">{deviceInfo.batteryVoltage.toFixed(2)} V</p>
+                  <p className="font-medium">{deviceInfo.batteryVoltage?.toFixed(2) ?? '-'} V</p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -73,7 +71,7 @@ export default function DashboardPage() {
                 </div>
                 <div>
                   <p className="text-sm text-slate-500">{t.connection.temperature}</p>
-                  <p className="font-medium">{deviceInfo.temperature.toFixed(1)} °C</p>
+                  <p className="font-medium">{deviceInfo.temperature?.toFixed(1) ?? '-'} °C</p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -106,7 +104,7 @@ export default function DashboardPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-2xl font-bold">{deviceInfo?.serialNumber || 'N/A'}</p>
+              <p className="text-2xl font-bold">{deviceInfo?.toolSN || deviceInfo?.serialNumber || 'N/A'}</p>
             </CardContent>
           </Card>
 
@@ -132,7 +130,7 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent>
               <p className="text-2xl font-bold">
-                {deviceInfo ? `0x${deviceInfo.vendorId.toString(16).toUpperCase()}:0x${deviceInfo.productId.toString(16).toUpperCase()}` : 'N/A'}
+                0x2269:0xBEEF
               </p>
             </CardContent>
           </Card>

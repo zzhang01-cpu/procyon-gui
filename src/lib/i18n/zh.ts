@@ -83,6 +83,16 @@ export const zh = {
     connectionTime: '连接时间',
     signalStrength: '信号强度',
     dataRate: '数据速率',
+    pleaseConnect: '请先连接设备',
+    notElectron: '此功能需要在 Electron 桌面应用中使用。请使用 npm run electron:dev 运行桌面版。',
+    portSettings: '连接设置',
+    selectPort: '选择端口',
+    autoDetect: '自动检测',
+    detectedPorts: '检测到的设备',
+    baudRate: '波特率',
+    toolSN: '工具序列号',
+    uniqueId: '唯一标识',
+    portPath: '端口路径',
   },
 
   // 参数设置
