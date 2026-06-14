@@ -124,18 +124,20 @@ class ProcyonUsbBridge {
       }
 
       // Try to claim each interface
+      // node-usb v2: iface.id is the interface number, ep.address is endpoint address
       let claimed = false;
       for (let i = 0; i < interfaces.length; i++) {
         const iface = interfaces[i];
-        console.log(`[USB] Interface ${i}:`, JSON.stringify({
-          interfaceNumber: iface.interfaceNumber,
-          altSetting: iface.altSetting,
-          endpoints: iface.endpoints ? iface.endpoints.map(e => ({
-            address: '0x' + e.bEndpointAddress.toString(16),
-            direction: e.direction,
-            transferType: e.transferType
-          })) : 'unknown'
-        }));
+        const ifaceId = iface.id !== undefined ? iface.id : i;
+        console.log(`[USB] Interface ${i}: id=${ifaceId}`);
+
+        // Log endpoints (use ep.address, not ep.bEndpointAddress)
+        if (iface.endpoints && iface.endpoints.length > 0) {
+          for (const ep of iface.endpoints) {
+            const epAddr = ep.address !== undefined ? `0x${ep.address.toString(16)}` : 'unknown';
+            console.log(`[USB]   Endpoint: address=${epAddr} direction=${ep.direction} type=${ep.transferType}`);
+          }
+        }
 
         try {
           // Try to detach kernel driver
@@ -150,9 +152,9 @@ class ProcyonUsbBridge {
 
           iface.claim();
           this.iface = iface;
-          this.interfaceNumber = iface.interfaceNumber || i;
+          this.interfaceNumber = ifaceId;
           claimed = true;
-          console.log(`[USB] Successfully claimed interface ${i}`);
+          console.log(`[USB] Successfully claimed interface ${i} (id=${ifaceId})`);
           break;
         } catch (claimErr) {
           console.warn(`[USB] Failed to claim interface ${i}:`, claimErr.message);
@@ -173,6 +175,7 @@ class ProcyonUsbBridge {
           }
           this.iface.claim();
           claimed = true;
+          this.interfaceNumber = 0;
           console.log('[USB] Successfully claimed interface via legacy API');
         } catch (legacyErr) {
           console.warn('[USB] Legacy interface claim also failed:', legacyErr.message);
@@ -188,12 +191,13 @@ class ProcyonUsbBridge {
         };
       }
 
-      // Find endpoints from the claimed interface
+      // Find endpoints from the claimed interface (node-usb v2: use ep.address)
       const endpointList = this.iface.endpoints || [];
       console.log('[USB] Endpoints found:', endpointList.length);
 
       for (const ep of endpointList) {
-        console.log(`[USB] Endpoint: address=0x${ep.bEndpointAddress.toString(16)} direction=${ep.direction} type=${ep.transferType}`);
+        const epAddr = ep.address !== undefined ? `0x${ep.address.toString(16)}` : 'unknown';
+        console.log(`[USB] Endpoint: address=${epAddr} direction=${ep.direction} type=${ep.transferType}`);
         if (ep.direction === 'in') {
           this.inEndpoint = ep;
         } else if (ep.direction === 'out') {
@@ -776,18 +780,30 @@ class ProcyonUsbBridge {
             const ifaces = d.interfaces;
             if (ifaces && ifaces.length > 0) {
               for (const iface of ifaces) {
+                const ifaceId = iface.id !== undefined ? iface.id : 'unknown';
                 const ifaceInfo = {
-                  interfaceNumber: iface.interfaceNumber,
+                  id: ifaceId,
                   altSetting: iface.altSetting,
-                  endpoints: (iface.endpoints || []).map(ep => ({
-                    address: `0x${ep.bEndpointAddress.toString(16)}`,
-                    direction: ep.direction,
-                    transferType: ep.transferType,
-                  })),
+                  endpoints: [],
                   canClaim: false,
                   claimError: null,
                   kernelDriverActive: false,
                 };
+
+                // Safely get endpoint info
+                try {
+                  if (iface.endpoints && iface.endpoints.length > 0) {
+                    for (const ep of iface.endpoints) {
+                      ifaceInfo.endpoints.push({
+                        address: ep.address !== undefined ? `0x${ep.address.toString(16)}` : 'unknown',
+                        direction: ep.direction || 'unknown',
+                        transferType: ep.transferType !== undefined ? ep.transferType : 'unknown',
+                      });
+                    }
+                  }
+                } catch (epErr) {
+                  ifaceInfo.endpoints = `error: ${epErr.message}`;
+                }
 
                 // Check kernel driver
                 try {
