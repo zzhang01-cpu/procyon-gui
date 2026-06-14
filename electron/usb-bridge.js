@@ -502,4 +502,4 @@ class ProcyonUsbBridge {
 }
 
 const bridge = new ProcyonUsbBridge();
-module.exports = bridge;
+module.exports = { bridge, PROCYON_VID, PROCYON_PID };
