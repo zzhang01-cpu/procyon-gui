@@ -2,9 +2,9 @@
 
 import { useDevice } from '@/lib/device/context';
 import { useI18n } from '@/lib/i18n/context';
-import { isElectron } from '@/lib/usb/procyon';
-import { AlertCircle, CheckCircle2, Loader2, RefreshCw, Usb } from 'lucide-react';
-import { useEffect } from 'react';
+import { isElectron, diagnoseUsb } from '@/lib/usb/procyon';
+import { AlertCircle, CheckCircle2, Loader2, RefreshCw, Usb, Stethoscope } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 export default function ConnectionPage() {
   const { t } = useI18n();
@@ -27,6 +27,25 @@ export default function ConnectionPage() {
   }, [refreshDevices]);
 
   const electronAvailable = isElectron();
+  const [diagResult, setDiagResult] = useState<string | null>(null);
+  const [diagnosing, setDiagnosing] = useState(false);
+
+  const runDiagnose = async () => {
+    setDiagnosing(true);
+    try {
+      const result = await diagnoseUsb();
+      const lines = [
+        `Total USB devices: ${result.totalDevices}`,
+        ...result.devices.map(d =>
+          `${d.isProcyon ? '[PROCYON] ' : ''}VID:${d.vendorId} PID:${d.productId} Addr:${d.deviceAddress} Configs:${d.numConfigurations}`
+        ),
+      ];
+      setDiagResult(lines.join('\n'));
+    } catch (err) {
+      setDiagResult(`Diagnose failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    setDiagnosing(false);
+  };
 
   return (
     <div className="space-y-6">
@@ -105,15 +124,29 @@ export default function ConnectionPage() {
             <Usb className="h-5 w-5 text-slate-400" />
             <h2 className="text-lg font-medium text-slate-900">{t.connection.usbDevice}</h2>
           </div>
-          <button
-            onClick={refreshDevices}
-            disabled={!electronAvailable}
-            className="px-3 py-2 border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-50 flex items-center gap-2 text-sm"
-          >
-            <RefreshCw className="h-4 w-4" />
-            {t.connection.scanDevices}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={runDiagnose}
+              disabled={!electronAvailable || diagnosing}
+              className="px-3 py-2 border border-amber-300 text-amber-700 rounded-md hover:bg-amber-50 disabled:opacity-50 flex items-center gap-2 text-sm"
+            >
+              {diagnosing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
+              Diagnose
+            </button>
+            <button
+              onClick={refreshDevices}
+              disabled={!electronAvailable}
+              className="px-3 py-2 border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-50 flex items-center gap-2 text-sm"
+            >
+              <RefreshCw className="h-4 w-4" />
+              {t.connection.scanDevices}
+            </button>
+          </div>
         </div>
+
+        {diagResult && (
+          <pre className="text-xs bg-slate-900 text-green-400 p-3 rounded-lg mb-4 overflow-x-auto font-mono whitespace-pre-wrap">{diagResult}</pre>
+        )}
 
         {!electronAvailable ? (
           <p className="text-sm text-slate-500">{t.connection.notElectron}</p>

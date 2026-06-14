@@ -108,29 +108,57 @@ class ProcyonUsbBridge {
       // Open device
       this.device.open();
 
-      // Claim interface - try interface 0 first, then 1
+      // Log device info for debugging
       const desc = this.device.deviceDescriptor;
-      const numInterfaces = desc.bNumConfigurations > 0 
-        ? this.device.configDescriptor.interfaces.length 
-        : 1;
-      
+      const configDesc = this.device.configDescriptor;
+      console.log('[USB] Device opened. Configurations:', desc.bNumConfigurations);
+      console.log('[USB] Number of interfaces:', configDesc.interfaces.length);
+      for (let i = 0; i < configDesc.interfaces.length; i++) {
+        const ifaceInfo = configDesc.interfaces[i];
+        console.log(`[USB] Interface ${i}:`, JSON.stringify({
+          altSettings: ifaceInfo.length,
+          endpoints: ifaceInfo[0]?.endpoints?.map(e => ({
+            address: '0x' + e.bEndpointAddress.toString(16),
+            direction: e.direction,
+            transferType: e.transferType
+          }))
+        }));
+      }
+
+      // Claim interface - try each interface with kernel driver detach
       let claimedInterface = -1;
-      for (let i = 0; i < numInterfaces; i++) {
+      for (let i = 0; i < configDesc.interfaces.length; i++) {
         try {
           this.iface = this.device.interface(i);
+          
+          // On Windows/Linux, detach kernel driver if active
+          try {
+            if (this.iface.isKernelDriverActive()) {
+              console.log(`[USB] Kernel driver active on interface ${i}, detaching...`);
+              this.iface.detachKernelDriver();
+            }
+          } catch (detachErr) {
+            console.warn(`[USB] Could not detach kernel driver on interface ${i}:`, detachErr.message);
+          }
+          
           this.iface.claim();
           claimedInterface = i;
           this.interfaceNumber = i;
+          console.log(`[USB] Successfully claimed interface ${i}`);
           break;
         } catch (e) {
-          console.warn(`Failed to claim interface ${i}:`, e.message);
+          console.warn(`[USB] Failed to claim interface ${i}:`, e.message);
         }
       }
 
       if (claimedInterface === -1) {
-        this.device.close();
+        // Try: close and re-open with reset
+        try { this.device.close(); } catch(e) {}
         this.device = null;
-        return { success: false, error: 'Failed to claim USB interface. Is WinUSB driver installed? Try Zadig.' };
+        return { 
+          success: false, 
+          error: 'Failed to claim USB interface.\n\nPlease verify:\n1. Open Zadig → Options → List All Devices\n2. Select "Procyon-CM" from dropdown\n3. Make sure the driver shows "WinUSB" (not CDC or other)\n4. Click "Replace Driver"\n5. Unplug and replug the USB cable, then try again' 
+        };
       }
 
       // Find endpoints

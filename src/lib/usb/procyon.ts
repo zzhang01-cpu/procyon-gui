@@ -87,6 +87,39 @@ export async function listDevices(): Promise<UsbDeviceInfo[]> {
 }
 
 /**
+ * Diagnose USB - list ALL connected devices for debugging
+ */
+export async function diagnoseUsb(): Promise<{
+  success: boolean;
+  totalDevices: number;
+  devices: Array<{
+    vendorId: string;
+    productId: string;
+    deviceAddress: number;
+    isProcyon: boolean;
+    numConfigurations: number;
+  }>;
+  error?: string;
+}> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.diagnose() as Promise<{
+    success: boolean;
+    totalDevices: number;
+    devices: Array<{
+      vendorId: string;
+      productId: string;
+      deviceAddress: number;
+      isProcyon: boolean;
+      numConfigurations: number;
+    }>;
+    error?: string;
+  }>;
+}
+
+/**
  * Connect to device via USB
  */
 export async function connectToDevice(): Promise<{ success: boolean; error?: string }> {

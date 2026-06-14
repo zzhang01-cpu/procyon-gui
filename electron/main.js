@@ -124,6 +124,30 @@ function initUsbBridge() {
     return usbBridge.initializeLogger(config);
   });
 
+  // Diagnose USB - list ALL devices and driver info
+  ipcMain.handle('usb:diagnose', async () => {
+    try {
+      const usb = require('usb');
+      const allDevices = usb.getDeviceList();
+      return {
+        success: true,
+        totalDevices: allDevices.length,
+        devices: allDevices.map(d => {
+          const desc = d.deviceDescriptor;
+          return {
+            vendorId: '0x' + desc.idVendor.toString(16).padStart(4, '0'),
+            productId: '0x' + desc.idProduct.toString(16).padStart(4, '0'),
+            deviceAddress: d.deviceAddress,
+            isProcyon: desc.idVendor === 0x2269 && desc.idProduct === 0xBEEF,
+            numConfigurations: desc.bNumConfigurations,
+          };
+        }),
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
   // Get connection status
   ipcMain.handle('device:is-connected', async () => {
     return usbBridge.isConnected();

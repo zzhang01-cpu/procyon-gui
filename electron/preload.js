@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listDevices: () => ipcRenderer.invoke('usb:list-devices'),
   connect: () => ipcRenderer.invoke('usb:connect'),
   disconnect: () => ipcRenderer.invoke('usb:disconnect'),
+  diagnose: () => ipcRenderer.invoke('usb:diagnose'),
 
   // Device info
   getDeviceInfo: () => ipcRenderer.invoke('device:get-info'),
