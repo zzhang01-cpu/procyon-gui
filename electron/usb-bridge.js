@@ -64,7 +64,7 @@ class ProcyonUsbBridge {
       return devices
         .filter(d => {
           const desc = d.deviceDescriptor;
-          return desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
+          return desc && desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
         })
         .map(d => {
           const desc = d.deviceDescriptor;
@@ -93,7 +93,7 @@ class ProcyonUsbBridge {
       // Find Procyon device
       this.device = usb.getDeviceList().find(d => {
         const desc = d.deviceDescriptor;
-        return desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
+        return desc && desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
       });
 
       if (!this.device) {
@@ -696,18 +696,58 @@ class ProcyonUsbBridge {
         totalDevices: devices.length,
         devices: [],
         procyonDetail: null,
+        rawDebug: [],
       };
 
       for (const d of devices) {
-        const desc = d.deviceDescriptor;
-        const isProcyon = desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
+        // node-usb v2: try multiple ways to get VID/PID
+        let vid, pid, addr;
+        try {
+          // Method 1: deviceDescriptor (standard v2)
+          const desc = d.deviceDescriptor;
+          if (desc) {
+            vid = desc.idVendor;
+            pid = desc.idProduct;
+          }
+        } catch(e) {}
+        
+        try {
+          // Method 2: direct properties (v1 compat)
+          if (vid === undefined) vid = d.vendorId;
+          if (pid === undefined) pid = d.productId;
+        } catch(e) {}
+        
+        try {
+          // Method 3: busNumber/deviceAddress
+          if (vid === undefined && d.deviceDescriptor) {
+            const desc = d.deviceDescriptor;
+            vid = desc.idVendor || desc.bDeviceClass;
+          }
+        } catch(e) {}
+
+        try { addr = d.deviceAddress; } catch(e) {}
+        
+        const isProcyon = vid === PROCYON_VID && pid === PROCYON_PID;
         const info = {
-          vid: `0x${desc.idVendor.toString(16).padStart(4, '0')}`,
-          pid: `0x${desc.idProduct.toString(16).padStart(4, '0')}`,
-          address: d.deviceAddress,
+          vid: vid !== undefined ? `0x${vid.toString(16).padStart(4, '0')}` : 'undefined',
+          pid: pid !== undefined ? `0x${pid.toString(16).padStart(4, '0')}` : 'undefined',
+          address: addr !== undefined ? addr : 'undefined',
           isProcyon,
         };
         result.devices.push(info);
+
+        // Debug: log raw device object keys for first device
+        if (result.rawDebug.length < 2) {
+          result.rawDebug.push({
+            keys: Object.keys(d).join(', '),
+            hasDeviceDescriptor: !!d.deviceDescriptor,
+            descriptorKeys: d.deviceDescriptor ? Object.keys(d.deviceDescriptor).join(', ') : 'none',
+            vendorId_prop: d.vendorId,
+            productId_prop: d.productId,
+            deviceAddress_prop: d.deviceAddress,
+            busNumber_prop: d.busNumber,
+          });
+        }
 
         if (isProcyon) {
           const procyonDetail = {
@@ -715,6 +755,7 @@ class ProcyonUsbBridge {
             canOpen: false,
             openError: null,
             interfaces: [],
+            interfacesDebug: null,
           };
 
           // Try to open and check interfaces
@@ -722,7 +763,16 @@ class ProcyonUsbBridge {
             d.open();
             procyonDetail.canOpen = true;
 
-            // Check interfaces from device.interfaces
+            // Debug: check what's available after open
+            procyonDetail.interfacesDebug = {
+              hasInterfaces: !!d.interfaces,
+              interfacesType: typeof d.interfaces,
+              interfacesLength: d.interfaces ? d.interfaces.length : 'N/A',
+              hasInterfaceMethod: typeof d.interface === 'function',
+              deviceKeysAfterOpen: Object.keys(d).join(', '),
+            };
+
+            // Try device.interfaces array (v2)
             const ifaces = d.interfaces;
             if (ifaces && ifaces.length > 0) {
               for (const iface of ifaces) {
