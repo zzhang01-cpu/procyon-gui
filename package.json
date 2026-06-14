@@ -12,6 +12,7 @@
     "ts-check": "tsc -p tsconfig.json",
     "validate": "pnpm run --parallel '/^(ts-check|lint:build)$/'",
     "electron:dev": "bash ./scripts/electron-dev.sh",
+    "electron:dev:win": "scripts\\electron-dev.bat",
     "electron:build": "bash ./scripts/electron-build.sh"
   },
   "dependencies": {
