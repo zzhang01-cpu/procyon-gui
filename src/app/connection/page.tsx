@@ -22,8 +22,8 @@ import { ProcyonUSB } from '@/lib/usb/procyon';
 export default function ConnectionPage() {
   const { t, language } = useI18n();
   const { connected, connecting, deviceInfo, connect, disconnect } = useDevice();
-  const [vid, setVid] = useState('0x0483');
-  const [pid, setPid] = useState('0x5740');
+  const [vid, setVid] = useState('0x2269');
+  const [pid, setPid] = useState('0xBEEF');
   const [usbSupported] = useState(ProcyonUSB.isSupported());
 
   return (

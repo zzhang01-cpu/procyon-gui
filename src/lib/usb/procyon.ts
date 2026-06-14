@@ -7,9 +7,9 @@
 
 // USB Device Configuration
 export const USB_CONFIG = {
-  // Default VID/PID (to be configured based on actual device)
-  VENDOR_ID: 0x0483,      // STMicroelectronics (default)
-  PRODUCT_ID: 0x5740,     // STM32 Virtual COM Port (default)
+  // Procyon CM device VID/PID
+  VENDOR_ID: 0x2269,      // Procyon VID
+  PRODUCT_ID: 0xBEEF,     // Procyon PID
   
   // USB Endpoints
   READ_ENDPOINT: 0x81,    // EP1 IN
@@ -155,7 +155,8 @@ export class ProcyonUSB {
 
   /**
    * Request and connect to USB device
-   * If vid/pid are default (0x0483/0x5740), also try without filter to list all devices
+   * Uses VID/PID filter for Procyon device (0x2269/0xBEEF)
+   * Falls back to no filter if user needs to select a different device
    */
   async connect(): Promise<boolean> {
     if (!ProcyonUSB.isSupported()) {
@@ -168,11 +169,22 @@ export class ProcyonUSB {
         throw new Error('Web USB is not available');
       }
 
-      // Always request without filter first so user can see ALL USB devices
-      // This avoids the issue of VID/PID mismatch hiding the actual device
-      this.device = await navigator.usb.requestDevice({
-        filters: [],
-      });
+      // Try with Procyon VID/PID filter first
+      try {
+        this.device = await navigator.usb.requestDevice({
+          filters: [
+            { vendorId: this.vendorId, productId: this.productId },
+          ],
+        });
+      } catch (filterError) {
+        // If no matching device found, retry without filter to show all devices
+        if (filterError instanceof Error && filterError.message.includes('No device selected')) {
+          throw filterError; // User cancelled, don't retry
+        }
+        this.device = await navigator.usb.requestDevice({
+          filters: [],
+        });
+      }
 
       // Update VID/PID from the selected device
       if (this.device) {
