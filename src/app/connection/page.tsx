@@ -34,26 +34,8 @@ export default function ConnectionPage() {
     setDiagnosing(true);
     try {
       const result = await diagnoseUsb();
-      const lines = [
-        `Total USB devices: ${result.totalDevices}`,
-        ...result.devices.map(d =>
-          `${d.isProcyon ? '[PROCYON] ' : ''}VID:${d.vendorId} PID:${d.productId} Addr:${d.deviceAddress}`
-        ),
-      ];
-      if (result.procyonDetail) {
-        const p = result.procyonDetail;
-        lines.push('');
-        lines.push('=== Procyon Device Detail ===');
-        lines.push(`Interfaces: ${p.numInterfaces}`);
-        for (const iface of p.interfaces) {
-          lines.push(`  Interface ${iface.interfaceNumber}: class=0x${(iface.interfaceClass || 0).toString(16)}, endpoints: ${iface.endpoints.map(e => `${e.address}(${e.direction}/${e.transferType})`).join(', ')}`);
-        }
-        lines.push(`Can open: ${p.canOpen}${p.openError ? ' - ' + p.openError : ''}`);
-        lines.push(`Can claim: ${p.canClaim}${p.claimError ? ' - ' + p.claimError : ''}`);
-      } else {
-        lines.push('Procyon device not found!');
-      }
-      setDiagResult(lines.join('\n'));
+      // Display raw JSON so we don't lose any diagnostic data
+      setDiagResult(JSON.stringify(result, null, 2));
     } catch (err) {
       setDiagResult(`Diagnose failed: ${err instanceof Error ? err.message : String(err)}`);
     }

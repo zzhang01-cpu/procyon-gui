@@ -89,72 +89,12 @@ export async function listDevices(): Promise<UsbDeviceInfo[]> {
 /**
  * Diagnose USB - list ALL connected devices for debugging
  */
-export async function diagnoseUsb(): Promise<{
-  success: boolean;
-  totalDevices: number;
-  devices: Array<{
-    vendorId: string;
-    productId: string;
-    deviceAddress: number;
-    isProcyon: boolean;
-  }>;
-  procyonDetail?: {
-    vendorId: string;
-    productId: string;
-    deviceAddress: number;
-    numConfigurations: number;
-    numInterfaces: number;
-    interfaces: Array<{
-      interfaceNumber: number;
-      interfaceClass?: number;
-      endpoints: Array<{
-        address: string;
-        direction: string;
-        transferType: string;
-      }>;
-    }>;
-    canOpen: boolean;
-    openError: string;
-    canClaim: boolean;
-    claimError: string;
-  };
-  error?: string;
-}> {
+export async function diagnoseUsb(): Promise<Record<string, unknown>> {
   const api = getAPI();
   if (!api) {
     throw new Error('Not running in Electron environment');
   }
-  return api.diagnose() as Promise<{
-    success: boolean;
-    totalDevices: number;
-    devices: Array<{
-      vendorId: string;
-      productId: string;
-      deviceAddress: number;
-      isProcyon: boolean;
-    }>;
-    procyonDetail?: {
-      vendorId: string;
-      productId: string;
-      deviceAddress: number;
-      numConfigurations: number;
-      numInterfaces: number;
-      interfaces: Array<{
-        interfaceNumber: number;
-        interfaceClass?: number;
-        endpoints: Array<{
-          address: string;
-          direction: string;
-          transferType: string;
-        }>;
-      }>;
-      canOpen: boolean;
-      openError: string;
-      canClaim: boolean;
-      claimError: string;
-    };
-    error?: string;
-  }>;
+  return api.diagnose() as Promise<Record<string, unknown>>;
 }
 
 /**
