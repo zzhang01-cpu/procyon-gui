@@ -3,16 +3,6 @@ const usb = require('usb');
 const PROCYON_VID = 0x2269;
 const PROCYON_PID = 0xBEEF;
 
-// On Windows, try UsbDK backend first as it handles claimInterface better than WinUSB
-if (process.platform === 'win32') {
-  try {
-    usb.useUsbDkBackend();
-    console.log('[USB] Using UsbDK backend on Windows');
-  } catch (e) {
-    console.log('[USB] UsbDK backend not available, using default backend:', e.message);
-  }
-}
-
 class ProcyonUsbBridge {
   constructor() {
     this.device = null;
@@ -109,42 +99,35 @@ class ProcyonUsbBridge {
       }
 
       // Claim the interface
+      let claimSuccess = false;
       try {
         iface.claim();
         console.log('[USB] Successfully claimed interface 0');
+        claimSuccess = true;
       } catch (claimErr) {
         console.error('[USB] Failed to claim interface:', claimErr.message);
 
-        // On Windows, LIBUSB_ERROR_NOT_FOUND can occur if the WinUSB driver
-        // is not properly bound to the interface. Try alternative approaches.
-
-        // Approach 1: Try with iface = device.interfaces[0] if we used interface(0) before
-        if (device.interfaces && device.interfaces.length > 0 && iface !== device.interfaces[0]) {
-          console.log('[USB] Trying device.interfaces[0] instead...');
-          try {
-            iface = device.interfaces[0];
-            iface.claim();
-            console.log('[USB] Claimed via device.interfaces[0]');
-          } catch (retryErr) {
-            console.error('[USB] Retry claim also failed:', retryErr.message);
-            try { device.close(); } catch(e) {}
-            this.device = null;
-            return {
-              success: false,
-              error: `Failed to claim USB interface (${claimErr.message}).\n\nThis usually means the WinUSB driver is not properly installed.\n\nPlease follow these steps:\n1. Open Zadig\n2. Select Procyon-CM from dropdown\n3. Make sure driver is set to "WinUSB"\n4. Click "Replace Driver" or "Reinstall WCID Driver"\n5. Unplug and replug the USB cable\n6. Try again`
-            };
-          }
+        // On Windows with WinUSB, claimInterface can return LIBUSB_ERROR_NOT_FOUND
+        // even though WinUSB has already claimed the interface when the device was opened.
+        // In this case, we can try to use the endpoints directly without claiming.
+        
+        if (claimErr.message && claimErr.message.includes('NOT_FOUND')) {
+          console.log('[USB] LIBUSB_ERROR_NOT_FOUND - this is common on Windows with WinUSB');
+          console.log('[USB] Will attempt to use endpoints directly without explicit claim');
+          // Don't close the device - try to continue without claim
+          claimSuccess = false;
         } else {
           try { device.close(); } catch(e) {}
           this.device = null;
           return {
             success: false,
-            error: `Failed to claim USB interface (${claimErr.message}).\n\nThis usually means the WinUSB driver is not properly installed.\n\nPlease follow these steps:\n1. Open Zadig\n2. Select Procyon-CM from dropdown\n3. Make sure driver is set to "WinUSB"\n4. Click "Replace Driver" or "Reinstall WCID Driver"\n5. Unplug and replug the USB cable\n6. Try again`
+            error: `Failed to claim USB interface (${claimErr.message}).`
           };
         }
       }
 
       this.iface = iface;
+      this.claimSuccess = claimSuccess;
 
       // Find endpoints
       const endpoints = iface.endpoints || [];
@@ -162,7 +145,9 @@ class ProcyonUsbBridge {
       }
 
       if (!this.inEndpoint || !this.outEndpoint) {
-        this.iface.release(false, () => {});
+        if (this.claimSuccess) {
+          try { this.iface.release(false, () => {}); } catch(e) {}
+        }
         try { this.device.close(); } catch(e) {}
         this.device = null;
         return { 
@@ -172,13 +157,28 @@ class ProcyonUsbBridge {
       }
 
       // Start listening for incoming data
-      this.inEndpoint.startPoll();
-      this.inEndpoint.on('data', (data) => {
-        this.handleData(data);
-      });
-      this.inEndpoint.on('error', (err) => {
-        console.error('USB IN endpoint error:', err);
-      });
+      try {
+        this.inEndpoint.startPoll();
+        this.inEndpoint.on('data', (data) => {
+          this.handleData(data);
+        });
+        this.inEndpoint.on('error', (err) => {
+          console.error('USB IN endpoint error:', err);
+        });
+      } catch (pollErr) {
+        console.error('[USB] Failed to start polling:', pollErr.message);
+        if (this.claimSuccess) {
+          try { this.iface.release(false, () => {}); } catch(e) {}
+        }
+        try { this.device.close(); } catch(e) {}
+        this.device = null;
+        this.inEndpoint = null;
+        this.outEndpoint = null;
+        return {
+          success: false,
+          error: `Failed to start USB data polling: ${pollErr.message}. The WinUSB driver may not be properly bound to the device interface.`
+        };
+      }
 
       this.connected = true;
       console.log('[USB] Connection established successfully');
@@ -214,14 +214,15 @@ class ProcyonUsbBridge {
         this.inEndpoint = null;
       }
 
-      if (this.iface) {
+      if (this.iface && this.claimSuccess) {
         try {
           this.iface.release(false, () => {});
         } catch (e) {
           // Ignore
         }
-        this.iface = null;
       }
+      this.iface = null;
+      this.claimSuccess = false;
 
       if (this.device) {
         try {
