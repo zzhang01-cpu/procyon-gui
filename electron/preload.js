@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Device info
   getDeviceInfo: () => ipcRenderer.invoke('device:get-info'),
+  refreshDeviceInfo: () => ipcRenderer.invoke('device:refresh-info'),
   isConnected: () => ipcRenderer.invoke('device:is-connected'),
 
   // Parameter commands

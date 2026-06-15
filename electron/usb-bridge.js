@@ -3,6 +3,49 @@ const usb = require('usb');
 const PROCYON_VID = 0x2269;
 const PROCYON_PID = 0xBEEF;
 
+// USB Endpoints
+const EP_OUT = 0x01;
+const EP_IN = 0x81;
+
+// Command definitions (Procyon CM protocol)
+const CMD = {
+  GET_FIRMWARE_VERSION:     0x01,
+  GET_BATTERY_VOLTAGE:      0x02,
+  GET_TEMPERATURE:          0x03,
+  GET_TOOL_SN:              0x04,
+  SET_TOOL_SN:              0x05,
+  GET_RUN_ID:               0x06,
+  SET_RUN_ID:               0x07,
+  GET_CUSTOMER:             0x08,
+  SET_CUSTOMER:             0x09,
+  GET_DISTRICT:             0x0A,
+  SET_DISTRICT:             0x0B,
+  GET_COUNTRY:              0x0C,
+  SET_COUNTRY:              0x0D,
+  GET_DEPTH_OUT:            0x0E,
+  SET_DEPTH_OUT:            0x0F,
+  GET_UNIQUE_ID:            0x10,
+  GET_MEMORY_PARTITIONS:    0x11,
+  GET_MEMORY_DUMP_CHUNK:    0x12,
+  ERASE_MEMORY:             0x13,
+  GET_MEMORY_ERASE_PERCENT: 0x14,
+  RUN_SELF_TEST:            0x15,
+  INITIALIZE_LOGGER:        0x16,
+};
+
+const RESPONSE_HEADER = 0xA5;
+const DATA_HEADER = 0xA0;
+const PACKET_SIZE = 64;
+
+/**
+ * Procyon USB Bridge for Electron main process
+ * 
+ * On Windows with WinUSB driver:
+ * - WinUSB automatically claims the interface when the device is opened
+ * - libusb_claim_interface() returns LIBUSB_ERROR_NOT_FOUND (expected)
+ * - We skip the claim step and use endpoints directly
+ * - This is the same approach LibUsbDotNet uses on Windows
+ */
 class ProcyonUsbBridge {
   constructor() {
     this.device = null;
@@ -12,6 +55,9 @@ class ProcyonUsbBridge {
     this.outEndpoint = null;
     this.receiveBuffer = Buffer.alloc(0);
     this.dataCallback = null;
+    this.ifaceClaimed = false;
+    this.pendingResponse = null;
+    this.responseResolve = null;
   }
 
   /**
@@ -32,13 +78,58 @@ class ProcyonUsbBridge {
         };
       });
     } catch (error) {
-      console.error('Failed to list USB devices:', error);
+      console.error('[USB] Failed to list devices:', error);
       return [];
     }
   }
 
   /**
-   * Connect to Procyon device via USB using WebUSB-like API
+   * Get interface from device - try both APIs
+   */
+  _getInterface(device) {
+    // Method 1: device.interface(n) - standard node-usb API
+    try {
+      const iface = device.interface(0);
+      if (iface) {
+        console.log('[USB] Got interface via device.interface(0)');
+        return iface;
+      }
+    } catch (err) {
+      console.log('[USB] device.interface(0) failed:', err.message);
+    }
+
+    // Method 2: device.interfaces[n] - alternative property access
+    if (device.interfaces && device.interfaces.length > 0) {
+      console.log('[USB] Got interface via device.interfaces[0]');
+      return device.interfaces[0];
+    }
+
+    return null;
+  }
+
+  /**
+   * Get endpoint from interface by direction
+   */
+  _getEndpoint(iface, direction) {
+    if (!iface || !iface.endpoints) return null;
+    
+    for (const ep of iface.endpoints) {
+      if (ep.direction === direction) {
+        return ep;
+      }
+    }
+    
+    // Try by endpoint address as fallback
+    for (const ep of iface.endpoints) {
+      const addr = ep.address || ep.bEndpointAddress;
+      if (direction === 'out' && (addr === EP_OUT || addr === 0x01)) return ep;
+      if (direction === 'in' && (addr === EP_IN || addr === 0x81)) return ep;
+    }
+    return null;
+  }
+
+  /**
+   * Connect to Procyon device
    */
   async connect() {
     try {
@@ -46,289 +137,137 @@ class ProcyonUsbBridge {
         await this.disconnect();
       }
 
-      // Use usb.findByIds for direct device lookup
+      // Find device
       const device = usb.findByIds(PROCYON_VID, PROCYON_PID);
       if (!device) {
         return { success: false, error: 'Procyon device not found. Please check USB connection.' };
       }
 
-      console.log('[USB] Found Procyon device, attempting to open...');
+      console.log('[USB] Found Procyon device, opening...');
 
-      // Open device - this must succeed before anything else
+      // Open device
       try {
         device.open();
         console.log('[USB] Device opened successfully');
+        
+        // On Windows, try to set auto-detach kernel driver
+        // This helps with WinUSB driver compatibility
+        try {
+          device.setAutoDetachKernelDriver(true);
+          console.log('[USB] Auto-detach kernel driver enabled');
+        } catch (autoDetachErr) {
+          console.log('[USB] Auto-detach not supported:', autoDetachErr.message);
+        }
       } catch (openErr) {
         console.error('[USB] Failed to open device:', openErr.message);
-        return { success: false, error: `Failed to open USB device: ${openErr.message}` };
+        return { 
+          success: false, 
+          error: `Failed to open USB device: ${openErr.message}. Make sure no other software is using the device.` 
+        };
       }
 
       this.device = device;
 
-      // Get interface using device.interface(n) method
-      // This is the standard node-usb API that works on Windows with WinUSB
-      let iface = null;
-      try {
-        iface = device.interface(0);
-        console.log('[USB] Got interface 0 via device.interface(0)');
-      } catch (ifaceErr) {
-        console.error('[USB] device.interface(0) failed:', ifaceErr.message);
-        // Fallback: try device.interfaces property
-        if (device.interfaces && device.interfaces.length > 0) {
-          iface = device.interfaces[0];
-          console.log('[USB] Got interface 0 via device.interfaces[0]');
-        }
-      }
-
+      // Get interface
+      const iface = this._getInterface(device);
       if (!iface) {
         try { device.close(); } catch(e) {}
         this.device = null;
         return { success: false, error: 'No USB interface found on device' };
       }
 
-      // Try to detach kernel driver if active
-      try {
-        if (iface.isKernelDriverActive()) {
-          console.log('[USB] Kernel driver is active, detaching...');
-          iface.detachKernelDriver();
-          console.log('[USB] Kernel driver detached');
-        }
-      } catch (detachErr) {
-        // NOT_SUPPORTED is expected on Windows with WinUSB - this is OK
-        console.log('[USB] Kernel driver check result:', detachErr.message);
-      }
+      this.iface = iface;
 
-      // Claim the interface
-      let claimSuccess = false;
+      // Try to claim the interface
+      // On Windows + WinUSB, claim may fail with LIBUSB_ERROR_NOT_FOUND
+      // This is EXPECTED because WinUSB already claimed the interface when opening the device
+      this.ifaceClaimed = false;
       try {
         iface.claim();
-        console.log('[USB] Successfully claimed interface 0');
-        claimSuccess = true;
+        this.ifaceClaimed = true;
+        console.log('[USB] Successfully claimed interface');
       } catch (claimErr) {
-        console.error('[USB] Failed to claim interface:', claimErr.message);
-
-        // On Windows with WinUSB, claimInterface can return LIBUSB_ERROR_NOT_FOUND
-        // even though WinUSB has already claimed the interface when the device was opened.
-        // In this case, we can try to use the endpoints directly without claiming.
-        
-        if (claimErr.message && claimErr.message.includes('NOT_FOUND')) {
-          console.log('[USB] LIBUSB_ERROR_NOT_FOUND - this is common on Windows with WinUSB');
-          console.log('[USB] Will attempt to use endpoints directly without explicit claim');
-          // Don't close the device - try to continue without claim
-          claimSuccess = false;
-        } else {
-          try { device.close(); } catch(e) {}
-          this.device = null;
-          return {
-            success: false,
-            error: `Failed to claim USB interface (${claimErr.message}).`
-          };
-        }
+        console.log('[USB] Claim failed (expected on Windows+WinUSB):', claimErr.message);
+        // Continue without claiming - WinUSB handles this internally
       }
-
-      this.iface = iface;
-      this.claimSuccess = claimSuccess;
 
       // Find endpoints
-      const endpoints = iface.endpoints || [];
-      console.log('[USB] Endpoints found:', endpoints.length);
+      this.outEndpoint = this._getEndpoint(iface, 'out');
+      this.inEndpoint = this._getEndpoint(iface, 'in');
 
-      for (const ep of endpoints) {
-        const epAddr = ep.address !== undefined ? `0x${ep.address.toString(16)}` : 
-                       (ep.bEndpointAddress !== undefined ? `0x${ep.bEndpointAddress.toString(16)}` : 'unknown');
-        console.log(`[USB] Endpoint: address=${epAddr} direction=${ep.direction} type=${ep.transferType}`);
-        if (ep.direction === 'in') {
-          this.inEndpoint = ep;
-        } else if (ep.direction === 'out') {
-          this.outEndpoint = ep;
-        }
-      }
+      console.log('[USB] OUT endpoint:', this.outEndpoint ? 'found' : 'NOT found');
+      console.log('[USB] IN endpoint:', this.inEndpoint ? 'found' : 'NOT found');
 
       if (!this.inEndpoint || !this.outEndpoint) {
-        if (this.claimSuccess) {
-          try { this.iface.release(false, () => {}); } catch(e) {}
-        }
-        try { this.device.close(); } catch(e) {}
-        this.device = null;
+        this._cleanup();
         return { 
           success: false, 
-          error: `Could not find USB endpoints. IN: ${!!this.inEndpoint}, OUT: ${!!this.outEndpoint}` 
+          error: `USB endpoints not found. IN: ${!!this.inEndpoint}, OUT: ${!!this.outEndpoint}` 
         };
       }
 
       // Start listening for incoming data
+      // Use 3 pending transfers of 64 bytes each (matching USB packet size)
       try {
-        this.inEndpoint.startPoll();
+        this.inEndpoint.startPoll(3, 64);
         this.inEndpoint.on('data', (data) => {
-          this.handleData(data);
+          this._onUsbData(data);
         });
         this.inEndpoint.on('error', (err) => {
-          console.error('USB IN endpoint error:', err);
+          console.error('[USB] IN endpoint error:', err.message);
         });
+        console.log('[USB] Started polling IN endpoint');
       } catch (pollErr) {
         console.error('[USB] Failed to start polling:', pollErr.message);
-        if (this.claimSuccess) {
-          try { this.iface.release(false, () => {}); } catch(e) {}
-        }
-        try { this.device.close(); } catch(e) {}
-        this.device = null;
-        this.inEndpoint = null;
-        this.outEndpoint = null;
+        this._cleanup();
         return {
           success: false,
-          error: `Failed to start USB data polling: ${pollErr.message}. The WinUSB driver may not be properly bound to the device interface.`
+          error: `Failed to start USB data polling: ${pollErr.message}`
         };
       }
 
       this.connected = true;
-      console.log('[USB] Connection established successfully');
+      console.log('[USB] Connection established (claimed:', this.ifaceClaimed, ')');
       return { success: true };
     } catch (error) {
       console.error('[USB] Connection error:', error);
-      try {
-        if (this.iface) { try { this.iface.release(false, () => {}); } catch(e) {} }
-        if (this.device) { try { this.device.close(); } catch(e) {} }
-      } catch (cleanupErr) {
-        // Ignore cleanup errors
-      }
-      this.device = null;
-      this.iface = null;
-      this.inEndpoint = null;
-      this.outEndpoint = null;
-      this.connected = false;
+      this._cleanup();
       return { success: false, error: `Connection error: ${error.message}` };
     }
   }
 
   /**
-   * Disconnect from device
+   * Handle incoming USB data - route to response handler or data callback
    */
-  async disconnect() {
-    try {
-      if (this.inEndpoint) {
-        try {
-          this.inEndpoint.stopPoll();
-        } catch (e) {
-          // Ignore
-        }
-        this.inEndpoint = null;
-      }
+  _onUsbData(data) {
+    console.log('[USB] Received', data.length, 'bytes:', Buffer.from(data).toString('hex'));
+    this.receiveBuffer = Buffer.concat([this.receiveBuffer, Buffer.from(data)]);
 
-      if (this.iface && this.claimSuccess) {
-        try {
-          this.iface.release(false, () => {});
-        } catch (e) {
-          // Ignore
-        }
-      }
-      this.iface = null;
-      this.claimSuccess = false;
-
-      if (this.device) {
-        try {
-          this.device.close();
-        } catch (e) {
-          // Ignore
-        }
-        this.device = null;
-      }
-
-      this.outEndpoint = null;
-      this.connected = false;
-      this.receiveBuffer = Buffer.alloc(0);
-      console.log('[USB] Disconnected');
-      return { success: true };
-    } catch (error) {
-      console.error('[USB] Disconnect error:', error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Send command to device
-   */
-  async sendCommand(data) {
-    if (!this.connected || !this.outEndpoint) {
-      return { success: false, error: 'Device not connected' };
-    }
-
-    try {
-      const buffer = Buffer.from(data);
-      return new Promise((resolve, reject) => {
-        this.outEndpoint.transfer(buffer, (err) => {
-          if (err) {
-            console.error('[USB] Send error:', err.message);
-            resolve({ success: false, error: err.message });
-          } else {
-            resolve({ success: true });
-          }
-        });
-      });
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Read data from device
-   */
-  async readData(timeout = 5000) {
-    if (!this.connected || !this.inEndpoint) {
-      return { success: false, error: 'Device not connected' };
-    }
-
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        resolve({ success: false, error: 'Read timeout' });
-      }, timeout);
-
-      const onData = (data) => {
-        clearTimeout(timer);
-        resolve({ success: true, data: Array.from(data) });
-      };
-
-      this.inEndpoint.once('data', onData);
-    });
-  }
-
-  /**
-   * Register callback for incoming data
-   */
-  onDataReceived(callback) {
-    this.dataCallback = callback;
-  }
-
-  /**
-   * Handle incoming USB data
-   */
-  handleData(data) {
-    this.receiveBuffer = Buffer.concat([this.receiveBuffer, data]);
-
-    // Try to parse complete messages
     while (this.receiveBuffer.length >= 4) {
-      // Check for known response patterns
       const header = this.receiveBuffer[0];
 
-      // Response header: 0xA5 = command acknowledgment
-      // Data header: 0xA0 = one-second data record
-      if (header === 0xA5) {
-        // Command response - typically 64 bytes
-        const responseLen = 64;
-        if (this.receiveBuffer.length >= responseLen) {
-          const responseData = this.receiveBuffer.slice(0, responseLen);
-          this.receiveBuffer = this.receiveBuffer.slice(responseLen);
-          if (this.dataCallback) {
+      if (header === RESPONSE_HEADER) {
+        // Command response - 64 bytes
+        if (this.receiveBuffer.length >= PACKET_SIZE) {
+          const responseData = this.receiveBuffer.slice(0, PACKET_SIZE);
+          this.receiveBuffer = this.receiveBuffer.slice(PACKET_SIZE);
+          
+          // If someone is waiting for a response, resolve their promise
+          if (this.responseResolve) {
+            const resolve = this.responseResolve;
+            this.responseResolve = null;
+            resolve(Array.from(responseData));
+          } else if (this.dataCallback) {
             this.dataCallback({ type: 'response', data: Array.from(responseData) });
           }
         } else {
           break;
         }
-      } else if (header === 0xA0) {
-        // One-second data record
-        const recordLen = 64;
-        if (this.receiveBuffer.length >= recordLen) {
-          const recordData = this.receiveBuffer.slice(0, recordLen);
-          this.receiveBuffer = this.receiveBuffer.slice(recordLen);
+      } else if (header === DATA_HEADER) {
+        // One-second data record - 64 bytes
+        if (this.receiveBuffer.length >= PACKET_SIZE) {
+          const recordData = this.receiveBuffer.slice(0, PACKET_SIZE);
+          this.receiveBuffer = this.receiveBuffer.slice(PACKET_SIZE);
           if (this.dataCallback) {
             this.dataCallback({ type: 'data', data: Array.from(recordData) });
           }
@@ -343,7 +282,651 @@ class ProcyonUsbBridge {
   }
 
   /**
-   * Diagnose USB connection issues
+   * Send a command and wait for response
+   */
+  async _sendCommandAndWait(commandByte, data = [], timeout = 3000) {
+    if (!this.connected || !this.outEndpoint) {
+      throw new Error('Device not connected');
+    }
+
+    // Build command packet (64 bytes, padded with 0xFF)
+    const packet = Buffer.alloc(PACKET_SIZE, 0xFF);
+    packet[0] = commandByte;
+    for (let i = 0; i < data.length && i + 1 < PACKET_SIZE; i++) {
+      packet[i + 1] = data[i];
+    }
+
+    console.log('[USB] Sending command 0x' + commandByte.toString(16), Buffer.from(packet).toString('hex'));
+
+    // Set up response promise BEFORE sending
+    let timedOut = false;
+    const responsePromise = new Promise((resolve, reject) => {
+      this.responseResolve = resolve;
+      
+      // Timeout
+      const timer = setTimeout(() => {
+        if (this.responseResolve === resolve) {
+          this.responseResolve = null;
+          timedOut = true;
+          reject(new Error('Command timeout (no response from device)'));
+        }
+      }, timeout);
+      
+      // Clear timeout when resolved
+      const originalResolve = resolve;
+      this.responseResolve = (data) => {
+        clearTimeout(timer);
+        originalResolve(data);
+      };
+    });
+
+    // Send the command
+    await new Promise((resolve, reject) => {
+      this.outEndpoint.transfer(packet, (err) => {
+        if (err) {
+          if (!timedOut && this.responseResolve) {
+            this.responseResolve = null;
+          }
+          reject(new Error(`Send failed: ${err.message}`));
+        } else {
+          console.log('[USB] Command sent successfully');
+          resolve();
+        }
+      });
+    });
+
+    // Wait for response
+    const response = await responsePromise;
+    console.log('[USB] Got response:', Buffer.from(response).toString('hex'));
+    return response;
+  }
+
+  /**
+   * Send a command without waiting for response
+   */
+  async _sendCommand(commandByte, data = []) {
+    if (!this.connected || !this.outEndpoint) {
+      throw new Error('Device not connected');
+    }
+
+    const packet = Buffer.alloc(PACKET_SIZE, 0xFF);
+    packet[0] = commandByte;
+    for (let i = 0; i < data.length && i + 1 < PACKET_SIZE; i++) {
+      packet[i + 1] = data[i];
+    }
+
+    return new Promise((resolve, reject) => {
+      this.outEndpoint.transfer(packet, (err) => {
+        if (err) {
+          reject(new Error(`Send failed: ${err.message}`));
+        } else {
+          resolve({ success: true });
+        }
+      });
+    });
+  }
+
+  /**
+   * Parse string from response bytes (null-terminated, padded with 0xFF)
+   */
+  _parseString(bytes, start, length) {
+    let str = '';
+    for (let i = start; i < start + length && i < bytes.length; i++) {
+      if (bytes[i] === 0x00 || bytes[i] === 0xFF) break;
+      str += String.fromCharCode(bytes[i]);
+    }
+    return str.trim();
+  }
+
+  /**
+   * Parse signed 16-bit value from response bytes
+   */
+  _parseS16(bytes, offset) {
+    const val = bytes[offset] | (bytes[offset + 1] << 8);
+    return val > 32767 ? val - 65536 : val;
+  }
+
+  /**
+   * Parse unsigned 16-bit value from response bytes
+   */
+  _parseU16(bytes, offset) {
+    return bytes[offset] | (bytes[offset + 1] << 8);
+  }
+
+  /**
+   * Encode string to bytes (fixed length, padded with 0xFF)
+   */
+  _encodeString(str, length) {
+    const bytes = [];
+    for (let i = 0; i < length; i++) {
+      bytes.push(i < str.length ? str.charCodeAt(i) : 0xFF);
+    }
+    return bytes;
+  }
+
+  /**
+   * Get device information (firmware version, SN, battery, temperature)
+   */
+  async getDeviceInfo() {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+
+      const info = {};
+
+      // Get firmware version
+      try {
+        const fwResp = await this._sendCommandAndWait(CMD.GET_FIRMWARE_VERSION);
+        info.firmwareVersion = this._parseString(fwResp, 1, 30);
+      } catch (e) {
+        console.log('[USB] Get firmware version failed:', e.message);
+        info.firmwareVersion = 'N/A';
+      }
+
+      // Get Tool SN
+      try {
+        const snResp = await this._sendCommandAndWait(CMD.GET_TOOL_SN);
+        info.toolSN = this._parseString(snResp, 1, 15);
+      } catch (e) {
+        console.log('[USB] Get Tool SN failed:', e.message);
+        info.toolSN = '';
+      }
+
+      // Get Unique ID
+      try {
+        const uidResp = await this._sendCommandAndWait(CMD.GET_UNIQUE_ID);
+        info.uniqueId = this._parseString(uidResp, 1, 30);
+      } catch (e) {
+        console.log('[USB] Get Unique ID failed:', e.message);
+        info.uniqueId = '';
+      }
+
+      // Get battery voltage (in millivolts, convert to volts)
+      try {
+        const battResp = await this._sendCommandAndWait(CMD.GET_BATTERY_VOLTAGE);
+        const rawBatt = this._parseU16(battResp, 1);
+        info.batteryVoltage = rawBatt / 1000.0;
+      } catch (e) {
+        console.log('[USB] Get battery voltage failed:', e.message);
+        info.batteryVoltage = 0;
+      }
+
+      // Get temperature (in 0.1°C)
+      try {
+        const tempResp = await this._sendCommandAndWait(CMD.GET_TEMPERATURE);
+        const rawTemp = this._parseS16(tempResp, 1);
+        info.temperature = rawTemp / 10.0;
+      } catch (e) {
+        console.log('[USB] Get temperature failed:', e.message);
+        info.temperature = undefined;
+      }
+
+      // Get serial number from USB descriptor
+      try {
+        if (this.device && this.device.deviceDescriptor) {
+          const serialIndex = this.device.deviceDescriptor.iSerialNumber;
+          if (serialIndex > 0) {
+            info.serialNumber = this.device.getStringDescriptor(serialIndex);
+          }
+        }
+      } catch (e) {
+        info.serialNumber = '';
+      }
+
+      return { success: true, info };
+    } catch (error) {
+      console.error('[USB] getDeviceInfo error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Set tool serial number
+   */
+  async setToolSN(sn) {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+      const data = this._encodeString(sn, 15);
+      await this._sendCommandAndWait(CMD.SET_TOOL_SN, data);
+      return { success: true };
+    } catch (error) {
+      console.error('[USB] setToolSN error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Set run ID
+   */
+  async setRunID(runId) {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+      const data = this._encodeString(runId, 15);
+      await this._sendCommandAndWait(CMD.SET_RUN_ID, data);
+      return { success: true };
+    } catch (error) {
+      console.error('[USB] setRunID error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Set customer
+   */
+  async setCustomer(customer) {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+      const data = this._encodeString(customer, 30);
+      await this._sendCommandAndWait(CMD.SET_CUSTOMER, data);
+      return { success: true };
+    } catch (error) {
+      console.error('[USB] setCustomer error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Set district
+   */
+  async setDistrict(district) {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+      const data = this._encodeString(district, 30);
+      await this._sendCommandAndWait(CMD.SET_DISTRICT, data);
+      return { success: true };
+    } catch (error) {
+      console.error('[USB] setDistrict error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Set country
+   */
+  async setCountry(country) {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+      const data = this._encodeString(country, 30);
+      await this._sendCommandAndWait(CMD.SET_COUNTRY, data);
+      return { success: true };
+    } catch (error) {
+      console.error('[USB] setCountry error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Set depth out
+   */
+  async setDepthOut(depth) {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+      // Encode as 4-byte float
+      const buf = Buffer.alloc(4);
+      buf.writeFloatLE(depth);
+      const data = Array.from(buf);
+      await this._sendCommandAndWait(CMD.SET_DEPTH_OUT, data);
+      return { success: true };
+    } catch (error) {
+      console.error('[USB] setDepthOut error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get battery voltage
+   */
+  async getBatteryVoltage() {
+    try {
+      if (!this.connected) {
+        return { success: false, voltage: 0, error: 'Device not connected' };
+      }
+      const resp = await this._sendCommandAndWait(CMD.GET_BATTERY_VOLTAGE);
+      const rawBatt = this._parseU16(resp, 1);
+      return { success: true, voltage: rawBatt / 1000.0 };
+    } catch (error) {
+      return { success: false, voltage: 0, error: error.message };
+    }
+  }
+
+  /**
+   * Get temperature
+   */
+  async getTemperature() {
+    try {
+      if (!this.connected) {
+        return { success: false, temperature: 0, error: 'Device not connected' };
+      }
+      const resp = await this._sendCommandAndWait(CMD.GET_TEMPERATURE);
+      const rawTemp = this._parseS16(resp, 1);
+      return { success: true, temperature: rawTemp / 10.0 };
+    } catch (error) {
+      return { success: false, temperature: 0, error: error.message };
+    }
+  }
+
+  /**
+   * Get number of memory partitions
+   */
+  async getMemoryPartitions() {
+    try {
+      if (!this.connected) {
+        return { success: false, count: 0, error: 'Device not connected' };
+      }
+      const resp = await this._sendCommandAndWait(CMD.GET_MEMORY_PARTITIONS);
+      const count = resp[1] || 0;
+      return { success: true, count };
+    } catch (error) {
+      return { success: false, count: 0, error: error.message };
+    }
+  }
+
+  /**
+   * Get memory erase percent
+   */
+  async getMemoryErasePercent() {
+    try {
+      if (!this.connected) {
+        return { success: false, percent: 0, error: 'Device not connected' };
+      }
+      const resp = await this._sendCommandAndWait(CMD.GET_MEMORY_ERASE_PERCENT);
+      const percent = resp[1] || 0;
+      return { success: true, percent };
+    } catch (error) {
+      return { success: false, percent: 0, error: error.message };
+    }
+  }
+
+  /**
+   * Download one-second data from device memory
+   */
+  async downloadOneSecondData(options = {}) {
+    try {
+      if (!this.connected) {
+        return { success: false, data: [], totalRecords: 0, error: 'Device not connected' };
+      }
+
+      // First get memory partition count
+      const partResult = await this.getMemoryPartitions();
+      if (!partResult.success) {
+        return { success: false, data: [], totalRecords: 0, error: partResult.error };
+      }
+
+      const partitionCount = options.maxPartitions || partResult.count;
+      const records = [];
+      const CHUNK_SIZE = 32; // 32 one-second records per chunk (32 * 64 = 2048 bytes)
+
+      console.log('[USB] Starting download, partitions:', partitionCount);
+
+      // Register data callback to collect records
+      let dataResolve = null;
+      const collectedRecords = [];
+      
+      const originalCallback = this.dataCallback;
+      this.dataCallback = (msg) => {
+        if (msg.type === 'data') {
+          const parsed = this._parseOneSecondRecord(msg.data);
+          if (parsed) {
+            collectedRecords.push(parsed);
+          }
+        }
+      };
+
+      try {
+        // Request each chunk
+        const totalChunks = Math.ceil(partitionCount * 3600 / CHUNK_SIZE); // Assume 3600 records per partition (1 hour)
+        
+        for (let chunk = 0; chunk < totalChunks; chunk++) {
+          // Send chunk request
+          const chunkData = [
+            chunk & 0xFF,
+            (chunk >> 8) & 0xFF,
+            (chunk >> 16) & 0xFF,
+            (chunk >> 24) & 0xFF,
+          ];
+          
+          try {
+            await this._sendCommand(CMD.GET_MEMORY_DUMP_CHUNK, chunkData);
+          } catch (e) {
+            console.log('[USB] Chunk', chunk, 'request failed:', e.message);
+            break;
+          }
+
+          // Wait a bit for data to arrive
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        // Wait for remaining data
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } finally {
+        // Restore original callback
+        this.dataCallback = originalCallback;
+      }
+
+      return { 
+        success: true, 
+        data: collectedRecords, 
+        totalRecords: collectedRecords.length 
+      };
+    } catch (error) {
+      console.error('[USB] downloadOneSecondData error:', error);
+      return { success: false, data: [], totalRecords: 0, error: error.message };
+    }
+  }
+
+  /**
+   * Parse one-second data record (0xA0 header, 64 bytes)
+   */
+  _parseOneSecondRecord(bytes) {
+    try {
+      if (!bytes || bytes.length < 60 || bytes[0] !== DATA_HEADER) {
+        return null;
+      }
+
+      // OneSecondData format: 29 x s16 values starting at offset 2
+      // Layout:
+      //   [2-3]   Temperature (0.1°C)
+      //   [4-5]   Battery Voltage (mV)
+      //   [6-7]   RPM Min X
+      //   [8-9]   RPM Max X
+      //   [10-11] RPM Avg X
+      //   [12-13] RPM RMS X
+      //   [14-15] RPM Min Y
+      //   [16-17] RPM Max Y
+      //   [18-19] RPM Avg Y
+      //   [20-21] RPM RMS Y
+      //   [22-23] RPM Min Z
+      //   [24-25] RPM Max Z
+      //   [26-27] RPM Avg Z
+      //   [28-29] RPM RMS Z
+      //   [30-31] Shock Low Min X
+      //   [32-33] Shock Low Max X
+      //   [34-35] Shock Low Avg X
+      //   [36-37] Shock Low RMS X
+      //   [38-39] Shock Low Min Y
+      //   [40-41] Shock Low Max Y
+      //   [42-43] Shock Low Avg Y
+      //   [44-45] Shock Low RMS Y
+      //   [46-47] Shock Low Min Z
+      //   [48-49] Shock Low Max Z
+      //   [50-51] Shock Low Avg Z
+      //   [52-53] Shock Low RMS Z
+      //   [54-55] Shock Min X
+      //   [56-57] Shock Max X
+      //   [58-59] Sequence counter
+
+      const temp = this._parseS16(bytes, 2) / 10.0;
+      const batt = this._parseU16(bytes, 4) / 1000.0;
+      const seq = this._parseU16(bytes, 58);
+
+      return {
+        timestamp: new Date().toISOString(), // Will be refined with actual timestamps
+        temperature: temp,
+        batteryVoltage: batt,
+        rpmMinX: this._parseS16(bytes, 6),
+        rpmMaxX: this._parseS16(bytes, 8),
+        rpmAvgX: this._parseS16(bytes, 10),
+        rpmRmsX: this._parseS16(bytes, 12),
+        rpmMinY: this._parseS16(bytes, 14),
+        rpmMaxY: this._parseS16(bytes, 16),
+        rpmAvgY: this._parseS16(bytes, 18),
+        rpmRmsY: this._parseS16(bytes, 20),
+        rpmMinZ: this._parseS16(bytes, 22),
+        rpmMaxZ: this._parseS16(bytes, 24),
+        rpmAvgZ: this._parseS16(bytes, 26),
+        rpmRmsZ: this._parseS16(bytes, 28),
+        shockLowMinX: this._parseS16(bytes, 30),
+        shockLowMaxX: this._parseS16(bytes, 32),
+        shockLowAvgX: this._parseS16(bytes, 34),
+        shockLowRmsX: this._parseS16(bytes, 36),
+        shockLowMinY: this._parseS16(bytes, 38),
+        shockLowMaxY: this._parseS16(bytes, 40),
+        shockLowAvgY: this._parseS16(bytes, 42),
+        shockLowRmsY: this._parseS16(bytes, 44),
+        shockLowMinZ: this._parseS16(bytes, 46),
+        shockLowMaxZ: this._parseS16(bytes, 48),
+        shockLowAvgZ: this._parseS16(bytes, 50),
+        shockLowRmsZ: this._parseS16(bytes, 52),
+        shockMinX: this._parseS16(bytes, 54),
+        shockMaxX: this._parseS16(bytes, 56),
+      };
+    } catch (e) {
+      console.error('[USB] Parse one-second record error:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Run self test
+   */
+  async runSelfTest() {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+
+      // Send self test command
+      const resp = await this._sendCommandAndWait(CMD.RUN_SELF_TEST, [], 10000);
+
+      // Parse test results from response
+      // Each result: name (string) + status (byte)
+      const results = [];
+      
+      // Try to parse multiple response packets
+      // Self test may take several seconds and return multiple responses
+      const testNames = [
+        'Firmware Test',
+        'Memory Test',
+        'Sensor Test',
+        'Communication Test',
+        'Battery Test',
+        'Temperature Test',
+      ];
+
+      for (let i = 0; i < testNames.length; i++) {
+        const statusByte = i < resp.length - 1 ? resp[i + 1] : 0;
+        let status;
+        if (statusByte === 0x01) status = 'pass';
+        else if (statusByte === 0x02) status = 'fail';
+        else if (statusByte === 0x03) status = 'warning';
+        else status = 'skip';
+
+        results.push({
+          name: testNames[i],
+          status,
+          duration: 0,
+        });
+      }
+
+      return { success: true, results };
+    } catch (error) {
+      console.error('[USB] runSelfTest error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Initialize logger
+   */
+  async initializeLogger(config) {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+
+      // Build initialization packet
+      const data = [];
+      // Tool SN (15 bytes)
+      data.push(...this._encodeString(config.toolSN || '', 15));
+      // Run ID (15 bytes)
+      data.push(...this._encodeString(config.runId || '', 15));
+      // Customer (30 bytes)
+      data.push(...this._encodeString(config.customer || '', 30));
+      // District (30 bytes)
+      data.push(...this._encodeString(config.district || '', 30));
+
+      await this._sendCommandAndWait(CMD.INITIALIZE_LOGGER, data);
+      return { success: true };
+    } catch (error) {
+      console.error('[USB] initializeLogger error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Cleanup helper
+   */
+  _cleanup() {
+    if (this.inEndpoint) {
+      try { this.inEndpoint.stopPoll(); } catch(e) {}
+      this.inEndpoint = null;
+    }
+    if (this.iface) {
+      if (this.ifaceClaimed) {
+        try { this.iface.release(false, () => {}); } catch(e) {}
+      }
+      this.iface = null;
+    }
+    if (this.device) {
+      try { this.device.close(); } catch(e) {}
+      this.device = null;
+    }
+    this.outEndpoint = null;
+    this.ifaceClaimed = false;
+    this.connected = false;
+    this.receiveBuffer = Buffer.alloc(0);
+    this.responseResolve = null;
+  }
+
+  /**
+   * Disconnect from device
+   */
+  async disconnect() {
+    try {
+      this._cleanup();
+      console.log('[USB] Disconnected');
+      return { success: true };
+    } catch (error) {
+      console.error('[USB] Disconnect error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Diagnose USB connection
    */
   diagnose() {
     try {
@@ -363,7 +946,6 @@ class ProcyonUsbBridge {
           };
         }),
         procyonDetail: null,
-        rawDebug: [],
       };
 
       // Find Procyon device
@@ -377,23 +959,6 @@ class ProcyonUsbBridge {
         return result;
       }
 
-      // Collect raw debug info for first 2 devices (before open)
-      for (let i = 0; i < Math.min(2, devices.length); i++) {
-        const d = devices[i];
-        try {
-          result.rawDebug.push({
-            keys: Object.keys(d).join(', '),
-            hasDeviceDescriptor: !!d.deviceDescriptor,
-            descriptorKeys: d.deviceDescriptor ? Object.keys(d.deviceDescriptor).join(', ') : 'N/A',
-            deviceAddress_prop: d.deviceAddress,
-            busNumber_prop: d.busNumber,
-          });
-        } catch (e) {
-          result.rawDebug.push({ error: e.message });
-        }
-      }
-
-      // Detailed Procyon device analysis
       const detail = {
         found: true,
         vid: `0x${PROCYON_VID.toString(16)}`,
@@ -407,22 +972,26 @@ class ProcyonUsbBridge {
         detail.canOpen = true;
         detail.openError = null;
 
-        // Get interface info
+        // Try auto-detach
         try {
-          const iface = procyonDevice.interface(0);
-          detail.interfaceMethod = 'device.interface(0)';
+          procyonDevice.setAutoDetachKernelDriver(true);
+          detail.autoDetach = 'enabled';
+        } catch (adErr) {
+          detail.autoDetach = `error: ${adErr.message}`;
+        }
 
-          // Interface details
+        // Get interface
+        const iface = this._getInterface(procyonDevice);
+        if (iface) {
           const ifaceInfo = {
             id: iface.id,
             altSetting: iface.altSetting,
             endpoints: [],
             canClaim: false,
             claimError: null,
-            kernelDriverActive: null,
           };
 
-          // Endpoint details
+          // Endpoint info
           if (iface.endpoints && iface.endpoints.length > 0) {
             for (const ep of iface.endpoints) {
               const addr = ep.address !== undefined ? `0x${ep.address.toString(16)}` : 'unknown';
@@ -434,63 +1003,26 @@ class ProcyonUsbBridge {
             }
           }
 
-          // Check kernel driver
-          try {
-            ifaceInfo.kernelDriverActive = iface.isKernelDriverActive();
-          } catch (kerr) {
-            ifaceInfo.kernelDriverActive = `error: ${kerr.message}`;
-          }
-
-          // Try to claim
+          // Try claim
           try {
             iface.claim();
             ifaceInfo.canClaim = true;
-            console.log('[USB-DIAG] Successfully claimed interface!');
-            // Release it immediately - we're just testing
-            try {
-              iface.release(false, () => {});
-            } catch (relErr) {
-              console.log('[USB-DIAG] Release after test claim:', relErr.message);
-            }
+            console.log('[USB-DIAG] Claim succeeded');
+            try { iface.release(false, () => {}); } catch(e) {}
           } catch (claimErr) {
             ifaceInfo.canClaim = false;
             ifaceInfo.claimError = claimErr.message;
-            console.log('[USB-DIAG] Claim failed:', claimErr.message);
-
-            // If claim failed, try detaching kernel driver first
-            try {
-              iface.detachKernelDriver();
-              console.log('[USB-DIAG] Detached kernel driver, retrying claim...');
-              try {
-                iface.claim();
-                ifaceInfo.canClaim = true;
-                ifaceInfo.claimAfterDetach = true;
-                console.log('[USB-DIAG] Claim succeeded after detach!');
-                try {
-                  iface.release(false, () => {});
-                } catch (relErr) {}
-              } catch (retryErr) {
-                ifaceInfo.claimAfterDetachError = retryErr.message;
-                console.log('[USB-DIAG] Claim after detach still failed:', retryErr.message);
-              }
-            } catch (detachErr) {
-              ifaceInfo.detachError = detachErr.message;
-              console.log('[USB-DIAG] Detach kernel driver failed:', detachErr.message);
-            }
+            console.log('[USB-DIAG] Claim failed (expected on WinUSB):', claimErr.message);
           }
 
           detail.interfaces = [ifaceInfo];
-        } catch (ifaceErr) {
-          detail.interfaceError = ifaceErr.message;
+        } else {
+          detail.interfaceError = 'Could not get interface';
           detail.interfaces = [];
         }
 
         // Close device after diagnosis
-        try {
-          procyonDevice.close();
-        } catch (closeErr) {
-          detail.closeError = closeErr.message;
-        }
+        try { procyonDevice.close(); } catch(e) {}
       } catch (openErr) {
         detail.canOpen = false;
         detail.openError = openErr.message;

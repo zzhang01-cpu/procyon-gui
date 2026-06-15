@@ -3,7 +3,6 @@ const path = require('path');
 const { bridge, PROCYON_VID, PROCYON_PID } = require('./usb-bridge');
 
 let mainWindow = null;
-let usbBridge = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -35,94 +34,27 @@ function createWindow() {
   });
 }
 
-// Initialize USB bridge
+// Initialize USB bridge IPC handlers
 function initUsbBridge() {
-  usbBridge = bridge;
-
   // List USB devices
   ipcMain.handle('usb:list-devices', async () => {
-    return usbBridge.listDevices();
+    return bridge.listDevices();
   });
 
   // Connect to device
   ipcMain.handle('usb:connect', async () => {
-    return usbBridge.connect();
+    return bridge.connect();
   });
 
   // Disconnect from device
   ipcMain.handle('usb:disconnect', async () => {
-    return usbBridge.disconnect();
+    return bridge.disconnect();
   });
 
-  // Get device info
-  ipcMain.handle('device:get-info', async () => {
-    return usbBridge.getDeviceInfo();
-  });
-
-  // Set tool serial number
-  ipcMain.handle('device:set-tool-sn', async (_event, sn) => {
-    return usbBridge.setToolSN(sn);
-  });
-
-  // Set run ID
-  ipcMain.handle('device:set-run-id', async (_event, runId) => {
-    return usbBridge.setRunID(runId);
-  });
-
-  // Set customer
-  ipcMain.handle('device:set-customer', async (_event, customer) => {
-    return usbBridge.setCustomer(customer);
-  });
-
-  // Set district
-  ipcMain.handle('device:set-district', async (_event, district) => {
-    return usbBridge.setDistrict(district);
-  });
-
-  // Set country
-  ipcMain.handle('device:set-country', async (_event, country) => {
-    return usbBridge.setCountry(country);
-  });
-
-  // Set depth out
-  ipcMain.handle('device:set-depth-out', async (_event, depth) => {
-    return usbBridge.setDepthOut(depth);
-  });
-
-  // Get memory partitions count
-  ipcMain.handle('device:get-memory-partitions', async () => {
-    return usbBridge.getMemoryPartitions();
-  });
-
-  // Get memory erase percent
-  ipcMain.handle('device:get-memory-erase-percent', async () => {
-    return usbBridge.getMemoryErasePercent();
-  });
-
-  // Download one second data
-  ipcMain.handle('device:download-data', async (_event, options) => {
-    return usbBridge.downloadOneSecondData(options);
-  });
-
-  // Run self test
-  ipcMain.handle('device:run-self-test', async () => {
-    return usbBridge.runSelfTest();
-  });
-
-  // Get battery voltage
-  ipcMain.handle('device:get-battery-voltage', async () => {
-    return usbBridge.getBatteryVoltage();
-  });
-
-  // Get temperature
-  ipcMain.handle('device:get-temperature', async () => {
-    return usbBridge.getTemperature();
-  });
-
-  // Diagnose USB - list ALL devices and detailed Procyon info
+  // Diagnose USB connection
   ipcMain.handle('usb:diagnose', async () => {
     try {
-      return { success: true, ...usbBridge.diagnose() };
+      return { success: true, ...bridge.diagnose() };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -130,7 +62,74 @@ function initUsbBridge() {
 
   // Get connection status
   ipcMain.handle('device:is-connected', async () => {
-    return usbBridge.connected;
+    return bridge.isConnected();
+  });
+
+  // Get device info (firmware, SN, battery, temperature)
+  ipcMain.handle('device:get-info', async () => {
+    return bridge.getDeviceInfo();
+  });
+
+  // Refresh device info (same as get-info but for explicit refresh calls)
+  ipcMain.handle('device:refresh-info', async () => {
+    return bridge.getDeviceInfo();
+  });
+
+  // Parameter setters
+  ipcMain.handle('device:set-tool-sn', async (_event, sn) => {
+    return bridge.setToolSN(sn);
+  });
+
+  ipcMain.handle('device:set-run-id', async (_event, runId) => {
+    return bridge.setRunID(runId);
+  });
+
+  ipcMain.handle('device:set-customer', async (_event, customer) => {
+    return bridge.setCustomer(customer);
+  });
+
+  ipcMain.handle('device:set-district', async (_event, district) => {
+    return bridge.setDistrict(district);
+  });
+
+  ipcMain.handle('device:set-country', async (_event, country) => {
+    return bridge.setCountry(country);
+  });
+
+  ipcMain.handle('device:set-depth-out', async (_event, depth) => {
+    return bridge.setDepthOut(depth);
+  });
+
+  // Data operations
+  ipcMain.handle('device:get-memory-partitions', async () => {
+    return bridge.getMemoryPartitions();
+  });
+
+  ipcMain.handle('device:get-memory-erase-percent', async () => {
+    return bridge.getMemoryErasePercent();
+  });
+
+  ipcMain.handle('device:download-data', async (_event, options) => {
+    return bridge.downloadOneSecondData(options);
+  });
+
+  // Test operations
+  ipcMain.handle('device:run-self-test', async () => {
+    return bridge.runSelfTest();
+  });
+
+  // Sensor readings
+  ipcMain.handle('device:get-battery-voltage', async () => {
+    return bridge.getBatteryVoltage();
+  });
+
+  ipcMain.handle('device:get-temperature', async () => {
+    return bridge.getTemperature();
+  });
+
+  // Logger initialization
+  ipcMain.handle('device:initialize-logger', async (_event, config) => {
+    return bridge.initializeLogger(config);
   });
 }
 
@@ -153,7 +152,7 @@ app.on('window-all-closed', () => {
 
 // Cleanup on quit
 app.on('before-quit', async () => {
-  if (usbBridge) {
-    await usbBridge.disconnect();
+  if (bridge && bridge.isConnected()) {
+    await bridge.disconnect();
   }
 });
