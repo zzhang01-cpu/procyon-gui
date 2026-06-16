@@ -12,11 +12,20 @@ class ProcyonUsb
     [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
     static extern IntPtr SetupDiGetClassDevs(ref Guid ClassGuid, IntPtr Enumerator, IntPtr hwndParent, int Flags);
 
+    [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    static extern IntPtr SetupDiGetClassDevs(IntPtr ClassGuid, string Enumerator, IntPtr hwndParent, int Flags);
+
     [DllImport("setupapi.dll", SetLastError = true)]
     static extern bool SetupDiEnumDeviceInterfaces(IntPtr DeviceInfoSet, IntPtr DeviceInfoData, ref Guid InterfaceClassGuid, int MemberIndex, ref SP_DEVICE_INTERFACE_DATA DeviceInterfaceData);
 
     [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
     static extern bool SetupDiGetDeviceInterfaceDetail(IntPtr DeviceInfoSet, ref SP_DEVICE_INTERFACE_DATA DeviceInterfaceData, IntPtr DeviceInterfaceDetailData, int DeviceInterfaceDetailDataSize, ref int RequiredSize, IntPtr DeviceInfoData);
+
+    [DllImport("setupapi.dll", SetLastError = true)]
+    static extern bool SetupDiEnumDeviceInfo(IntPtr DeviceInfoSet, int MemberIndex, ref SP_DEVINFO_DATA DeviceInfoData);
+
+    [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    static extern bool SetupDiGetDeviceRegistryProperty(IntPtr DeviceInfoSet, ref SP_DEVINFO_DATA DeviceInfoData, int Property, ref int PropertyRegDataType, byte[] PropertyBuffer, int PropertyBufferSize, ref int RequiredSize);
 
     [DllImport("setupapi.dll", SetLastError = true)]
     static extern bool SetupDiDestroyDeviceInfoList(IntPtr DeviceInfoSet);
@@ -27,6 +36,15 @@ class ProcyonUsb
         public int cbSize;
         public Guid InterfaceClassGuid;
         public int Flags;
+        public IntPtr Reserved;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct SP_DEVINFO_DATA
+    {
+        public int cbSize;
+        public Guid ClassGuid;
+        public int DevInst;
         public IntPtr Reserved;
     }
 
@@ -63,12 +81,19 @@ class ProcyonUsb
     // === Constants ===
     const int DIGCF_PRESENT = 0x02;
     const int DIGCF_DEVICEINTERFACE = 0x10;
+    const int DIGCF_ALLCLASSES = 0x04;
     const uint GENERIC_READ = 0x80000000;
     const uint GENERIC_WRITE = 0x40000000;
     const int FILE_SHARE_READ = 0x01;
     const int FILE_SHARE_WRITE = 0x02;
     const int OPEN_EXISTING = 3;
-    const uint SHORT_TIMEOUT_POLICY = 0x03; // SHORT_TIMEOUT
+    const uint SHORT_TIMEOUT_POLICY = 0x03;
+
+    const int SPDRP_HARDWAREID = 0x00000001;
+    const int SPDRP_SERVICE = 0x00000004;
+    const int SPDRP_CLASS = 0x00000007;
+    const int SPDRP_FRIENDLYNAME = 0x0000000C;
+    const int SPDRP_DEVICEDESC = 0x00000000;
 
     static Guid winusbGuid;
 
@@ -102,6 +127,7 @@ class ProcyonUsb
                     if (args.Length < 2) { WriteError("No data"); return; }
                     SendAndRead(args[1], args.Length > 2 ? int.Parse(args[2]) : 3000); break;
                 case "list": ListDevices(); break;
+                case "diag": RunDiag(); break;
                 case "test": RunTest(); break;
                 default: WriteError("Unknown command: " + args[0]); break;
             }
@@ -123,6 +149,7 @@ class ProcyonUsb
         WriteJson("{\"error\":\"" + msg.Replace("\"", "\\\"") + "\",\"winError\":" + Marshal.GetLastWin32Error() + "}");
     }
 
+    // === Enumerate all Procyon WinUSB device paths ===
     static List<string> FindAllDevicePaths()
     {
         List<string> paths = new List<string>();
@@ -172,9 +199,9 @@ class ProcyonUsb
         return paths.Count > 0 ? paths[0] : null;
     }
 
+    // === List ALL WinUSB devices on system ===
     static void ListDevices()
     {
-        // List ALL WinUSB devices on the system
         List<string> allPaths = new List<string>();
         IntPtr hDevInfo = SetupDiGetClassDevs(ref winusbGuid, IntPtr.Zero, IntPtr.Zero,
             DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
@@ -235,6 +262,174 @@ class ProcyonUsb
         Console.WriteLine(sb.ToString());
     }
 
+    // === Diagnostic: enumerate all USB devices with VID_2269 and show driver info ===
+    static void RunDiag()
+    {
+        Console.WriteLine("=== Procyon USB Diagnostic ===\n");
+
+        // 1. Enumerate ALL USB devices with VID_2269 using hardware ID enumerator
+        IntPtr hDevInfo = SetupDiGetClassDevs(IntPtr.Zero, "USB", IntPtr.Zero,
+            DIGCF_PRESENT | DIGCF_ALLCLASSES);
+        if (hDevInfo == (IntPtr)(-1))
+        {
+            Console.WriteLine("SetupDiGetClassDevs failed!");
+            return;
+        }
+
+        try
+        {
+            int index = 0;
+            int found = 0;
+            while (true)
+            {
+                SP_DEVINFO_DATA devInfo = new SP_DEVINFO_DATA();
+                devInfo.cbSize = Marshal.SizeOf(devInfo);
+
+                if (!SetupDiEnumDeviceInfo(hDevInfo, index, ref devInfo))
+                    break;
+
+                // Read hardware ID
+                string hwId = GetDeviceProperty(hDevInfo, ref devInfo, SPDRP_HARDWAREID);
+                if (hwId != null && hwId.IndexOf("2269", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    found++;
+                    string desc = GetDeviceProperty(hDevInfo, ref devInfo, SPDRP_DEVICEDESC);
+                    string friendly = GetDeviceProperty(hDevInfo, ref devInfo, SPDRP_FRIENDLYNAME);
+                    string svc = GetDeviceProperty(hDevInfo, ref devInfo, SPDRP_SERVICE);
+                    string cls = GetDeviceProperty(hDevInfo, ref devInfo, SPDRP_CLASS);
+
+                    Console.WriteLine("--- Procyon Device #" + found + " ---");
+                    Console.WriteLine("  HardwareID: " + hwId);
+                    Console.WriteLine("  Description: " + (desc ?? "(null)"));
+                    Console.WriteLine("  FriendlyName: " + (friendly ?? "(null)"));
+                    Console.WriteLine("  Driver Service: " + (svc ?? "(null)"));
+                    Console.WriteLine("  Class: " + (cls ?? "(null)"));
+                    Console.WriteLine();
+                }
+                index++;
+            }
+
+            if (found == 0)
+                Console.WriteLine("No USB devices with VID_2269 found!");
+        }
+        finally { SetupDiDestroyDeviceInfoList(hDevInfo); }
+
+        // 2. Show WinUSB interface paths
+        Console.WriteLine("\n--- WinUSB Interface Paths ---");
+        List<string> paths = FindAllDevicePaths();
+        if (paths.Count == 0)
+            Console.WriteLine("  No Procyon WinUSB paths found!");
+        else
+        {
+            foreach (string p in paths)
+            {
+                bool hasMi = p.IndexOf("&mi_", StringComparison.OrdinalIgnoreCase) >= 0;
+                Console.WriteLine("  " + p);
+                Console.WriteLine("  -> Composite child (has &mi_): " + hasMi);
+            }
+        }
+
+        // 3. Check if composite child paths exist
+        Console.WriteLine("\n--- Checking Composite Child Paths ---");
+        for (int mi = 0; mi <= 7; mi++)
+        {
+            string testPath = "\\\\?\\usb#vid_2269&pid_beef&mi_" + mi.ToString("D2");
+            // Try to find any WinUSB path with this prefix
+            IntPtr hDevInfo2 = SetupDiGetClassDevs(ref winusbGuid, IntPtr.Zero, IntPtr.Zero,
+                DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+            if (hDevInfo2 != (IntPtr)(-1))
+            {
+                try
+                {
+                    int idx = 0;
+                    while (true)
+                    {
+                        SP_DEVICE_INTERFACE_DATA ifaceData = new SP_DEVICE_INTERFACE_DATA();
+                        ifaceData.cbSize = Marshal.SizeOf(ifaceData);
+                        if (!SetupDiEnumDeviceInterfaces(hDevInfo2, IntPtr.Zero, ref winusbGuid, idx, ref ifaceData))
+                            break;
+
+                        int reqSize = 0;
+                        SetupDiGetDeviceInterfaceDetail(hDevInfo2, ref ifaceData, IntPtr.Zero, 0, ref reqSize, IntPtr.Zero);
+                        IntPtr detailData = Marshal.AllocHGlobal(reqSize);
+                        try
+                        {
+                            Marshal.WriteInt32(detailData, IntPtr.Size == 8 ? 8 : 4);
+                            if (SetupDiGetDeviceInterfaceDetail(hDevInfo2, ref ifaceData, detailData, reqSize, ref reqSize, IntPtr.Zero))
+                            {
+                                string path = Marshal.PtrToStringAuto(detailData + 4);
+                                if (path != null && path.IndexOf("mi_" + mi.ToString("D2"), StringComparison.OrdinalIgnoreCase) >= 0 &&
+                                    path.IndexOf("2269", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    Console.WriteLine("  Found: " + path);
+                                }
+                            }
+                        }
+                        finally { Marshal.FreeHGlobal(detailData); }
+                        idx++;
+                    }
+                }
+                finally { SetupDiDestroyDeviceInfoList(hDevInfo2); }
+            }
+        }
+
+        // 4. Diagnosis summary
+        Console.WriteLine("\n=== Diagnosis ===");
+        if (paths.Count > 0 && paths[0].IndexOf("&mi_", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            Console.WriteLine("PROBLEM: WinUSB is installed on the COMPOSITE PARENT device.");
+            Console.WriteLine("This means WinUSB replaced the USB composite driver (usbccgp.sys).");
+            Console.WriteLine("WinUsb_Initialize will fail because the device has multiple interfaces.");
+            Console.WriteLine();
+            Console.WriteLine("FIX: You need to reinstall the composite driver and put WinUSB on");
+            Console.WriteLine("the specific DATA interface instead.");
+            Console.WriteLine();
+            Console.WriteLine("Steps:");
+            Console.WriteLine("  1. Open Device Manager");
+            Console.WriteLine("  2. Find Procyon-CM, right-click -> Uninstall device");
+            Console.WriteLine("  3. CHECK 'Attempt to remove the driver for this device'");
+            Console.WriteLine("  4. Click Uninstall");
+            Console.WriteLine("  5. Unplug the USB cable, wait 5 seconds, plug it back in");
+            Console.WriteLine("  6. Wait for Windows to reinstall the composite driver");
+            Console.WriteLine("  7. Open Zadig -> Options -> List All Devices");
+            Console.WriteLine("  8. Select the DATA interface (NOT parent, NOT DFU) in dropdown");
+            Console.WriteLine("  9. Install WinUSB on that interface only");
+            Console.WriteLine(" 10. Run 'procyon-usb.exe diag' again to verify");
+        }
+        else if (paths.Count == 0)
+        {
+            Console.WriteLine("No WinUSB paths found for Procyon device.");
+            Console.WriteLine("Make sure the device is plugged in and WinUSB driver is installed via Zadig.");
+        }
+        else
+        {
+            Console.WriteLine("WinUSB paths look correct (composite child interfaces found).");
+            Console.WriteLine("Run 'procyon-usb.exe test' to test connection.");
+        }
+    }
+
+    static string GetDeviceProperty(IntPtr hDevInfo, ref SP_DEVINFO_DATA devInfo, int property)
+    {
+        int propType = 0;
+        int requiredSize = 0;
+        SetupDiGetDeviceRegistryProperty(hDevInfo, ref devInfo, property, ref propType, null, 0, ref requiredSize);
+        if (requiredSize == 0) return null;
+
+        byte[] buffer = new byte[requiredSize];
+        if (!SetupDiGetDeviceRegistryProperty(hDevInfo, ref devInfo, property, ref propType, buffer, buffer.Length, ref requiredSize))
+            return null;
+
+        // REG_SZ = 1, REG_MULTI_SZ = 7
+        if (propType == 1 || propType == 7)
+        {
+            // Decode as Unicode, take first string (for MULTI_SZ, stop at first null)
+            string result = Marshal.PtrToStringAuto(Marshal.UnsafeAddrOfPinnedArrayElement(buffer, 0));
+            return result;
+        }
+        return null;
+    }
+
+    // === Find Device ===
     static void FindDevice()
     {
         List<string> paths = FindAllDevicePaths();
@@ -254,6 +449,7 @@ class ProcyonUsb
             WriteJson("{\"found\":false}");
     }
 
+    // === Connect (try all paths) ===
     static void Connect()
     {
         if (winUsbHandle != IntPtr.Zero)
@@ -269,11 +465,9 @@ class ProcyonUsb
             return;
         }
 
-        // Try each path until one works
         List<string> errors = new List<string>();
         foreach (string devicePath in devicePaths)
         {
-            // CreateFile
             deviceHandle = CreateFile(devicePath, GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
 
@@ -285,7 +479,6 @@ class ProcyonUsb
                 continue;
             }
 
-            // WinUsb_Initialize
             if (!WinUsb_Initialize(deviceHandle, out winUsbHandle))
             {
                 int err = Marshal.GetLastWin32Error();
@@ -295,7 +488,6 @@ class ProcyonUsb
                 continue;
             }
 
-            // Success! Query pipes
             pipeIn = 0x81;
             pipeOut = 0x01;
             for (byte i = 0; i < 16; i++)
@@ -313,9 +505,9 @@ class ProcyonUsb
             return;
         }
 
-        // All paths failed
+        // All paths failed - include hint about composite device issue
         StringBuilder sb = new StringBuilder();
-        sb.Append("{\"connected\":false,\"error\":\"All paths failed\",\"attempts\":[");
+        sb.Append("{\"connected\":false,\"error\":\"All paths failed (WinUsb_Initialize error=6 usually means WinUSB is on composite parent instead of child interface). Run procyon-usb.exe diag for fix instructions.\",\"attempts\":[");
         for (int i = 0; i < errors.Count; i++)
         {
             if (i > 0) sb.Append(",");
@@ -336,7 +528,6 @@ class ProcyonUsb
     {
         if (winUsbHandle == IntPtr.Zero) { WriteError("Not connected"); return; }
         byte[] data = HexToBytes(hexData);
-        // Pad to 64 bytes
         if (data.Length < 64) { byte[] padded = new byte[64]; Array.Copy(data, padded, data.Length); data = padded; }
         int transferred;
         if (WinUsb_WritePipe(winUsbHandle, pipeOut, data, data.Length, out transferred, IntPtr.Zero))
@@ -348,7 +539,6 @@ class ProcyonUsb
     static void ReadData(int length, int timeoutMs)
     {
         if (winUsbHandle == IntPtr.Zero) { WriteError("Not connected"); return; }
-        // Set short timeout
         uint timeoutVal = (uint)timeoutMs;
         WinUsb_SetPipePolicy(winUsbHandle, pipeIn, SHORT_TIMEOUT_POLICY, 4, ref timeoutVal);
 
@@ -369,7 +559,6 @@ class ProcyonUsb
     {
         if (winUsbHandle == IntPtr.Zero) { WriteError("Not connected"); return; }
 
-        // Send
         byte[] sendData = HexToBytes(hexData);
         if (sendData.Length < 64) { byte[] padded = new byte[64]; Array.Copy(sendData, padded, sendData.Length); sendData = padded; }
         int sent;
@@ -379,7 +568,6 @@ class ProcyonUsb
             return;
         }
 
-        // Set timeout and read
         uint timeoutVal = (uint)timeoutMs;
         WinUsb_SetPipePolicy(winUsbHandle, pipeIn, SHORT_TIMEOUT_POLICY, 4, ref timeoutVal);
 
@@ -400,11 +588,13 @@ class ProcyonUsb
     {
         Console.WriteLine("=== Procyon WinUSB Test ===");
 
-        // Step 0: List all Procyon WinUSB paths
         List<string> allPaths = FindAllDevicePaths();
         Console.WriteLine("0. Found " + allPaths.Count + " WinUSB path(s) for Procyon:");
         foreach (string p in allPaths)
-            Console.WriteLine("   " + p);
+        {
+            bool hasMi = p.IndexOf("&mi_", StringComparison.OrdinalIgnoreCase) >= 0;
+            Console.WriteLine("   " + p + (hasMi ? " [COMPOSITE CHILD - OK]" : " [NO &mi_ - PARENT DEVICE!]"));
+        }
 
         if (allPaths.Count == 0)
         {
@@ -412,7 +602,21 @@ class ProcyonUsb
             return;
         }
 
-        // Step 1: Try each path
+        // Check for composite parent problem
+        bool allParent = true;
+        foreach (string p in allPaths)
+        {
+            if (p.IndexOf("&mi_", StringComparison.OrdinalIgnoreCase) >= 0)
+                allParent = false;
+        }
+        if (allParent)
+        {
+            Console.WriteLine("\nWARNING: All paths are COMPOSITE PARENT paths (no &mi_ in path).");
+            Console.WriteLine("This means WinUSB replaced the USB composite driver.");
+            Console.WriteLine("WinUsb_Initialize will likely fail. Run 'procyon-usb.exe diag' for fix.");
+            Console.WriteLine();
+        }
+
         bool connected = false;
         foreach (string path in allPaths)
         {
@@ -434,6 +638,8 @@ class ProcyonUsb
             {
                 int err = Marshal.GetLastWin32Error();
                 Console.WriteLine("FAILED (err=" + err + ")");
+                if (err == 6)
+                    Console.WriteLine("   -> ERROR_INVALID_HANDLE: WinUSB is on composite parent, not child interface!");
                 deviceHandle.Dispose();
                 deviceHandle = null;
                 continue;
@@ -446,15 +652,13 @@ class ProcyonUsb
         if (!connected)
         {
             Console.WriteLine("\nERROR: Could not connect on any path!");
-            Console.WriteLine("Possible fix: Open Zadig, select ALL Procyon entries one by one,");
-            Console.WriteLine("and install WinUSB driver for each one.");
+            Console.WriteLine("Run 'procyon-usb.exe diag' for detailed diagnosis and fix instructions.");
             return;
         }
 
-        // Step 3: Send GET_FIRMWARE_VERSION
         Console.Write("3. Sending GET_FIRMWARE_VERSION... ");
         byte[] cmd = new byte[64];
-        cmd[0] = 0x01; // Command byte
+        cmd[0] = 0x01;
         int sent;
         if (!WinUsb_WritePipe(winUsbHandle, pipeOut, cmd, 64, out sent, IntPtr.Zero))
         {
@@ -464,7 +668,6 @@ class ProcyonUsb
         }
         Console.WriteLine("OK (" + sent + " bytes)");
 
-        // Step 4: Read response
         Console.Write("4. Reading response... ");
         uint timeout = 3000;
         WinUsb_SetPipePolicy(winUsbHandle, pipeIn, SHORT_TIMEOUT_POLICY, 4, ref timeout);
@@ -485,7 +688,6 @@ class ProcyonUsb
             Console.WriteLine("FAILED! WinError=" + err);
         }
 
-        // Step 5: Disconnect
         Disconnect();
         Console.WriteLine("\n=== Test Complete ===");
     }
