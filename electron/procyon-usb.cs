@@ -147,7 +147,7 @@ class ProcyonUsb
                     Marshal.WriteInt32(detailData, IntPtr.Size == 8 ? 8 : 4);
                     if (SetupDiGetDeviceInterfaceDetail(hDevInfo, ref ifaceData, detailData, requiredSize, ref requiredSize, IntPtr.Zero))
                     {
-                        string path = Marshal.PtrToStringAuto(detailData + IntPtr.Size);
+                        string path = Marshal.PtrToStringAuto(detailData + 4);
                         if (path != null && path.IndexOf("2269", StringComparison.OrdinalIgnoreCase) >= 0 &&
                             path.IndexOf("beef", StringComparison.OrdinalIgnoreCase) >= 0)
                         {
