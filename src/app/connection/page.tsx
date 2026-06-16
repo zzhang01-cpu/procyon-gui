@@ -155,15 +155,21 @@ export default function ConnectionPage() {
                 <Usb className="h-5 w-5 text-blue-500" />
                 <div className="flex-1">
                   <p className="text-sm font-medium text-slate-900">
-                    Procyon CM (VID: {device.vendorId}, PID: {device.productId})
+                    {device.vendorId === '0x2269' && device.productId === '0xbeef' ? 'Procyon CM' : 'USB Device'} (VID: {device.vendorId}, PID: {device.productId})
                   </p>
                   <p className="text-xs text-slate-500">
                     Device Address: {device.deviceAddress}
                   </p>
                 </div>
-                <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-medium">
-                  Procyon
-                </span>
+                {device.vendorId === '0x2269' && device.productId === '0xbeef' ? (
+                  <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-medium">
+                    Procyon
+                  </span>
+                ) : (
+                  <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs font-medium">
+                    Other
+                  </span>
+                )}
               </div>
             ))}
           </div>
