@@ -1,6 +1,7 @@
 // Procyon USB Communication via WinUSB (bypasses libusb)
 // Compile: %WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe /out:procyon-usb.exe procyon-usb.cs
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
@@ -100,6 +101,7 @@ class ProcyonUsb
                 case "sendread":
                     if (args.Length < 2) { WriteError("No data"); return; }
                     SendAndRead(args[1], args.Length > 2 ? int.Parse(args[2]) : 3000); break;
+                case "list": ListDevices(); break;
                 case "test": RunTest(); break;
                 default: WriteError("Unknown command: " + args[0]); break;
             }
@@ -121,11 +123,12 @@ class ProcyonUsb
         WriteJson("{\"error\":\"" + msg.Replace("\"", "\\\"") + "\",\"winError\":" + Marshal.GetLastWin32Error() + "}");
     }
 
-    static string FindDevicePath()
+    static List<string> FindAllDevicePaths()
     {
+        List<string> paths = new List<string>();
         IntPtr hDevInfo = SetupDiGetClassDevs(ref winusbGuid, IntPtr.Zero, IntPtr.Zero,
             DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-        if (hDevInfo == (IntPtr)(-1)) return null;
+        if (hDevInfo == (IntPtr)(-1)) return paths;
 
         try
         {
@@ -151,7 +154,7 @@ class ProcyonUsb
                         if (path != null && path.IndexOf("2269", StringComparison.OrdinalIgnoreCase) >= 0 &&
                             path.IndexOf("beef", StringComparison.OrdinalIgnoreCase) >= 0)
                         {
-                            return path;
+                            paths.Add(path);
                         }
                     }
                 }
@@ -160,14 +163,93 @@ class ProcyonUsb
             }
         }
         finally { SetupDiDestroyDeviceInfoList(hDevInfo); }
-        return null;
+        return paths;
+    }
+
+    static string FindDevicePath()
+    {
+        List<string> paths = FindAllDevicePaths();
+        return paths.Count > 0 ? paths[0] : null;
+    }
+
+    static void ListDevices()
+    {
+        // List ALL WinUSB devices on the system
+        List<string> allPaths = new List<string>();
+        IntPtr hDevInfo = SetupDiGetClassDevs(ref winusbGuid, IntPtr.Zero, IntPtr.Zero,
+            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+        if (hDevInfo == (IntPtr)(-1)) { WriteJson("{\"error\":\"SetupDiGetClassDevs failed\"}"); return; }
+
+        try
+        {
+            int index = 0;
+            while (true)
+            {
+                SP_DEVICE_INTERFACE_DATA ifaceData = new SP_DEVICE_INTERFACE_DATA();
+                ifaceData.cbSize = Marshal.SizeOf(ifaceData);
+
+                if (!SetupDiEnumDeviceInterfaces(hDevInfo, IntPtr.Zero, ref winusbGuid, index, ref ifaceData))
+                    break;
+
+                int requiredSize = 0;
+                SetupDiGetDeviceInterfaceDetail(hDevInfo, ref ifaceData, IntPtr.Zero, 0, ref requiredSize, IntPtr.Zero);
+
+                IntPtr detailData = Marshal.AllocHGlobal(requiredSize);
+                try
+                {
+                    Marshal.WriteInt32(detailData, IntPtr.Size == 8 ? 8 : 4);
+                    if (SetupDiGetDeviceInterfaceDetail(hDevInfo, ref ifaceData, detailData, requiredSize, ref requiredSize, IntPtr.Zero))
+                    {
+                        string path = Marshal.PtrToStringAuto(detailData + 4);
+                        if (path != null) allPaths.Add(path);
+                    }
+                }
+                finally { Marshal.FreeHGlobal(detailData); }
+                index++;
+            }
+        }
+        finally { SetupDiDestroyDeviceInfoList(hDevInfo); }
+
+        StringBuilder sb = new StringBuilder();
+        sb.Append("{\"total\":").Append(allPaths.Count).Append(",\"procyon\":[");
+        bool first = true;
+        foreach (string p in allPaths)
+        {
+            if (p.IndexOf("2269", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                p.IndexOf("beef", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                if (!first) sb.Append(",");
+                sb.Append("\"").Append(p.Replace("\\", "\\\\")).Append("\"");
+                first = false;
+            }
+        }
+        sb.Append("],\"all\":[");
+        first = true;
+        foreach (string p in allPaths)
+        {
+            if (!first) sb.Append(",");
+            sb.Append("\"").Append(p.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"");
+            first = false;
+        }
+        sb.Append("]}");
+        Console.WriteLine(sb.ToString());
     }
 
     static void FindDevice()
     {
-        string path = FindDevicePath();
-        if (path != null)
-            WriteJson("{\"found\":true,\"path\":\"" + path.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"}");
+        List<string> paths = FindAllDevicePaths();
+        if (paths.Count > 0)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("{\"found\":true,\"paths\":[");
+            for (int i = 0; i < paths.Count; i++)
+            {
+                if (i > 0) sb.Append(",");
+                sb.Append("\"").Append(paths[i].Replace("\\", "\\\\")).Append("\"");
+            }
+            sb.Append("]}");
+            Console.WriteLine(sb.ToString());
+        }
         else
             WriteJson("{\"found\":false}");
     }
@@ -180,50 +262,67 @@ class ProcyonUsb
             return;
         }
 
-        string devicePath = FindDevicePath();
-        if (devicePath == null)
+        List<string> devicePaths = FindAllDevicePaths();
+        if (devicePaths.Count == 0)
         {
             WriteJson("{\"connected\":false,\"error\":\"Procyon WinUSB device path not found. Make sure WinUSB driver is installed via Zadig.\"}");
             return;
         }
 
-        // CreateFile
-        deviceHandle = CreateFile(devicePath, GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
-
-        if (deviceHandle == null || deviceHandle.IsInvalid)
+        // Try each path until one works
+        List<string> errors = new List<string>();
+        foreach (string devicePath in devicePaths)
         {
-            int err = Marshal.GetLastWin32Error();
-            deviceHandle = null;
-            WriteJson("{\"connected\":false,\"error\":\"CreateFile failed\",\"winError\":" + err + "}");
-            return;
-        }
+            // CreateFile
+            deviceHandle = CreateFile(devicePath, GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
 
-        // WinUsb_Initialize
-        if (!WinUsb_Initialize(deviceHandle, out winUsbHandle))
-        {
-            int err = Marshal.GetLastWin32Error();
-            deviceHandle.Dispose();
-            deviceHandle = null;
-            WriteJson("{\"connected\":false,\"error\":\"WinUsb_Initialize failed\",\"winError\":" + err + "}");
-            return;
-        }
-
-        // Query pipes
-        pipeIn = 0x81;
-        pipeOut = 0x01;
-        for (byte i = 0; i < 16; i++)
-        {
-            WINUSB_PIPE_INFORMATION pipeInfo;
-            if (WinUsb_QueryPipe(winUsbHandle, 0, i, out pipeInfo))
+            if (deviceHandle == null || deviceHandle.IsInvalid)
             {
-                if ((pipeInfo.PipeId & 0x80) != 0) pipeIn = pipeInfo.PipeId;
-                else pipeOut = pipeInfo.PipeId;
+                int err = Marshal.GetLastWin32Error();
+                deviceHandle = null;
+                errors.Add("CreateFile failed on " + devicePath + " (err=" + err + ")");
+                continue;
             }
-            else break;
+
+            // WinUsb_Initialize
+            if (!WinUsb_Initialize(deviceHandle, out winUsbHandle))
+            {
+                int err = Marshal.GetLastWin32Error();
+                deviceHandle.Dispose();
+                deviceHandle = null;
+                errors.Add("WinUsb_Initialize failed on " + devicePath + " (err=" + err + ")");
+                continue;
+            }
+
+            // Success! Query pipes
+            pipeIn = 0x81;
+            pipeOut = 0x01;
+            for (byte i = 0; i < 16; i++)
+            {
+                WINUSB_PIPE_INFORMATION pipeInfo;
+                if (WinUsb_QueryPipe(winUsbHandle, 0, i, out pipeInfo))
+                {
+                    if ((pipeInfo.PipeId & 0x80) != 0) pipeIn = pipeInfo.PipeId;
+                    else pipeOut = pipeInfo.PipeId;
+                }
+                else break;
+            }
+
+            WriteJson("{\"connected\":true,\"pipeIn\":\"0x" + pipeIn.ToString("x") + "\",\"pipeOut\":\"0x" + pipeOut.ToString("x") + "\",\"path\":\"" + devicePath.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"}");
+            return;
         }
 
-        WriteJson("{\"connected\":true,\"pipeIn\":\"0x" + pipeIn.ToString("x") + "\",\"pipeOut\":\"0x" + pipeOut.ToString("x") + "\"}");
+        // All paths failed
+        StringBuilder sb = new StringBuilder();
+        sb.Append("{\"connected\":false,\"error\":\"All paths failed\",\"attempts\":[");
+        for (int i = 0; i < errors.Count; i++)
+        {
+            if (i > 0) sb.Append(",");
+            sb.Append("\"").Append(errors[i].Replace("\"", "\\\"")).Append("\"");
+        }
+        sb.Append("]}");
+        Console.WriteLine(sb.ToString());
     }
 
     static void Disconnect()
@@ -301,17 +400,56 @@ class ProcyonUsb
     {
         Console.WriteLine("=== Procyon WinUSB Test ===");
 
-        // Step 1: Find device
-        Console.Write("1. Finding device... ");
-        string path = FindDevicePath();
-        if (path == null) { Console.WriteLine("NOT FOUND!"); return; }
-        Console.WriteLine("Found!");
-        Console.WriteLine("   Path: " + path);
+        // Step 0: List all Procyon WinUSB paths
+        List<string> allPaths = FindAllDevicePaths();
+        Console.WriteLine("0. Found " + allPaths.Count + " WinUSB path(s) for Procyon:");
+        foreach (string p in allPaths)
+            Console.WriteLine("   " + p);
 
-        // Step 2: Connect
-        Console.Write("2. Connecting... ");
-        Connect();
-        if (winUsbHandle == IntPtr.Zero) return;
+        if (allPaths.Count == 0)
+        {
+            Console.WriteLine("   No WinUSB paths found! Check Zadig driver installation.");
+            return;
+        }
+
+        // Step 1: Try each path
+        bool connected = false;
+        foreach (string path in allPaths)
+        {
+            Console.Write("1. Trying path: " + path + "\n   CreateFile... ");
+            deviceHandle = CreateFile(path, GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+
+            if (deviceHandle == null || deviceHandle.IsInvalid)
+            {
+                int err = Marshal.GetLastWin32Error();
+                deviceHandle = null;
+                Console.WriteLine("FAILED (err=" + err + ")");
+                continue;
+            }
+            Console.WriteLine("OK");
+
+            Console.Write("   WinUsb_Initialize... ");
+            if (!WinUsb_Initialize(deviceHandle, out winUsbHandle))
+            {
+                int err = Marshal.GetLastWin32Error();
+                Console.WriteLine("FAILED (err=" + err + ")");
+                deviceHandle.Dispose();
+                deviceHandle = null;
+                continue;
+            }
+            Console.WriteLine("OK");
+            connected = true;
+            break;
+        }
+
+        if (!connected)
+        {
+            Console.WriteLine("\nERROR: Could not connect on any path!");
+            Console.WriteLine("Possible fix: Open Zadig, select ALL Procyon entries one by one,");
+            Console.WriteLine("and install WinUSB driver for each one.");
+            return;
+        }
 
         // Step 3: Send GET_FIRMWARE_VERSION
         Console.Write("3. Sending GET_FIRMWARE_VERSION... ");
