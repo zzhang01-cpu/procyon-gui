@@ -84,204 +84,70 @@ class ProcyonUsbBridge {
   }
 
   /**
-   * Dump device configuration for debugging
-   */
-  _dumpConfig(device) {
-    try {
-      const desc = device.deviceDescriptor;
-      console.log('[USB] Device class:', desc.bDeviceClass);
-      console.log('[USB] Num configurations:', desc.bNumConfigurations);
-
-      // Try allConfigDescriptors
-      if (device.allConfigDescriptors) {
-        const configs = device.allConfigDescriptors;
-        for (let c = 0; c < configs.length; c++) {
-          const cfg = configs[c];
-          console.log(`[USB] Config ${c}: value=${cfg.bConfigurationValue}, numInterfaces=${cfg.bNumInterfaces}`);
-          if (cfg.interfaces) {
-            for (let i = 0; i < cfg.interfaces.length; i++) {
-              const ifaceArr = cfg.interfaces[i];
-              for (let a = 0; a < ifaceArr.length; a++) {
-                const alt = ifaceArr[a];
-                console.log(`[USB]   Interface ${i} alt ${a}: class=${alt.bInterfaceClass}, endpoints=${alt.bNumEndpoints}`);
-                if (alt.endpoints) {
-                  for (const ep of alt.endpoints) {
-                    console.log(`[USB]     EP: addr=0x${ep.bEndpointAddress.toString(16)}, dir=${ep.bEndpointAddress & 0x80 ? 'IN' : 'OUT'}, type=${ep.bmAttributes}`);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.log('[USB] Config dump error:', err.message);
-    }
-  }
-
-  /**
-   * Get interface from device - try multiple strategies for Windows+WinUSB
+   * Get interface from device - Windows+WinUSB requires interface(1) not interface(0)
+   * This is a known quirk: node-usb on Windows with WinUSB driver has an offset
+   * where device.interface(1) returns the first actual interface (id=0).
    */
   _getInterface(device) {
-    // Before trying to get interface, set configuration
-    try {
-      const desc = device.deviceDescriptor;
-      if (desc && desc.bNumConfigurations > 0) {
-        // Get configuration value from configDescriptor
-        const cfgDesc = device.configDescriptor || (device.allConfigDescriptors && device.allConfigDescriptors[0]);
-        const configValue = cfgDesc ? cfgDesc.bConfigurationValue : 1;
-        device.setConfiguration(configValue);
-        console.log('[USB] Set configuration to', configValue);
+    // Try interface numbers in order: 1 first (Windows+WinUSB), then 0, then 2-7
+    const tryOrder = [1, 0, 2, 3, 4, 5, 6, 7];
+    
+    for (const n of tryOrder) {
+      try {
+        const iface = device.interface(n);
+        if (iface) {
+          // Check if this interface has the endpoints we need
+          const hasOut = iface.endpoints && iface.endpoints.some(ep => {
+            const addr = ep.address !== undefined ? ep.address : ep.bEndpointAddress;
+            return addr === EP_OUT || addr === 0x01;
+          });
+          const hasIn = iface.endpoints && iface.endpoints.some(ep => {
+            const addr = ep.address !== undefined ? ep.address : ep.bEndpointAddress;
+            return addr === EP_IN || addr === 0x81;
+          });
+          
+          if (hasOut && hasIn) {
+            console.log(`[USB] Found Procyon interface via device.interface(${n}), id=${iface.id}, endpoints=${iface.endpoints.length}`);
+            return iface;
+          } else {
+            console.log(`[USB] interface(${n}) found but missing endpoints (OUT:${hasOut}, IN:${hasIn}), skipping`);
+          }
+        }
+      } catch (err) {
+        // Interface not found at this number, continue
       }
-    } catch (cfgErr) {
-      console.log('[USB] setConfiguration failed (may already be set):', cfgErr.message);
     }
 
-    // Method 1: device.interface(n) - standard node-usb API
-    try {
-      const iface = device.interface(0);
-      if (iface) {
-        console.log('[USB] Got interface via device.interface(0)');
-        return iface;
-      }
-    } catch (err) {
-      console.log('[USB] device.interface(0) failed:', err.message);
-    }
-
-    // Method 2: device.interfaces[n] - alternative property access
+    // Fallback: device.interfaces property
     if (device.interfaces && device.interfaces.length > 0) {
       console.log('[USB] Got interface via device.interfaces[0]');
       return device.interfaces[0];
-    }
-
-    // Method 3: On Windows+WinUSB, build interface from configDescriptor
-    // WinUSB claims the interface automatically, node-usb can't see it
-    // We create a fake interface object with real endpoint info from descriptors
-    console.log('[USB] Standard interface methods failed, trying descriptor-based approach...');
-    try {
-      const configs = device.allConfigDescriptors;
-      if (configs && configs.length > 0) {
-        const cfg = configs[0];
-        if (cfg.interfaces && cfg.interfaces.length > 0) {
-          const ifaceDescs = cfg.interfaces[0];
-          if (ifaceDescs && ifaceDescs.length > 0) {
-            const alt = ifaceDescs[0];
-            console.log('[USB] Found interface in descriptor: class=', alt.bInterfaceClass, 'endpoints=', alt.bNumEndpoints);
-
-            // Build endpoint objects from descriptor
-            const endpoints = [];
-            if (alt.endpoints) {
-              for (const epDesc of alt.endpoints) {
-                const epAddr = epDesc.bEndpointAddress;
-                const isIn = (epAddr & 0x80) !== 0;
-                const isOut = !isIn;
-                console.log(`[USB]   Descriptor EP: addr=0x${epAddr.toString(16)}, ${isIn ? 'IN' : 'OUT'}`);
-
-                // Try to get actual endpoint from device
-                let ep = null;
-                try {
-                  // node-usb v2: try to find endpoint by address from all interfaces
-                  for (let i = 0; i < 16; i++) {
-                    try {
-                      const testIface = device.interface(i);
-                      if (testIface && testIface.endpoints) {
-                        ep = testIface.endpoints.find(e =>
-                          e.address === epAddr || e.bEndpointAddress === epAddr
-                        );
-                        if (ep) break;
-                      }
-                    } catch (e) { /* skip */ }
-                  }
-                } catch (e) { /* skip */ }
-
-                if (!ep) {
-                  // Try direct endpoint access via device
-                  try {
-                    // In node-usb, we can sometimes get endpoints from the opened device
-                    // by looking at the internal __interface object
-                  } catch (e) { /* skip */ }
-                }
-
-                endpoints.push({
-                  descriptor: epDesc,
-                  address: epAddr,
-                  direction: isIn ? 'in' : 'out',
-                  transferType: epDesc.bmAttributes & 0x03,
-                  endpoint: ep, // may be null
-                });
-              }
-            }
-
-            // Return a pseudo-interface object
-            return {
-              id: 0,
-              altSetting: alt.bAlternateSetting,
-              interfaceClass: alt.bInterfaceClass,
-              endpoints: endpoints.filter(e => e.endpoint).map(e => e.endpoint),
-              _pseudoInterface: true,
-              _endpointDescriptors: endpoints,
-              claim: () => { throw new Error('Pseudo interface - cannot claim on WinUSB'); },
-              release: () => {},
-              isKernelDriverActive: () => true,
-              detachKernelDriver: () => {},
-            };
-          }
-        }
-      }
-    } catch (descErr) {
-      console.log('[USB] Descriptor-based approach failed:', descErr.message);
     }
 
     return null;
   }
 
   /**
-   * Get endpoint by direction - supports both real and pseudo interfaces
+   * Get endpoint by direction
    */
   _getEndpoint(iface, direction) {
-    if (!iface) return null;
+    if (!iface || !iface.endpoints) return null;
 
-    // Standard interface with real endpoints
-    if (iface.endpoints && iface.endpoints.length > 0 && !iface._pseudoInterface) {
-      for (const ep of iface.endpoints) {
-        if (ep.direction === direction) {
-          return ep;
-        }
-      }
-      // Try by endpoint address as fallback
-      for (const ep of iface.endpoints) {
-        const addr = ep.address || ep.bEndpointAddress;
-        if (direction === 'out' && (addr === EP_OUT || addr === 0x01)) return ep;
-        if (direction === 'in' && (addr === EP_IN || addr === 0x81)) return ep;
+    const targetAddr = direction === 'out' ? EP_OUT : EP_IN;
+    
+    for (const ep of iface.endpoints) {
+      // Match by direction property
+      if (ep.direction === direction) {
+        return ep;
       }
     }
-
-    // Pseudo interface - try to get endpoints directly from the opened device
-    if (iface._pseudoInterface && iface._endpointDescriptors) {
-      const targetAddr = direction === 'out' ? EP_OUT : EP_IN;
-      const epDesc = iface._endpointDescriptors.find(e => e.address === targetAddr);
-      if (epDesc) {
-        console.log(`[USB] Found ${direction} endpoint descriptor at 0x${targetAddr.toString(16)}, trying direct access...`);
-        // Try to get the endpoint directly from the device
-        // In node-usb, after open(), endpoints might be accessible
-        try {
-          const iface0 = this.device.interface(0);
-          if (iface0 && iface0.endpoints) {
-            const ep = iface0.endpoints.find(e => {
-              const addr = e.address || e.bEndpointAddress;
-              return addr === targetAddr;
-            });
-            if (ep) {
-              console.log(`[USB] Got ${direction} endpoint from device.interface(0)`);
-              return ep;
-            }
-          }
-        } catch (e) {
-          console.log(`[USB] Could not get endpoint from interface:`, e.message);
-        }
-      }
+    
+    // Match by endpoint address
+    for (const ep of iface.endpoints) {
+      const addr = ep.address !== undefined ? ep.address : ep.bEndpointAddress;
+      if (addr === targetAddr) return ep;
     }
-
+    
     return null;
   }
 
@@ -302,21 +168,10 @@ class ProcyonUsbBridge {
 
       console.log('[USB] Found Procyon device, opening...');
 
-      // Dump configuration for debugging
-      this._dumpConfig(device);
-
       // Open device
       try {
         device.open();
         console.log('[USB] Device opened successfully');
-        
-        // On Windows, try to set auto-detach kernel driver
-        try {
-          device.setAutoDetachKernelDriver(true);
-          console.log('[USB] Auto-detach kernel driver enabled');
-        } catch (autoDetachErr) {
-          console.log('[USB] Auto-detach not supported:', autoDetachErr.message);
-        }
       } catch (openErr) {
         console.error('[USB] Failed to open device:', openErr.message);
         return { 
@@ -327,86 +182,51 @@ class ProcyonUsbBridge {
 
       this.device = device;
 
-      // Try standard interface + endpoint approach first
+      // Try auto-detach kernel driver
+      try {
+        device.setAutoDetachKernelDriver(true);
+        console.log('[USB] Auto-detach kernel driver enabled');
+      } catch (autoDetachErr) {
+        console.log('[USB] Auto-detach not supported:', autoDetachErr.message);
+      }
+
+      // Set configuration
+      try {
+        const cfgDesc = device.configDescriptor || (device.allConfigDescriptors && device.allConfigDescriptors[0]);
+        if (cfgDesc) {
+          device.setConfiguration(cfgDesc.bConfigurationValue);
+          console.log('[USB] Set configuration to', cfgDesc.bConfigurationValue);
+        }
+      } catch (cfgErr) {
+        console.log('[USB] setConfiguration:', cfgErr.message);
+      }
+
+      // Get interface - on Windows+WinUSB, device.interface(1) works, not interface(0)
       const iface = this._getInterface(device);
-      
-      if (iface && !iface._pseudoInterface) {
-        // Standard path - interface found normally
-        this.iface = iface;
-        this.ifaceClaimed = false;
-        try {
-          iface.claim();
-          this.ifaceClaimed = true;
-          console.log('[USB] Successfully claimed interface');
-        } catch (claimErr) {
-          console.log('[USB] Claim failed (expected on Windows+WinUSB):', claimErr.message);
-        }
-
-        this.outEndpoint = this._getEndpoint(iface, 'out');
-        this.inEndpoint = this._getEndpoint(iface, 'in');
-      } else if (iface && iface._pseudoInterface) {
-        // Pseudo interface from descriptor - try to get endpoints directly
-        console.log('[USB] Using pseudo-interface (WinUSB descriptor-based)');
-        this.iface = iface;
-        this.ifaceClaimed = false;
-        
-        // Try to get endpoints from the pseudo interface
-        this.outEndpoint = this._getEndpoint(iface, 'out');
-        this.inEndpoint = this._getEndpoint(iface, 'in');
-      } else {
-        // No interface at all - try direct endpoint access via low-level libusb
-        console.log('[USB] No interface found, trying direct endpoint access...');
+      if (!iface) {
+        try { device.close(); } catch(e) {}
+        this.device = null;
+        return { success: false, error: 'No USB interface found on device. Try reconnecting the USB cable.' };
       }
 
-      // If endpoints still not found, try direct access using libusb transfer API
-      if (!this.inEndpoint || !this.outEndpoint) {
-        console.log('[USB] Endpoints not found via interface, trying raw libusb access...');
-        
-        // On Windows with WinUSB, the device is open and WinUSB has the interface.
-        // We need to access endpoints through libusb's low-level API.
-        // node-usb exposes this through the device's __native object or we use
-        // the InTransfer/OutTransfer approach.
-        
-        // Try to find endpoints by scanning all possible interface numbers
-        for (let ifaceNum = 0; ifaceNum < 4; ifaceNum++) {
-          try {
-            const testIface = device.interface(ifaceNum);
-            if (testIface) {
-              console.log(`[USB] Found interface ${ifaceNum}! Endpoints:`, 
-                testIface.endpoints ? testIface.endpoints.length : 0);
-              
-              // Try claim
-              try { testIface.claim(); this.ifaceClaimed = true; } catch(e) {
-                console.log(`[USB] Claim iface ${ifaceNum} failed:`, e.message);
-              }
-              
-              if (testIface.endpoints && testIface.endpoints.length > 0) {
-                for (const ep of testIface.endpoints) {
-                  const addr = ep.address !== undefined ? ep.address : ep.bEndpointAddress;
-                  if (addr === EP_OUT || addr === 0x01) {
-                    this.outEndpoint = ep;
-                    console.log('[USB] Found OUT endpoint on interface', ifaceNum);
-                  }
-                  if (addr === EP_IN || addr === 0x81) {
-                    this.inEndpoint = ep;
-                    console.log('[USB] Found IN endpoint on interface', ifaceNum);
-                  }
-                }
-              }
-              
-              if (this.inEndpoint && this.outEndpoint) {
-                this.iface = testIface;
-                break;
-              }
-              
-              // Release if we didn't find both endpoints
-              try { testIface.release(false, () => {}); } catch(e) {}
-            }
-          } catch (e) {
-            // Interface doesn't exist, skip
-          }
-        }
+      this.iface = iface;
+
+      // Try to claim the interface
+      // On Windows + WinUSB, claim may fail with LIBUSB_ERROR_NOT_FOUND
+      // This is EXPECTED - WinUSB auto-claims when device is opened
+      this.ifaceClaimed = false;
+      try {
+        iface.claim();
+        this.ifaceClaimed = true;
+        console.log('[USB] Successfully claimed interface');
+      } catch (claimErr) {
+        console.log('[USB] Claim failed (expected on Windows+WinUSB):', claimErr.message);
+        // Continue without claiming - WinUSB handles this internally
       }
+
+      // Find endpoints
+      this.outEndpoint = this._getEndpoint(iface, 'out');
+      this.inEndpoint = this._getEndpoint(iface, 'in');
 
       console.log('[USB] OUT endpoint:', this.outEndpoint ? 'found' : 'NOT found');
       console.log('[USB] IN endpoint:', this.inEndpoint ? 'found' : 'NOT found');
@@ -415,7 +235,7 @@ class ProcyonUsbBridge {
         this._cleanup();
         return { 
           success: false, 
-          error: `USB endpoints not found. IN: ${!!this.inEndpoint}, OUT: ${!!this.outEndpoint}. Device may be in DFU mode or driver not properly installed.` 
+          error: `USB endpoints not found. IN: ${!!this.inEndpoint}, OUT: ${!!this.outEndpoint}` 
         };
       }
 
