@@ -69,7 +69,12 @@ class ProcyonUsb
     const int OPEN_EXISTING = 3;
     const uint SHORT_TIMEOUT_POLICY = 0x03; // SHORT_TIMEOUT
 
-    static readonly Guid GUID_DEVINTERFACE_WINUSB = new Guid("dee824ef-729b-4a0e-9c14-b7117d33a817");
+    static Guid winusbGuid;
+
+    static ProcyonUsb()
+    {
+        winusbGuid = new Guid("dee824ef-729b-4a0e-9c14-b7117d33a817");
+    }
 
     static SafeFileHandle deviceHandle = null;
     static IntPtr winUsbHandle = IntPtr.Zero;
@@ -118,7 +123,7 @@ class ProcyonUsb
 
     static string FindDevicePath()
     {
-        IntPtr hDevInfo = SetupDiGetClassDevs(ref GUID_DEVINTERFACE_WINUSB, IntPtr.Zero, IntPtr.Zero,
+        IntPtr hDevInfo = SetupDiGetClassDevs(ref winusbGuid, IntPtr.Zero, IntPtr.Zero,
             DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
         if (hDevInfo == (IntPtr)(-1)) return null;
 
@@ -130,7 +135,7 @@ class ProcyonUsb
                 SP_DEVICE_INTERFACE_DATA ifaceData = new SP_DEVICE_INTERFACE_DATA();
                 ifaceData.cbSize = Marshal.SizeOf(ifaceData);
 
-                if (!SetupDiEnumDeviceInterfaces(hDevInfo, IntPtr.Zero, ref GUID_DEVINTERFACE_WINUSB, index, ref ifaceData))
+                if (!SetupDiEnumDeviceInterfaces(hDevInfo, IntPtr.Zero, ref winusbGuid, index, ref ifaceData))
                     break;
 
                 int requiredSize = 0;
