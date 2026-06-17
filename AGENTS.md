@@ -110,8 +110,14 @@ interface DeviceContextType {
 
 - **VID**: 0x2269
 - **PID**: 0xBEEF
-- **驱动**: 需通过 Zadig 安装 WinUSB 驱动
-- **传输方式**: USB Bulk Transfer（非 CDC 串口）
+- **驱动**: libusb-win32 (libusb0.sys v1.4.0.0)，设备 GUID `{0BDA4BB5-9CFD-4571-9190-E01A1948AEBF}`
+- **传输方式**: USB Bulk Transfer（EP1 OUT=0x01, EP1 IN=0x81, 64 bytes max packet）
+- **设备类**: CDC ACM (0x0A)，但使用 Bulk 传输而非虚拟串口
+- **接口**: 只有 Interface 1（Interface 0 不存在，ClaimInterface(0) 会失败）
+- **原始软件**: Procyon.exe 使用 LibUsbDotNet.dll (v2.2.8.0/v3.0.0.0 LibUsb 后端)
+- **已知问题**: Bulk Write 成功但 Bulk Read 超时，需要从 Procyon.dll 逆向通信协议
+- **沙箱注意**: Web 模式下 USB 不可用；Electron 模式需在本地 Windows 运行
+- **沙箱构建**: `ELECTRON_SKIP_BINARY_DOWNLOAD=1` 必须设置，否则 pnpm install 会因 Electron 下载超时而失败
 
 ## 编码规范
 
