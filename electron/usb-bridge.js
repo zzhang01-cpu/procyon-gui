@@ -341,9 +341,50 @@ ProcyonUsbBridge.prototype.connect = async function() {
       }
     }
 
-    // Method 3: Try libusb_reset_device via usb.LIBUSB_ERROR... 
-    // node-usb v2: device.reset() is not available in all versions
-    // Skip reset on Windows -- it causes more problems than it solves with WinUSB
+    // Method 3: WinUSB bInterfaceNumber mismatch workaround
+    // When WinUSB is installed on the WHOLE device (not per-interface),
+    // WinUsb_Initialize() returns a handle for the first interface and
+    // libusb stores it at index 0. But if the device's only interface
+    // has bInterfaceNumber=1 (not 0), libusb tries to find a handle at
+    // index 1 which is empty -> LIBUSB_ERROR_NOT_FOUND.
+    // Fix: override interfaceNumber to 0 so libusb uses the WinUSB handle
+    // that's actually stored at index 0.
+    if (!claimed) {
+      console.log('[USB] Method 2 failed. Trying WinUSB interfaceNumber=0 workaround...');
+      for (var di = 0; di < interfaces.length; di++) {
+        var ifc3 = interfaces[di];
+        var origIfNum = ifc3.interfaceNumber;
+        if (origIfNum === 0) continue; // already tried in Method 1
+        console.log('[USB] Patching interfaceNumber from ' + origIfNum + ' to 0 for WinUSB workaround');
+        ifc3.interfaceNumber = 0;
+        try {
+          ifc3.claim();
+          self.iface = ifc3;
+          console.log('[USB] Successfully claimed interface (patched to 0, original bInterfaceNumber=' + origIfNum + ')');
+          claimed = true;
+          break;
+        } catch (claimErr3) {
+          console.log('[USB] WinUSB workaround claim failed: ' + claimErr3.message);
+          ifc3.interfaceNumber = origIfNum; // restore
+        }
+      }
+    }
+
+    // Method 4: Also try patching device.interface(1).interfaceNumber to 0
+    if (!claimed) {
+      console.log('[USB] Method 3 failed. Trying device.interface() with patch...');
+      try {
+        var ifc4 = self.device.interface(1);
+        console.log('[USB] Got device.interface(1), patching interfaceNumber to 0');
+        ifc4.interfaceNumber = 0;
+        ifc4.claim();
+        self.iface = ifc4;
+        console.log('[USB] Successfully claimed interface (device.interface(1) patched to 0)');
+        claimed = true;
+      } catch (claimErr4) {
+        console.log('[USB] Method 4 claim failed: ' + claimErr4.message);
+      }
+    }
 
     if (!claimed) {
       // Diagnostic: check Windows device driver info
