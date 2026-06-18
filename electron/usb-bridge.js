@@ -250,6 +250,16 @@ ProcyonUsbBridge.prototype.connect = async function() {
       return { success: false, error: 'Cannot open device: ' + openErr.message + '. May need WinUSB driver (use Zadig).' };
     }
 
+    // Set USB configuration -- required before claim() on some Windows/WinUSB setups
+    // Device has bNumConfigurations=1, configuration value is typically 1
+    try {
+      self.device.setConfiguration(1);
+      console.log('[USB] Set configuration 1 successful');
+    } catch (cfgErr) {
+      console.log('[USB] setConfiguration(1) failed: ' + cfgErr.message);
+      console.log('[USB] Continuing anyway -- some devices do not need explicit setConfiguration');
+    }
+
     // Use device.interfaces array directly (node-usb v2)
     var interfaces = self.device.interfaces || [];
     console.log('[USB] Device has ' + interfaces.length + ' interface(s)');
@@ -331,41 +341,9 @@ ProcyonUsbBridge.prototype.connect = async function() {
       }
     }
 
-    // Method 3: On Windows, try resetting the device and retrying
-    if (!claimed && process.platform === 'win32') {
-      console.log('[USB] Method 2 failed, trying device reset + retry...');
-      try {
-        self.device.reset();
-        console.log('[USB] Device reset successful, retrying claim...');
-        // Small delay after reset
-        await new Promise(function(r) { setTimeout(r, 500); });
-        // Re-open after reset
-        try {
-          self.device.open();
-          console.log('[USB] Re-opened device after reset');
-        } catch (openErr) {
-          console.log('[USB] Re-open after reset: ' + openErr.message);
-        }
-
-        // Refresh interfaces after reset
-        var interfacesAfterReset = self.device.interfaces || [];
-        for (var i3 = 0; i3 < interfacesAfterReset.length; i3++) {
-          var ifc3 = interfacesAfterReset[i3];
-          var ifNum3 = ifc3.descriptor.bInterfaceNumber;
-          try {
-            ifc3.claim();
-            self.iface = ifc3;
-            console.log('[USB] Successfully claimed interface ' + ifNum3 + ' after reset');
-            claimed = true;
-            break;
-          } catch (claimErr3) {
-            console.log('[USB] Interface ' + ifNum3 + ': claim after reset failed: ' + claimErr3.message);
-          }
-        }
-      } catch (resetErr) {
-        console.log('[USB] Device reset failed: ' + resetErr.message);
-      }
-    }
+    // Method 3: Try libusb_reset_device via usb.LIBUSB_ERROR... 
+    // node-usb v2: device.reset() is not available in all versions
+    // Skip reset on Windows -- it causes more problems than it solves with WinUSB
 
     if (!claimed) {
       // Diagnostic: check Windows device driver info
@@ -374,18 +352,39 @@ ProcyonUsbBridge.prototype.connect = async function() {
       for (var di = 0; di < interfaces.length; di++) {
         console.log('[USB] Interface[' + di + '] descriptor: ' + JSON.stringify(interfaces[di].descriptor));
       }
-      console.log('[USB] TROUBLESHOOT: Open Zadig -> Options -> List All Devices');
-      console.log('[USB] Check if the Procyon device appears with WinUSB driver.');
-      console.log('[USB] If it shows as libusb-win32 or CDC, replace it with WinUSB.');
-      console.log('[USB] For composite devices, you may need to replace the driver for EACH interface.');
+      console.log('[USB] ============================================');
+      console.log('[USB] TROUBLESHOOT for Windows composite device:');
+      console.log('[USB] This device (bDeviceClass=0) is a COMPOSITE USB device.');
+      console.log('[USB] Windows assigns drivers PER INTERFACE, not per device.');
+      console.log('[USB] ');
+      console.log('[USB] Step 1: Open Zadig -> Options -> List All Devices');
+      console.log('[USB] Step 2: In dropdown, look for MULTIPLE entries for Procyon device');
+      console.log('[USB] Step 3: For EACH entry that belongs to this device:');
+      console.log('[USB]         - Select it in the dropdown');
+      console.log('[USB]         - Make sure driver is set to WinUSB');
+      console.log('[USB]         - Click "Replace Driver"');
+      console.log('[USB] Step 4: If Zadig only shows ONE entry, try this instead:');
+      console.log('[USB]         - In Zadig, Options -> List All Devices');
+      console.log('[USB]         - Look for entries like "Procyon (Interface 1)"');
+      console.log('[USB]         - Replace EACH interface driver with WinUSB');
+      console.log('[USB] Step 5: Unplug and replug the USB cable, then retry');
+      console.log('[USB] ');
+      console.log('[USB] ALTERNATIVE: Use Device Manager instead of Zadig:');
+      console.log('[USB]         - Open Device Manager');
+      console.log('[USB]         - Find the Procyon device under "libusb-win32 devices" or "Ports"');
+      console.log('[USB]         - Right-click -> Update driver -> Browse my computer');
+      console.log('[USB]         - Let me pick -> Select WinUSB');
+      console.log('[USB] ============================================');
 
       try { self.device.close(); } catch (e) {}
       self.device = null;
       return {
         success: false,
-        error: 'Cannot claim USB interface. ' +
-          'Please check: (1) Open Zadig, (2) Options -> List All Devices, ' +
-          '(3) Find ALL entries for the Procyon device, (4) Replace ALL drivers to WinUSB. ' +
+        error: 'Cannot claim USB interface (LIBUSB_ERROR_NOT_FOUND). ' +
+          'This is a composite USB device on Windows. ' +
+          'Please use Zadig: (1) Options -> List All Devices, ' +
+          '(2) Find ALL entries for Procyon, (3) Replace EACH with WinUSB, ' +
+          '(4) Unplug/replug USB cable, (5) Retry. ' +
           'See PowerShell log for details.'
       };
     }
