@@ -1,29 +1,32 @@
 /**
- * Procyon CM USB Bridge — Direct node-usb implementation
+ * Procyon CM USB Bridge -- Direct node-usb implementation
  *
- * Uses the `usb` npm package (libusb native binding) for direct USB Bulk transfer.
+ * Uses the 'usb' npm package (libusb native binding) for direct USB Bulk transfer.
  * No external procyon-usb.exe required.
  *
  * Device: VID=0x2269, PID=0xBEEF
  * Driver: WinUSB (install via Zadig, replaces libusb-win32)
  * Transfer: USB Bulk, EP1 OUT=0x01, EP1 IN=0x81, 64 bytes max packet
  * Interface: 1 (Interface 0 does not exist on this device)
+ *
+ * NOTE: This file uses ONLY string concatenation (no template literals)
+ * to avoid GBK encoding corruption on Windows systems.
  */
 
-const usb = require('usb');
+var usb = require('usb');
 
-// ─── Device constants ────────────────────────────────────────────────────────
-const PROCYON_VID = 0x2269;
-const PROCYON_PID = 0xBEEF;
-const EP_OUT_ADDR = 0x01;         // EP1 OUT
-const EP_IN_ADDR = 0x81;          // EP1 IN
-const WRITE_TIMEOUT = 1000;       // DLL: WriteToDeviceAsync timeout = 1000ms
-const READ_TIMEOUT = 200;         // DLL: ReadFromDeviceAsync pre-determined = 200ms
-const READ_TIMEOUT_UNKNOWN = 75;  // DLL: unknown length = 75ms
-const SET_DELAY_MS = 50;          // DLL: EMSetInitParameters delay between SETs
+// -- Device constants --
+var PROCYON_VID = 0x2269;
+var PROCYON_PID = 0xBEEF;
+var EP_OUT_ADDR = 0x01;         // EP1 OUT
+var EP_IN_ADDR = 0x81;          // EP1 IN
+var WRITE_TIMEOUT = 1000;       // DLL: WriteToDeviceAsync timeout = 1000ms
+var READ_TIMEOUT = 200;         // DLL: ReadFromDeviceAsync pre-determined = 200ms
+var READ_TIMEOUT_UNKNOWN = 75;  // DLL: unknown length = 75ms
+var SET_DELAY_MS = 50;          // DLL: EMSetInitParameters delay between SETs
 
-// ─── Command codes (from DLL Command enum) ──────────────────────────────────
-const CMD = {
+// -- Command codes (from DLL Command enum) --
+var CMD = {
   // GET commands
   GET_FIRMWARE_VERSION:       0x0005,
   GET_NUMBER_MEMORY_PARTITIONS: 0x000A,
@@ -111,22 +114,26 @@ const CMD = {
   GET_SPI_TEST_DATA:          0x006E,
 };
 
-// ─── Packet helpers ─────────────────────────────────────────────────────────
+// -- Packet helpers --
 
 /**
  * Build a command packet: [cmdlow, cmdhigh, lengthlow, lengthhigh, ...data]
  * From DLL IssueResponseInternal:
  *   cmdhigh = (byte)(command >> 8), cmdlow = (byte)(command & 0xFF)
  *   length = data.Length (0 for GET commands)
- *   Array is exactly 4 + data.length bytes — NO 0xFF padding
+ *   Array is exactly 4 + data.length bytes -- NO 0xFF padding
  */
-function buildCommandPacket(commandCode, dataBytes = []) {
-  const cmdlow = commandCode & 0xFF;
-  const cmdhigh = (commandCode >> 8) & 0xFF;
-  const len = dataBytes.length;
-  const lengthlow = len & 0xFF;
-  const lengthhigh = (len >> 8) & 0xFF;
-  const packet = [cmdlow, cmdhigh, lengthlow, lengthhigh, ...dataBytes];
+function buildCommandPacket(commandCode, dataBytes) {
+  if (!dataBytes) dataBytes = [];
+  var cmdlow = commandCode & 0xFF;
+  var cmdhigh = (commandCode >> 8) & 0xFF;
+  var len = dataBytes.length;
+  var lengthlow = len & 0xFF;
+  var lengthhigh = (len >> 8) & 0xFF;
+  var packet = [cmdlow, cmdhigh, lengthlow, lengthhigh];
+  for (var i = 0; i < dataBytes.length; i++) {
+    packet.push(dataBytes[i]);
+  }
   return Buffer.from(packet);
 }
 
@@ -138,14 +145,14 @@ function buildCommandPacket(commandCode, dataBytes = []) {
  */
 function parseResponse(buffer) {
   if (!buffer || buffer.length < 4) return null;
-  const cmdlow = buffer[0];
-  const cmdhigh = buffer[1];
-  const commandCode = (cmdhigh << 8) | cmdlow;
-  const lengthlow = buffer[2];
-  const lengthhigh = buffer[3];
-  const length = (lengthhigh << 8) | lengthlow;
-  const data = buffer.slice(4, 4 + length);
-  return { commandCode, length, data };
+  var cmdlow = buffer[0];
+  var cmdhigh = buffer[1];
+  var commandCode = (cmdhigh << 8) | cmdlow;
+  var lengthlow = buffer[2];
+  var lengthhigh = buffer[3];
+  var length = (lengthhigh << 8) | lengthlow;
+  var data = buffer.slice(4, 4 + length);
+  return { commandCode: commandCode, length: length, data: data };
 }
 
 /**
@@ -154,8 +161,8 @@ function parseResponse(buffer) {
  */
 function asciiToBytes(str) {
   if (!str) return [];
-  const bytes = [];
-  for (let i = 0; i < str.length; i++) {
+  var bytes = [];
+  for (var i = 0; i < str.length; i++) {
     bytes.push(str.charCodeAt(i) & 0xFF);
   }
   return bytes;
@@ -166,829 +173,868 @@ function asciiToBytes(str) {
  */
 function bytesToAscii(bytes) {
   if (!bytes || bytes.length === 0) return '';
-  let str = '';
-  for (let i = 0; i < bytes.length; i++) {
+  var str = '';
+  for (var i = 0; i < bytes.length; i++) {
     if (bytes[i] === 0) break; // null terminator
     str += String.fromCharCode(bytes[i]);
   }
   return str;
 }
 
-// ─── ProcyonUsbBridge class ─────────────────────────────────────────────────
-
-class ProcyonUsbBridge {
-  constructor() {
-    this.device = null;     // usb.Device
-    this.iface = null;      // usb.Interface
-    this.epOut = null;      // usb.OutEndpoint
-    this.epIn = null;       // usb.InEndpoint
-    this.connected = false;
-    this.deviceInfo = null;
+/**
+ * Format a buffer as hex string for logging
+ */
+function hexStr(buf) {
+  if (!buf) return '<null>';
+  var parts = [];
+  for (var i = 0; i < buf.length; i++) {
+    var h = buf[i].toString(16).padStart(2, '0');
+    parts.push(h);
   }
+  return parts.join(', ');
+}
 
-  // ─── Connection management ──────────────────────────────────────────────
+/**
+ * Format a number as 4-digit hex
+ */
+function hex4(n) {
+  return '0x' + n.toString(16).padStart(4, '0');
+}
 
-  /**
-   * Find and connect to the Procyon device
-   */
-  async connect() {
+// -- ProcyonUsbBridge class --
+
+function ProcyonUsbBridge() {
+  this.device = null;     // usb.Device
+  this.iface = null;      // usb.Interface
+  this.epOut = null;      // usb.OutEndpoint
+  this.epIn = null;       // usb.InEndpoint
+  this.connected = false;
+  this.deviceInfo = null;
+}
+
+// -- Connection management --
+
+/**
+ * Find and connect to the Procyon device
+ */
+ProcyonUsbBridge.prototype.connect = async function() {
+  var self = this;
+  try {
+    if (self.connected) {
+      return { success: true, message: 'Already connected' };
+    }
+
+    // Find device
+    var deviceList = usb.getDeviceList();
+    var procyonDev = null;
+    for (var i = 0; i < deviceList.length; i++) {
+      var d = deviceList[i];
+      var desc = d.deviceDescriptor;
+      if (desc && desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID) {
+        procyonDev = d;
+        break;
+      }
+    }
+
+    if (!procyonDev) {
+      return { success: false, error: 'Procyon device not found (VID=0x2269 PID=0xBEEF). Check USB cable and WinUSB driver.' };
+    }
+
+    self.device = procyonDev;
+
+    // Open device -- MUST call open() before claim() in node-usb v2
     try {
-      if (this.connected) {
-        return { success: true, message: 'Already connected' };
+      self.device.open();
+      console.log('[USB] Device opened successfully');
+    } catch (openErr) {
+      return { success: false, error: 'Cannot open device: ' + openErr.message + '. May need WinUSB driver (use Zadig).' };
+    }
+
+    // Use device.interfaces array directly (node-usb v2)
+    var interfaces = self.device.interfaces || [];
+    console.log('[USB] Device has ' + interfaces.length + ' interface(s)');
+
+    // Log all interfaces for debugging
+    for (var ii = 0; ii < interfaces.length; ii++) {
+      var ifc = interfaces[ii];
+      var ifcDesc = ifc.descriptor;
+      var epParts = [];
+      for (var ei = 0; ei < ifcDesc.endpoints.length; ei++) {
+        var ep = ifcDesc.endpoints[ei];
+        var dir = (ep.bEndpointAddress & 0x80) ? 'IN' : 'OUT';
+        epParts.push('EP 0x' + ep.bEndpointAddress.toString(16) + ' (' + dir + ')');
+      }
+      console.log('[USB] Interface bInterfaceNumber=' + ifcDesc.bInterfaceNumber +
+        ': class=' + ifcDesc.bInterfaceClass + ', eps=[' + epParts.join(', ') + ']');
+    }
+
+    // Try to claim an interface that has EP1 OUT (0x01) and EP1 IN (0x81)
+    var claimed = false;
+
+    // Method 1: iterate device.interfaces array
+    for (var i1 = 0; i1 < interfaces.length; i1++) {
+      var ifc1 = interfaces[i1];
+      var ifcDesc1 = ifc1.descriptor;
+      var ifNum = ifcDesc1.bInterfaceNumber;
+      var hasEpOut = false;
+      var hasEpIn = false;
+      for (var ei1 = 0; ei1 < ifcDesc1.endpoints.length; ei1++) {
+        if (ifcDesc1.endpoints[ei1].bEndpointAddress === EP_OUT_ADDR) hasEpOut = true;
+        if (ifcDesc1.endpoints[ei1].bEndpointAddress === EP_IN_ADDR) hasEpIn = true;
       }
 
-      // Find device
-      const deviceList = usb.getDeviceList();
-      const procyonDev = deviceList.find(d => {
-        const desc = d.deviceDescriptor;
-        return desc && desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
-      });
+      console.log('[USB] Interface ' + ifNum + ': hasEpOut=' + hasEpOut + ', hasEpIn=' + hasEpIn);
 
-      if (!procyonDev) {
-        return { success: false, error: 'Procyon device not found (VID=0x2269 PID=0xBEEF). Check USB cable and WinUSB driver.' };
+      if (!hasEpOut || !hasEpIn) {
+        console.log('[USB] Interface ' + ifNum + ': missing required endpoints, skipping');
+        continue;
       }
 
-      this.device = procyonDev;
-
-      // Open device
-      try {
-        this.device.open();
-      } catch (openErr) {
-        return { success: false, error: `Cannot open device: ${openErr.message}. May need WinUSB driver (use Zadig).` };
-      }
-
-      // Use device.interfaces array directly (node-usb v2)
-      // device.interface(n) looks up by bInterfaceNumber, NOT by index
-      // For Procyon, bInterfaceNumber=1 is the only usable interface
-      const interfaces = this.device.interfaces || [];
-      console.log(`[USB] Device has ${interfaces.length} interface(s)`);
-
-      // Log all interfaces for debugging
-      for (const ifc of interfaces) {
-        const ifcDesc = ifc.descriptor;
-        const eps = ifcDesc.endpoints.map(e =>
-          `EP 0x${e.bEndpointAddress.toString(16)} (${e.bEndpointAddress & 0x80 ? 'IN' : 'OUT'})`
-        ).join(', ');
-        console.log(`[USB] Interface bInterfaceNumber=${ifcDesc.bInterfaceNumber}: class=${ifcDesc.bInterfaceClass}, eps=[${eps}]`);
-      }
-
-      // Try to claim an interface that has EP1 OUT (0x01) and EP1 IN (0x81)
-      let claimed = false;
-
-      // Method 1: iterate device.interfaces array
-      for (const ifc of interfaces) {
-        const ifcDesc = ifc.descriptor;
-        const ifNum = ifcDesc.bInterfaceNumber;
-        const hasEpOut = ifcDesc.endpoints.some(e => e.bEndpointAddress === EP_OUT_ADDR);
-        const hasEpIn = ifcDesc.endpoints.some(e => e.bEndpointAddress === EP_IN_ADDR);
-
-        console.log(`[USB] Interface ${ifNum}: hasEpOut=${hasEpOut}, hasEpIn=${hasEpIn}`);
-
-        if (!hasEpOut || !hasEpIn) {
-          console.log(`[USB] Interface ${ifNum}: missing required endpoints, skipping`);
-          continue;
-        }
-
-        // On Windows + WinUSB, detachKernelDriver is not needed/supported.
-        const isWindows = process.platform === 'win32';
-        if (!isWindows) {
-          try {
-            if (ifc.isKernelDriverActive()) {
-              ifc.detachKernelDriver();
-            }
-          } catch (detachErr) {
-            console.log(`[USB] Interface ${ifNum}: could not detach kernel driver: ${detachErr.message}`);
-          }
-        }
-
+      // On Windows + WinUSB, detachKernelDriver is not needed/supported.
+      var isWindows = process.platform === 'win32';
+      if (!isWindows) {
         try {
-          ifc.claim();
-          this.iface = ifc;
-          console.log(`[USB] Successfully claimed interface ${ifNum} (via interfaces array)`);
+          if (ifc1.isKernelDriverActive()) {
+            ifc1.detachKernelDriver();
+          }
+        } catch (detachErr) {
+          console.log('[USB] Interface ' + ifNum + ': could not detach kernel driver: ' + detachErr.message);
+        }
+      }
+
+      try {
+        ifc1.claim();
+        self.iface = ifc1;
+        console.log('[USB] Successfully claimed interface ' + ifNum + ' (via interfaces array)');
+        claimed = true;
+        break;
+      } catch (claimErr) {
+        console.log('[USB] Interface ' + ifNum + ': claim failed: ' + claimErr.message);
+      }
+    }
+
+    // Method 2: try device.interface(n) by bInterfaceNumber (fallback)
+    if (!claimed) {
+      console.log('[USB] Method 1 failed, trying device.interface(bInterfaceNumber)...');
+      for (var bIfNum = 0; bIfNum <= 2; bIfNum++) {
+        try {
+          var ifc2 = self.device.interface(bIfNum);
+          console.log('[USB] device.interface(' + bIfNum + ') found');
+          ifc2.claim();
+          self.iface = ifc2;
+          console.log('[USB] Successfully claimed interface ' + bIfNum + ' (via device.interface())');
           claimed = true;
           break;
-        } catch (claimErr) {
-          console.log(`[USB] Interface ${ifNum}: claim failed: ${claimErr.message}`);
+        } catch (err2) {
+          console.log('[USB] device.interface(' + bIfNum + '): ' + err2.message);
         }
       }
+    }
 
-      // Method 2: try device.interface(n) by bInterfaceNumber (fallback)
-      if (!claimed) {
-        console.log(`[USB] Method 1 failed, trying device.interface(bInterfaceNumber)...`);
-        for (let bIfNum = 0; bIfNum <= 2; bIfNum++) {
+    // Method 3: On Windows, try resetting the device and retrying
+    if (!claimed && process.platform === 'win32') {
+      console.log('[USB] Method 2 failed, trying device reset + retry...');
+      try {
+        self.device.reset();
+        console.log('[USB] Device reset successful, retrying claim...');
+        // Small delay after reset
+        await new Promise(function(r) { setTimeout(r, 500); });
+        // Re-open after reset
+        try {
+          self.device.open();
+          console.log('[USB] Re-opened device after reset');
+        } catch (openErr) {
+          console.log('[USB] Re-open after reset: ' + openErr.message);
+        }
+
+        // Refresh interfaces after reset
+        var interfacesAfterReset = self.device.interfaces || [];
+        for (var i3 = 0; i3 < interfacesAfterReset.length; i3++) {
+          var ifc3 = interfacesAfterReset[i3];
+          var ifNum3 = ifc3.descriptor.bInterfaceNumber;
           try {
-            const ifc2 = this.device.interface(bIfNum);
-            console.log(`[USB] device.interface(${bIfNum}) found`);
-            ifc2.claim();
-            this.iface = ifc2;
-            console.log(`[USB] Successfully claimed interface ${bIfNum} (via device.interface())`);
+            ifc3.claim();
+            self.iface = ifc3;
+            console.log('[USB] Successfully claimed interface ' + ifNum3 + ' after reset');
             claimed = true;
             break;
-          } catch (err2) {
-            console.log(`[USB] device.interface(${bIfNum}): ${err2.message}`);
+          } catch (claimErr3) {
+            console.log('[USB] Interface ' + ifNum3 + ': claim after reset failed: ' + claimErr3.message);
           }
         }
+      } catch (resetErr) {
+        console.log('[USB] Device reset failed: ' + resetErr.message);
       }
-
-      // Method 3: On Windows, try resetting the device and retrying
-      if (!claimed && process.platform === 'win32') {
-        console.log(`[USB] Method 2 failed, trying device reset + retry...`);
-        try {
-          this.device.reset();
-          console.log(`[USB] Device reset successful, retrying claim...');
-          // Small delay after reset
-          await new Promise(r => setTimeout(r, 500));
-          // Re-open after reset
-          try {
-            this.device.open();
-          } catch (openErr) {
-            console.log(`[USB] Re-open after reset: ${openErr.message}`);
-          }
-
-          for (const ifc of interfaces) {
-            const ifNum = ifc.descriptor.bInterfaceNumber;
-            try {
-              ifc.claim();
-              this.iface = ifc;
-              console.log(`[USB] Successfully claimed interface ${ifNum} after reset`);
-              claimed = true;
-              break;
-            } catch (claimErr3) {
-              console.log(`[USB] Interface ${ifNum}: claim after reset failed: ${claimErr3.message}`);
-            }
-          }
-        } catch (resetErr) {
-          console.log(`[USB] Device reset failed: ${resetErr.message}`);
-        }
-      }
-
-      if (!claimed) {
-        // Diagnostic: check Windows device driver info
-        console.log(`[USB] DIAGNOSTIC: All claim attempts failed.`);
-        console.log(`[USB] Device descriptor:`, JSON.stringify(this.device.deviceDescriptor));
-        for (let i = 0; i < interfaces.length; i++) {
-          console.log(`[USB] Interface[${i}] descriptor:`, JSON.stringify(interfaces[i].descriptor));
-        }
-        console.log(`[USB] TROUBLESHOOT: Open Zadig -> Options -> List All Devices`);
-        console.log(`[USB] Check if the Procyon device appears with WinUSB driver.`);
-        console.log(`[USB] If it shows as 'libusb-win32' or 'CDC', replace it with WinUSB.`);
-        console.log(`[USB] For composite devices, you may need to replace the driver for EACH interface.`);
-
-        this.device.close();
-        this.device = null;
-        return {
-          success: false,
-          error: `Cannot claim USB interface. ` +
-            `Please check: (1) Open Zadig, (2) Options -> List All Devices, ` +
-            `(3) Find ALL entries for the Procyon device, (4) Replace ALL drivers to WinUSB. ` +
-            `See PowerShell log for details.`
-        };
-      }
-
-      // Get endpoints
-      const ifaceDesc = this.iface.descriptor;
-      const epOutDesc = ifaceDesc.endpoints.find(e => e.bEndpointAddress === EP_OUT_ADDR);
-      const epInDesc = ifaceDesc.endpoints.find(e => e.bEndpointAddress === EP_IN_ADDR);
-
-      if (!epOutDesc || !epInDesc) {
-        this.iface.release(true, () => {});
-        this.device.close();
-        this.device = null;
-        return { success: false, error: 'Required USB endpoints not found (EP1 OUT=0x01, EP1 IN=0x81)' };
-      }
-
-      this.epOut = this.iface.endpoint(EP_OUT_ADDR);
-      this.epIn = this.iface.endpoint(EP_IN_ADDR);
-
-      this.connected = true;
-
-      // Read device info
-      await this._readDeviceInfo();
-
-      console.log('[USB] Connected to Procyon device');
-      return { success: true, message: 'Connected to Procyon device' };
-    } catch (error) {
-      this.connected = false;
-      return { success: false, error: error.message };
     }
-  }
 
-  /**
-   * Disconnect from device
-   */
-  async disconnect() {
-    try {
-      if (this.iface) {
-        try {
-          this.iface.release(true, () => {});
-        } catch (e) {
-          // ignore release errors
-        }
-        this.iface = null;
+    if (!claimed) {
+      // Diagnostic: check Windows device driver info
+      console.log('[USB] DIAGNOSTIC: All claim attempts failed.');
+      console.log('[USB] Device descriptor: ' + JSON.stringify(self.device.deviceDescriptor));
+      for (var di = 0; di < interfaces.length; di++) {
+        console.log('[USB] Interface[' + di + '] descriptor: ' + JSON.stringify(interfaces[di].descriptor));
       }
-      if (this.device) {
-        try {
-          this.device.close();
-        } catch (e) {
-          // ignore close errors
-        }
-        this.device = null;
-      }
-      this.epOut = null;
-      this.epIn = null;
-      this.connected = false;
-      this.deviceInfo = null;
-      console.log('[USB] Disconnected');
-      return { success: true };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
+      console.log('[USB] TROUBLESHOOT: Open Zadig -> Options -> List All Devices');
+      console.log('[USB] Check if the Procyon device appears with WinUSB driver.');
+      console.log('[USB] If it shows as libusb-win32 or CDC, replace it with WinUSB.');
+      console.log('[USB] For composite devices, you may need to replace the driver for EACH interface.');
 
-  /**
-   * Read device identification info
-   */
-  async _readDeviceInfo() {
-    try {
-      const fw = await this.getFirmwareVersion();
-      const sn = await this.getToolSN();
-      const uid = await this.getUniqueID();
-      this.deviceInfo = {
-        firmwareVersion: fw.success ? fw.value : 'unknown',
-        serialNumber: sn.success ? sn.value : 'unknown',
-        uniqueId: uid.success ? uid.value : 'unknown',
+      try { self.device.close(); } catch (e) {}
+      self.device = null;
+      return {
+        success: false,
+        error: 'Cannot claim USB interface. ' +
+          'Please check: (1) Open Zadig, (2) Options -> List All Devices, ' +
+          '(3) Find ALL entries for the Procyon device, (4) Replace ALL drivers to WinUSB. ' +
+          'See PowerShell log for details.'
       };
-    } catch (e) {
-      this.deviceInfo = { firmwareVersion: 'unknown', serialNumber: 'unknown', uniqueId: 'unknown' };
     }
+
+    // Get endpoints
+    self.epOut = self.iface.endpoint(EP_OUT_ADDR);
+    self.epIn = self.iface.endpoint(EP_IN_ADDR);
+
+    if (!self.epOut || !self.epIn) {
+      try { self.iface.release(true, function() {}); } catch (e) {}
+      try { self.device.close(); } catch (e) {}
+      self.device = null;
+      return { success: false, error: 'Required USB endpoints not found (EP1 OUT=0x01, EP1 IN=0x81)' };
+    }
+
+    self.connected = true;
+
+    // Read device info
+    await self._readDeviceInfo();
+
+    console.log('[USB] Connected to Procyon device');
+    return { success: true, message: 'Connected to Procyon device' };
+  } catch (error) {
+    self.connected = false;
+    return { success: false, error: error.message };
   }
+};
 
-  // ─── Low-level USB transfer ─────────────────────────────────────────────
+/**
+ * Disconnect from device
+ */
+ProcyonUsbBridge.prototype.disconnect = async function() {
+  try {
+    if (this.iface) {
+      try { this.iface.release(true, function() {}); } catch (e) {}
+      this.iface = null;
+    }
+    if (this.device) {
+      try { this.device.close(); } catch (e) {}
+      this.device = null;
+    }
+    this.epOut = null;
+    this.epIn = null;
+    this.connected = false;
+    this.deviceInfo = null;
+    console.log('[USB] Disconnected');
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
 
-  /**
-   * Write bytes to EP1 OUT
-   * From DLL: WriteToDeviceAsync — writes exact bytes, 1000ms timeout
-   */
-  async _writeToDevice(buffer) {
-    return new Promise((resolve, reject) => {
-      if (!this.epOut) {
-        return reject(new Error('EP OUT not available'));
+/**
+ * Read device identification info
+ */
+ProcyonUsbBridge.prototype._readDeviceInfo = async function() {
+  try {
+    var fw = await this.getFirmwareVersion();
+    var sn = await this.getToolSN();
+    var uid = await this.getUniqueID();
+    this.deviceInfo = {
+      firmwareVersion: fw.success ? fw.value : 'unknown',
+      serialNumber: sn.success ? sn.value : 'unknown',
+      uniqueId: uid.success ? uid.value : 'unknown',
+    };
+  } catch (e) {
+    this.deviceInfo = { firmwareVersion: 'unknown', serialNumber: 'unknown', uniqueId: 'unknown' };
+  }
+};
+
+// -- Low-level USB transfer --
+
+/**
+ * Write bytes to EP1 OUT
+ * From DLL: WriteToDeviceAsync -- writes exact bytes, 1000ms timeout
+ */
+ProcyonUsbBridge.prototype._writeToDevice = function(buffer) {
+  var self = this;
+  return new Promise(function(resolve, reject) {
+    if (!self.epOut) {
+      return reject(new Error('EP OUT not available'));
+    }
+    self.epOut.transfer(buffer, function(err) {
+      if (err) {
+        console.error('[USB] Write error: ' + err.message);
+        reject(new Error('USB write failed: ' + err.message));
+      } else {
+        resolve();
       }
-      this.epOut.transfer(buffer, (err) => {
-        if (err) {
-          console.error('[USB] Write error:', err.message);
-          reject(new Error(`USB write failed: ${err.message}`));
-        } else {
-          resolve();
-        }
-      });
     });
-  }
+  });
+};
 
-  /**
-   * Read bytes from EP1 IN
-   * From DLL: ReadFromDeviceAsync — reads with timeout, accumulates until no more data
-   * @param {number} expectedLength - expected response length (default 64)
-   * @param {number} timeout - read timeout in ms (default 200 for pre-determined)
-   */
-  async _readFromDevice(expectedLength = 64, timeout = READ_TIMEOUT) {
-    return new Promise((resolve, reject) => {
-      if (!this.epIn) {
-        return reject(new Error('EP IN not available'));
-      }
+/**
+ * Read bytes from EP1 IN
+ * From DLL: ReadFromDeviceAsync -- reads with timeout, accumulates until no more data
+ */
+ProcyonUsbBridge.prototype._readFromDevice = function(expectedLength, timeout) {
+  if (!expectedLength) expectedLength = 64;
+  if (!timeout) timeout = READ_TIMEOUT;
+  var self = this;
+  return new Promise(function(resolve, reject) {
+    if (!self.epIn) {
+      return reject(new Error('EP IN not available'));
+    }
 
-      const buf = Buffer.alloc(expectedLength);
-      this.epIn.transfer(expectedLength, (err, receivedBuf, bytesReceived) => {
-        if (err) {
-          if (err.errno === usb.LIBUSB_ERROR_TIMEOUT) {
-            // Timeout — return whatever we got
-            if (bytesReceived > 0 && receivedBuf) {
-              resolve(receivedBuf.slice(0, bytesReceived));
-            } else {
-              resolve(null);
-            }
+    self.epIn.transfer(expectedLength, function(err, receivedBuf, bytesReceived) {
+      if (err) {
+        if (err.errno === usb.LIBUSB_ERROR_TIMEOUT) {
+          // Timeout -- return whatever we got
+          if (bytesReceived > 0 && receivedBuf) {
+            resolve(receivedBuf.slice(0, bytesReceived));
           } else {
-            reject(new Error(`USB read failed: ${err.message}`));
+            resolve(null);
           }
         } else {
-          const data = receivedBuf ? receivedBuf.slice(0, bytesReceived || receivedBuf.length) : null;
-          resolve(data);
+          reject(new Error('USB read failed: ' + err.message));
         }
-      });
+      } else {
+        var data = receivedBuf ? receivedBuf.slice(0, bytesReceived || receivedBuf.length) : null;
+        resolve(data);
+      }
     });
-  }
+  });
+};
 
-  /**
-   * Send a command and read the response
-   * From DLL: CommandDeviceAsync flow:
-   *   1. Build packet [cmdlow, cmdhigh, lengthlow, lengthhigh, ...data]
-   *   2. WriteToDeviceAsync(packet)
-   *   3. ReadFromDeviceAsync(responseLength, isLengthPreDetermined)
-   *
-   * For GET commands: data is empty, length=0, send 4-byte packet
-   * For SET commands: data = ASCII bytes, length = data.length
-   * Response code = request code + 1
-   *
-   * @param {number} commandCode - Command code from CMD enum
-   * @param {number[]} dataBytes - Optional data payload (empty for GET)
-   * @returns {object} { success, data, value, error }
-   */
-  async sendCommand(commandCode, dataBytes = []) {
-    try {
-      if (!this.connected) {
-        return { success: false, error: 'Device not connected' };
-      }
-
-      const packet = buildCommandPacket(commandCode, dataBytes);
-      console.log(`[USB] TX CMD 0x${commandCode.toString(16).padStart(4, '0')}: [${Array.from(packet).map(b => b.toString(16).padStart(2, '0')).join(', ')}]`);
-
-      // Write
-      await this._writeToDevice(packet);
-
-      // Read response — try reading with generous buffer
-      // DLL reads with expectedResponseLength and isLengthPreDetermined from CommandConfigurations
-      // We'll read up to 4096 bytes (more than any expected response)
-      const response = await this._readFromDevice(4096, READ_TIMEOUT);
-
-      if (!response || response.length < 4) {
-        console.log(`[USB] RX: no response or too short (${response ? response.length : 0} bytes)`);
-        return { success: false, error: 'No response from device (timeout)' };
-      }
-
-      console.log(`[USB] RX: [${Array.from(response).map(b => b.toString(16).padStart(2, '0')).join(', ')}]`);
-
-      const parsed = parseResponse(response);
-      if (!parsed) {
-        return { success: false, error: 'Invalid response format' };
-      }
-
-      // Verify response code = request code + 1
-      const expectedRespCode = commandCode + 1;
-      if (parsed.commandCode !== expectedRespCode) {
-        console.log(`[USB] Response code 0x${parsed.commandCode.toString(16)} != expected 0x${expectedRespCode.toString(16)}`);
-        // Still return the data — some commands may have different response codes
-      }
-
-      // Convert data to ASCII string for string-type responses
-      const value = bytesToAscii(parsed.data);
-
-      return { success: true, data: parsed.data, value, commandCode: parsed.commandCode, length: parsed.length };
-    } catch (error) {
-      console.error(`[USB] sendCommand error:`, error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Send a GET command (no data payload, length=0)
-   */
-  async sendGetCommand(commandCode) {
-    return this.sendCommand(commandCode, []);
-  }
-
-  /**
-   * Send a SET string command
-   * From DLL: ASCIIconversion -> IssueResponseInternal -> CommandDeviceAsync
-   * Response: value != "0" and value != null means success
-   */
-  async sendSetCommand(commandCode, stringValue) {
-    const dataBytes = asciiToBytes(stringValue);
-    const result = await this.sendCommand(commandCode, dataBytes);
-
-    if (!result.success) {
-      return result;
+/**
+ * Send a command and read the response
+ * From DLL: CommandDeviceAsync flow:
+ *   1. Build packet [cmdlow, cmdhigh, lengthlow, lengthhigh, ...data]
+ *   2. WriteToDeviceAsync(packet)
+ *   3. ReadFromDeviceAsync(responseLength, isLengthPreDetermined)
+ *
+ * For GET commands: data is empty, length=0, send 4-byte packet
+ * For SET commands: data = ASCII bytes, length = data.length
+ * Response code = request code + 1
+ */
+ProcyonUsbBridge.prototype.sendCommand = async function(commandCode, dataBytes) {
+  if (!dataBytes) dataBytes = [];
+  try {
+    if (!this.connected) {
+      return { success: false, error: 'Device not connected' };
     }
 
-    // DLL: return valueFromResponse != "0" && valueFromResponse != null
-    if (result.value === '0' || result.value === '') {
-      return { success: false, error: 'Device returned 0 (failure)', value: result.value };
+    var packet = buildCommandPacket(commandCode, dataBytes);
+    console.log('[USB] TX CMD ' + hex4(commandCode) + ': [' + hexStr(packet) + ']');
+
+    // Write
+    await this._writeToDevice(packet);
+
+    // Read response -- try reading with generous buffer
+    var response = await this._readFromDevice(4096, READ_TIMEOUT);
+
+    if (!response || response.length < 4) {
+      var rlen = response ? response.length : 0;
+      console.log('[USB] RX: no response or too short (' + rlen + ' bytes)');
+      return { success: false, error: 'No response from device (timeout)' };
     }
 
+    console.log('[USB] RX: [' + hexStr(response) + ']');
+
+    var parsed = parseResponse(response);
+    if (!parsed) {
+      return { success: false, error: 'Invalid response format' };
+    }
+
+    // Verify response code = request code + 1
+    var expectedRespCode = commandCode + 1;
+    if (parsed.commandCode !== expectedRespCode) {
+      console.log('[USB] Response code ' + hex4(parsed.commandCode) + ' != expected ' + hex4(expectedRespCode));
+      // Still return the data -- some commands may have different response codes
+    }
+
+    // Convert data to ASCII string for string-type responses
+    var value = bytesToAscii(parsed.data);
+
+    return { success: true, data: parsed.data, value: value, commandCode: parsed.commandCode, length: parsed.length };
+  } catch (error) {
+    console.error('[USB] sendCommand error: ' + error.message);
+    return { success: false, error: error.message };
+  }
+};
+
+/**
+ * Send a GET command (no data payload, length=0)
+ */
+ProcyonUsbBridge.prototype.sendGetCommand = async function(commandCode) {
+  return this.sendCommand(commandCode, []);
+};
+
+/**
+ * Send a SET string command
+ * From DLL: ASCIIconversion -> IssueResponseInternal -> CommandDeviceAsync
+ * Response: value != "0" and value != null means success
+ */
+ProcyonUsbBridge.prototype.sendSetCommand = async function(commandCode, stringValue) {
+  var dataBytes = asciiToBytes(stringValue);
+  var result = await this.sendCommand(commandCode, dataBytes);
+
+  if (!result.success) {
     return result;
   }
 
-  /**
-   * Send an ACK-only command (no data, just check for non-null response)
-   * From DLL: AckResponseAsync — if IssueResponseAsync returns non-null, success
-   */
-  async sendAckCommand(commandCode, dataBytes = []) {
-    const result = await this.sendCommand(commandCode, dataBytes);
-
-    if (!result.success) {
-      return result;
-    }
-
-    // AckResponseAsync: any non-null response means success
-    return { success: true };
+  // DLL: return valueFromResponse != "0" && valueFromResponse != null
+  if (result.value === '0' || result.value === '') {
+    return { success: false, error: 'Device returned 0 (failure)', value: result.value };
   }
 
-  // ─── GET commands ──────────────────────────────────────────────────────
+  return result;
+};
 
-  async getFirmwareVersion() {
-    try {
-      const resp = await this.sendGetCommand(CMD.GET_FIRMWARE_VERSION);
-      if (resp.success && resp.data && resp.data.length >= 6) {
-        // Firmware version: 3 bytes [Major, Minor, Patch]
-        const major = resp.data[0];
-        const minor = resp.data[1];
-        const patch = resp.data[2];
-        return { success: true, value: `${major}.${minor}.${patch}` };
-      }
-      return { success: false, value: null };
-    } catch (error) {
-      return { success: false, value: null, error: error.message };
-    }
-  }
+/**
+ * Send an ACK-only command (no data, just check for non-null response)
+ * From DLL: AckResponseAsync -- if IssueResponseAsync returns non-null, success
+ */
+ProcyonUsbBridge.prototype.sendAckCommand = async function(commandCode, dataBytes) {
+  if (!dataBytes) dataBytes = [];
+  var result = await this.sendCommand(commandCode, dataBytes);
 
-  async getBatteryVoltage() {
-    try {
-      const resp = await this.sendGetCommand(CMD.GET_BATTERY_VOLTAGE);
-      if (resp.success && resp.data && resp.data.length >= 4) {
-        const voltage = this._parseFloat(resp.data);
-        return { success: true, voltage: Math.round(voltage * 100) / 100 };
-      }
-      return { success: false, voltage: 0 };
-    } catch (error) {
-      return { success: false, voltage: 0, error: error.message };
-    }
-  }
-
-  async getDeviceTime() {
-    try {
-      const resp = await this.sendGetCommand(CMD.GET_DEVICE_TIME);
-      if (resp.success && resp.data && resp.data.length >= 4) {
-        // 4-byte Unix timestamp (little-endian)
-        const ts = resp.data.readUInt32LE(0);
-        return { success: true, timestamp: ts, date: new Date(ts * 1000).toISOString() };
-      }
-      return { success: false };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  async getTemperature() {
-    try {
-      const resp = await this.sendGetCommand(CMD.GET_TEMPERATURE_DATA_CM);
-      if (resp.success && resp.data && resp.data.length >= 4) {
-        const temp = this._parseFloat(resp.data);
-        return { success: true, temperature: Math.round(temp * 100) / 100 };
-      }
-      return { success: false, temperature: 0 };
-    } catch (error) {
-      return { success: false, temperature: 0, error: error.message };
-    }
-  }
-
-  // String GET commands — these return ASCII string values
-  async getCustomer()      { return this._getStringParam(CMD.GET_CUSTOMER); }
-  async getCountry()       { return this._getStringParam(CMD.GET_COUNTRY); }
-  async getDistrict()      { return this._getStringParam(CMD.GET_DISTRICT); }
-  async getRunIDType()     { return this._getStringParam(CMD.GET_RUN_ID_TYPE); }
-  async getRunID()         { return this._getStringParam(CMD.GET_RUN_ID); }
-  async getDepthOut()      { return this._getStringParam(CMD.GET_DEPT_OUT); }
-  async getUniqueID()      { return this._getStringParam(CMD.GET_UNIQUE_ID); }
-  async getLDAP()          { return this._getStringParam(CMD.GET_LDAP); }
-  async getToolType()      { return this._getStringParam(CMD.GET_TOOL_TYPE); }
-  async getToolSize()      { return this._getStringParam(CMD.GET_TOOL_SIZE); }
-  async getToolPosition()  { return this._getStringParam(CMD.GET_TOOL_POSITION); }
-  async getToolSN()        { return this._getStringParam(CMD.GET_TOOL_SN); }
-  async getConfigName()    { return this._getStringParam(CMD.GET_CONFIG_NAME); }
-  async getUHConnectionType()  { return this._getStringParam(CMD.GET_UH_CONNECTION_TYPE); }
-  async getDHConnectionType()  { return this._getStringParam(CMD.GET_DH_CONNECTION_TYPE); }
-  async getIntPressureSN()     { return this._getStringParam(CMD.GET_INT_PRESSURE_SENSOR_SN); }
-  async getExtPressureSN()     { return this._getStringParam(CMD.GET_EXT_PRESSURE_SENSOR_SN); }
-  async getLimpetSN()          { return this._getStringParam(CMD.GET_LIMPET_SENSOR_SN); }
-
-  async _getStringParam(commandCode) {
-    try {
-      const resp = await this.sendGetCommand(commandCode);
-      if (resp.success) {
-        return { success: true, value: resp.value || '' };
-      }
-      return { success: false, value: '' };
-    } catch (error) {
-      return { success: false, value: '', error: error.message };
-    }
-  }
-
-  // ─── SET commands ──────────────────────────────────────────────────────
-
-  async setToolSN(val)            { return this.sendSetCommand(CMD.SET_TOOL_SN, val); }
-  async setCustomer(val)          { return this.sendSetCommand(CMD.SET_CUSTOMER, val); }
-  async setCountry(val)           { return this.sendSetCommand(CMD.SET_COUNTRY, val); }
-  async setDistrict(val)          { return this.sendSetCommand(CMD.SET_DISTRICT, val); }
-  async setRunIDType(val)         { return this.sendSetCommand(CMD.SET_RUN_ID_TYPE, val); }
-  async setRunID(val)             { return this.sendSetCommand(CMD.SET_RUN_ID, val); }
-  async setDepthOut(val)          { return this.sendSetCommand(CMD.SET_DEPT_OUT, val); }
-  async setUniqueID(val)          { return this.sendSetCommand(CMD.SET_UNIQUE_ID, val); }
-  async setLDAP(val)              { return this.sendSetCommand(CMD.SET_LDAP, val); }
-  async setToolType(val)          { return this.sendSetCommand(CMD.SET_TOOL_TYPE, val); }
-  async setToolPosition(val)      { return this.sendSetCommand(CMD.SET_TOOL_POSITION, val); }
-  async setToolSize(val)          { return this.sendSetCommand(CMD.SET_TOOL_SIZE, val); }
-  async setConfigName(val)        { return this.sendSetCommand(CMD.SET_CONFIG_NAME, val); }
-  async setUHConnectionType(val)  { return this.sendSetCommand(CMD.SET_UH_CONNECTION_TYPE, val); }
-  async setDHConnectionType(val)  { return this.sendSetCommand(CMD.SET_DH_CONNECTION_TYPE, val); }
-  async setIntPressureSN(val)     { return this.sendSetCommand(CMD.SET_INT_PRESSURE_SENSOR_SN, val); }
-  async setExtPressureSN(val)     { return this.sendSetCommand(CMD.SET_EXT_PRESSURE_SENSOR_SN, val); }
-  async setLimpetSN(val)          { return this.sendSetCommand(CMD.SET_LIMPET_SENSOR_SN, val); }
-  async setToolAxialPosition(val) { return this.sendSetCommand(CMD.SET_TOOL_AXIAL_POSITION, val); }
-
-  /**
-   * Set device time — sends 4-byte Unix timestamp (little-endian)
-   * From DLL: SET_DEVICE_TIME = 68 (0x0044), data = 4-byte unix timestamp
-   */
-  async setDeviceTime(dateInput) {
-    try {
-      if (!this.connected) {
-        return { success: false, error: 'Device not connected' };
-      }
-      const date = dateInput ? new Date(dateInput) : new Date();
-      const unixTs = Math.floor(date.getTime() / 1000);
-      // 4-byte little-endian Unix timestamp
-      const dataBytes = [
-        unixTs & 0xFF,
-        (unixTs >> 8) & 0xFF,
-        (unixTs >> 16) & 0xFF,
-        (unixTs >> 24) & 0xFF,
-      ];
-      return await this.sendCommand(CMD.SET_DEVICE_TIME, dataBytes);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Write all SET parameters into Flash memory
-   * From DLL: WriteIntoFlashAsync -> AckResponseAsync(Command.SET_PARAMETERS_INTO_FLASH)
-   * SET_PARAMETERS_INTO_FLASH = 0x0100, no data payload, just check for non-null response
-   */
-  async writeIntoFlash() {
-    if (!this.connected) {
-      return { success: false, error: 'Device not connected' };
-    }
-    console.log('[USB] Writing parameters into Flash...');
-    const result = await this.sendAckCommand(CMD.SET_PARAMETERS_INTO_FLASH);
-    if (result.success) {
-      console.log('[USB] Flash write successful');
-    } else {
-      console.log('[USB] Flash write failed:', result.error);
-    }
+  if (!result.success) {
     return result;
   }
 
-  /**
-   * Erase used memory partitions
-   * From DLL: AckResponseAsync(Command.MEMORY_ERASE_USED)
-   */
-  async eraseUsedMemory() {
-    if (!this.connected) {
-      return { success: false, error: 'Device not connected' };
+  // AckResponseAsync: any non-null response means success
+  return { success: true };
+};
+
+// -- GET commands --
+
+ProcyonUsbBridge.prototype.getFirmwareVersion = async function() {
+  try {
+    var resp = await this.sendGetCommand(CMD.GET_FIRMWARE_VERSION);
+    if (resp.success && resp.data && resp.data.length >= 6) {
+      var major = resp.data[0];
+      var minor = resp.data[1];
+      var patch = resp.data[2];
+      return { success: true, value: major + '.' + minor + '.' + patch };
     }
-    console.log('[USB] Erasing used memory...');
-    return await this.sendAckCommand(CMD.MEMORY_ERASE_USED);
+    return { success: false, value: null };
+  } catch (error) {
+    return { success: false, value: null, error: error.message };
   }
+};
 
-  /**
-   * Erase all memory partitions
-   * From DLL: AckResponseAsync(Command.MEMORY_ERASE_ALL)
-   */
-  async eraseAllMemory() {
-    if (!this.connected) {
-      return { success: false, error: 'Device not connected' };
+ProcyonUsbBridge.prototype.getBatteryVoltage = async function() {
+  try {
+    var resp = await this.sendGetCommand(CMD.GET_BATTERY_VOLTAGE);
+    if (resp.success && resp.data && resp.data.length >= 4) {
+      var voltage = this._parseFloat(resp.data);
+      return { success: true, voltage: Math.round(voltage * 100) / 100 };
     }
-    console.log('[USB] Erasing all memory...');
-    return await this.sendAckCommand(CMD.MEMORY_ERASE_ALL);
+    return { success: false, voltage: 0 };
+  } catch (error) {
+    return { success: false, voltage: 0, error: error.message };
   }
+};
 
-  /**
-   * Set all initialization parameters (EM variant) and write to Flash
-   * Follows DLL EMSetInitParameters flow with 50ms delays
-   */
-  async setInitParameters(params) {
+ProcyonUsbBridge.prototype.getDeviceTime = async function() {
+  try {
+    var resp = await this.sendGetCommand(CMD.GET_DEVICE_TIME);
+    if (resp.success && resp.data && resp.data.length >= 4) {
+      // 4-byte Unix timestamp (little-endian)
+      var ts = resp.data.readUInt32LE(0);
+      return { success: true, timestamp: ts, date: new Date(ts * 1000).toISOString() };
+    }
+    return { success: false };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+ProcyonUsbBridge.prototype.getTemperature = async function() {
+  try {
+    var resp = await this.sendGetCommand(CMD.GET_TEMPERATURE_DATA_CM);
+    if (resp.success && resp.data && resp.data.length >= 4) {
+      var temp = this._parseFloat(resp.data);
+      return { success: true, temperature: Math.round(temp * 100) / 100 };
+    }
+    return { success: false, temperature: 0 };
+  } catch (error) {
+    return { success: false, temperature: 0, error: error.message };
+  }
+};
+
+// String GET commands
+ProcyonUsbBridge.prototype.getCustomer = function()          { return this._getStringParam(CMD.GET_CUSTOMER); };
+ProcyonUsbBridge.prototype.getCountry = function()           { return this._getStringParam(CMD.GET_COUNTRY); };
+ProcyonUsbBridge.prototype.getDistrict = function()          { return this._getStringParam(CMD.GET_DISTRICT); };
+ProcyonUsbBridge.prototype.getRunIDType = function()         { return this._getStringParam(CMD.GET_RUN_ID_TYPE); };
+ProcyonUsbBridge.prototype.getRunID = function()             { return this._getStringParam(CMD.GET_RUN_ID); };
+ProcyonUsbBridge.prototype.getDepthOut = function()          { return this._getStringParam(CMD.GET_DEPT_OUT); };
+ProcyonUsbBridge.prototype.getUniqueID = function()          { return this._getStringParam(CMD.GET_UNIQUE_ID); };
+ProcyonUsbBridge.prototype.getLDAP = function()              { return this._getStringParam(CMD.GET_LDAP); };
+ProcyonUsbBridge.prototype.getToolType = function()          { return this._getStringParam(CMD.GET_TOOL_TYPE); };
+ProcyonUsbBridge.prototype.getToolSize = function()          { return this._getStringParam(CMD.GET_TOOL_SIZE); };
+ProcyonUsbBridge.prototype.getToolPosition = function()      { return this._getStringParam(CMD.GET_TOOL_POSITION); };
+ProcyonUsbBridge.prototype.getToolSN = function()            { return this._getStringParam(CMD.GET_TOOL_SN); };
+ProcyonUsbBridge.prototype.getConfigName = function()        { return this._getStringParam(CMD.GET_CONFIG_NAME); };
+ProcyonUsbBridge.prototype.getUHConnectionType = function()  { return this._getStringParam(CMD.GET_UH_CONNECTION_TYPE); };
+ProcyonUsbBridge.prototype.getDHConnectionType = function()  { return this._getStringParam(CMD.GET_DH_CONNECTION_TYPE); };
+ProcyonUsbBridge.prototype.getIntPressureSN = function()     { return this._getStringParam(CMD.GET_INT_PRESSURE_SENSOR_SN); };
+ProcyonUsbBridge.prototype.getExtPressureSN = function()     { return this._getStringParam(CMD.GET_EXT_PRESSURE_SENSOR_SN); };
+ProcyonUsbBridge.prototype.getLimpetSN = function()          { return this._getStringParam(CMD.GET_LIMPET_SENSOR_SN); };
+
+ProcyonUsbBridge.prototype._getStringParam = async function(commandCode) {
+  try {
+    var resp = await this.sendGetCommand(commandCode);
+    if (resp.success) {
+      return { success: true, value: resp.value || '' };
+    }
+    return { success: false, value: '' };
+  } catch (error) {
+    return { success: false, value: '', error: error.message };
+  }
+};
+
+// -- SET commands --
+
+ProcyonUsbBridge.prototype.setToolSN = function(val)            { return this.sendSetCommand(CMD.SET_TOOL_SN, val); };
+ProcyonUsbBridge.prototype.setCustomer = function(val)          { return this.sendSetCommand(CMD.SET_CUSTOMER, val); };
+ProcyonUsbBridge.prototype.setCountry = function(val)           { return this.sendSetCommand(CMD.SET_COUNTRY, val); };
+ProcyonUsbBridge.prototype.setDistrict = function(val)          { return this.sendSetCommand(CMD.SET_DISTRICT, val); };
+ProcyonUsbBridge.prototype.setRunIDType = function(val)         { return this.sendSetCommand(CMD.SET_RUN_ID_TYPE, val); };
+ProcyonUsbBridge.prototype.setRunID = function(val)             { return this.sendSetCommand(CMD.SET_RUN_ID, val); };
+ProcyonUsbBridge.prototype.setDepthOut = function(val)          { return this.sendSetCommand(CMD.SET_DEPT_OUT, val); };
+ProcyonUsbBridge.prototype.setUniqueID = function(val)          { return this.sendSetCommand(CMD.SET_UNIQUE_ID, val); };
+ProcyonUsbBridge.prototype.setLDAP = function(val)              { return this.sendSetCommand(CMD.SET_LDAP, val); };
+ProcyonUsbBridge.prototype.setToolType = function(val)          { return this.sendSetCommand(CMD.SET_TOOL_TYPE, val); };
+ProcyonUsbBridge.prototype.setToolPosition = function(val)      { return this.sendSetCommand(CMD.SET_TOOL_POSITION, val); };
+ProcyonUsbBridge.prototype.setToolSize = function(val)          { return this.sendSetCommand(CMD.SET_TOOL_SIZE, val); };
+ProcyonUsbBridge.prototype.setConfigName = function(val)        { return this.sendSetCommand(CMD.SET_CONFIG_NAME, val); };
+ProcyonUsbBridge.prototype.setUHConnectionType = function(val)  { return this.sendSetCommand(CMD.SET_UH_CONNECTION_TYPE, val); };
+ProcyonUsbBridge.prototype.setDHConnectionType = function(val)  { return this.sendSetCommand(CMD.SET_DH_CONNECTION_TYPE, val); };
+ProcyonUsbBridge.prototype.setIntPressureSN = function(val)     { return this.sendSetCommand(CMD.SET_INT_PRESSURE_SENSOR_SN, val); };
+ProcyonUsbBridge.prototype.setExtPressureSN = function(val)     { return this.sendSetCommand(CMD.SET_EXT_PRESSURE_SENSOR_SN, val); };
+ProcyonUsbBridge.prototype.setLimpetSN = function(val)          { return this.sendSetCommand(CMD.SET_LIMPET_SENSOR_SN, val); };
+ProcyonUsbBridge.prototype.setToolAxialPosition = function(val) { return this.sendSetCommand(CMD.SET_TOOL_AXIAL_POSITION, val); };
+
+/**
+ * Set device time -- sends 4-byte Unix timestamp (little-endian)
+ * From DLL: SET_DEVICE_TIME = 68 (0x0044), data = 4-byte unix timestamp
+ */
+ProcyonUsbBridge.prototype.setDeviceTime = async function(dateInput) {
+  try {
     if (!this.connected) {
       return { success: false, error: 'Device not connected' };
     }
-
-    const results = {};
-
-    // Order matches DLL EMSetInitParameters
-    const steps = [
-      ['customer',          () => this.setCustomer(params.customer || 'N/A')],
-      ['country',           () => this.setCountry(params.country || 'N/A')],
-      ['district',          () => this.setDistrict(params.district || 'N/A')],
-      ['ldap',              () => this.setLDAP(params.ldap || 'N/A')],
-      ['toolType',          () => this.setToolType(params.toolType || 'N/A')],
-      ['toolPosition',      () => this.setToolPosition(params.toolPosition || 'N/A')],
-      ['toolSN',            () => this.setToolSN(params.toolSN || 'N/A')],
-      ['toolSize',          () => this.setToolSize(params.toolSize || 'N/A')],
-      ['uhConnectionType',  () => this.setUHConnectionType(params.uhConnectionType || 'N/A')],
-      ['dhConnectionType',  () => this.setDHConnectionType(params.dhConnectionType || 'N/A')],
-      ['intPressureSN',     () => this.setIntPressureSN(params.intPressureSN || 'N/A')],
-      ['extPressureSN',     () => this.setExtPressureSN(params.extPressureSN || 'N/A')],
-      ['limpetSN',          () => this.setLimpetSN(params.limpetSN || 'N/A')],
-      ['configName',        () => this.setConfigName(params.configName || 'N/A')],
-      ['uniqueId',          () => this.setUniqueID(params.uniqueId || 'N/A')],
+    var date = dateInput ? new Date(dateInput) : new Date();
+    var unixTs = Math.floor(date.getTime() / 1000);
+    // 4-byte little-endian Unix timestamp
+    var dataBytes = [
+      unixTs & 0xFF,
+      (unixTs >> 8) & 0xFF,
+      (unixTs >> 16) & 0xFF,
+      (unixTs >> 24) & 0xFF,
     ];
+    return await this.sendCommand(CMD.SET_DEVICE_TIME, dataBytes);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
 
-    for (const [name, fn] of steps) {
-      try {
-        const result = await fn();
-        results[name] = result.success;
-        console.log(`[USB] SET ${name}: ${result.success ? 'OK' : 'FAIL'}`);
-      } catch (e) {
-        results[name] = false;
-        console.log(`[USB] SET ${name}: ERROR - ${e.message}`);
-      }
-      await new Promise(resolve => setTimeout(resolve, SET_DELAY_MS));
+/**
+ * Write all SET parameters into Flash memory
+ * From DLL: WriteIntoFlashAsync -> AckResponseAsync(Command.SET_PARAMETERS_INTO_FLASH)
+ * SET_PARAMETERS_INTO_FLASH = 0x0100, no data payload, just check for non-null response
+ */
+ProcyonUsbBridge.prototype.writeIntoFlash = async function() {
+  if (!this.connected) {
+    return { success: false, error: 'Device not connected' };
+  }
+  console.log('[USB] Writing parameters into Flash...');
+  var result = await this.sendAckCommand(CMD.SET_PARAMETERS_INTO_FLASH);
+  if (result.success) {
+    console.log('[USB] Flash write successful');
+  } else {
+    console.log('[USB] Flash write failed: ' + (result.error || 'unknown'));
+  }
+  return result;
+};
+
+/**
+ * Erase used memory partitions
+ * From DLL: AckResponseAsync(Command.MEMORY_ERASE_USED)
+ */
+ProcyonUsbBridge.prototype.eraseUsedMemory = async function() {
+  if (!this.connected) {
+    return { success: false, error: 'Device not connected' };
+  }
+  console.log('[USB] Erasing used memory...');
+  return await this.sendAckCommand(CMD.MEMORY_ERASE_USED);
+};
+
+/**
+ * Erase all memory partitions
+ * From DLL: AckResponseAsync(Command.MEMORY_ERASE_ALL)
+ */
+ProcyonUsbBridge.prototype.eraseAllMemory = async function() {
+  if (!this.connected) {
+    return { success: false, error: 'Device not connected' };
+  }
+  console.log('[USB] Erasing all memory...');
+  return await this.sendAckCommand(CMD.MEMORY_ERASE_ALL);
+};
+
+/**
+ * Set all initialization parameters (EM variant) and write to Flash
+ * Follows DLL EMSetInitParameters flow with 50ms delays
+ */
+ProcyonUsbBridge.prototype.setInitParameters = async function(params) {
+  if (!this.connected) {
+    return { success: false, error: 'Device not connected' };
+  }
+
+  var self = this;
+  var results = {};
+
+  // Order matches DLL EMSetInitParameters
+  var steps = [
+    ['customer',          function() { return self.setCustomer(params.customer || 'N/A'); }],
+    ['country',           function() { return self.setCountry(params.country || 'N/A'); }],
+    ['district',          function() { return self.setDistrict(params.district || 'N/A'); }],
+    ['ldap',              function() { return self.setLDAP(params.ldap || 'N/A'); }],
+    ['toolType',          function() { return self.setToolType(params.toolType || 'N/A'); }],
+    ['toolPosition',      function() { return self.setToolPosition(params.toolPosition || 'N/A'); }],
+    ['toolSN',            function() { return self.setToolSN(params.toolSN || 'N/A'); }],
+    ['toolSize',          function() { return self.setToolSize(params.toolSize || 'N/A'); }],
+    ['uhConnectionType',  function() { return self.setUHConnectionType(params.uhConnectionType || 'N/A'); }],
+    ['dhConnectionType',  function() { return self.setDHConnectionType(params.dhConnectionType || 'N/A'); }],
+    ['intPressureSN',     function() { return self.setIntPressureSN(params.intPressureSN || 'N/A'); }],
+    ['extPressureSN',     function() { return self.setExtPressureSN(params.extPressureSN || 'N/A'); }],
+    ['limpetSN',          function() { return self.setLimpetSN(params.limpetSN || 'N/A'); }],
+    ['configName',        function() { return self.setConfigName(params.configName || 'N/A'); }],
+    ['uniqueId',          function() { return self.setUniqueID(params.uniqueId || 'N/A'); }],
+  ];
+
+  for (var si = 0; si < steps.length; si++) {
+    var name = steps[si][0];
+    var fn = steps[si][1];
+    try {
+      var result = await fn();
+      results[name] = result.success;
+      console.log('[USB] SET ' + name + ': ' + (result.success ? 'OK' : 'FAIL'));
+    } catch (e) {
+      results[name] = false;
+      console.log('[USB] SET ' + name + ': ERROR - ' + e.message);
     }
+    await new Promise(function(resolve) { setTimeout(resolve, SET_DELAY_MS); });
+  }
 
-    const allSuccess = Object.values(results).every(v => v === true);
+  var allSuccess = Object.values(results).every(function(v) { return v === true; });
 
-    let flashResult = { success: false };
-    if (allSuccess) {
-      flashResult = await this.writeIntoFlash();
-    } else {
-      console.log('[USB] Not all SETs succeeded, skipping Flash write');
+  var flashResult = { success: false };
+  if (allSuccess) {
+    flashResult = await this.writeIntoFlash();
+  } else {
+    console.log('[USB] Not all SETs succeeded, skipping Flash write');
+  }
+
+  return {
+    success: allSuccess && flashResult.success,
+    results: results,
+    flashResult: flashResult,
+  };
+};
+
+/**
+ * Get memory erase percentage
+ */
+ProcyonUsbBridge.prototype.getMemoryErasePercent = async function() {
+  try {
+    var resp = await this.sendGetCommand(CMD.GET_MEMORY_ERASE_PERCENT);
+    if (resp.success && resp.data && resp.data.length >= 2) {
+      var percent = (resp.data[1] << 8) | resp.data[0];
+      return { success: true, percent: percent };
     }
+    return { success: false, percent: 0 };
+  } catch (error) {
+    return { success: false, percent: 0, error: error.message };
+  }
+};
 
-    return {
-      success: allSuccess && flashResult.success,
-      results,
-      flashResult,
+/**
+ * Get number of memory partitions
+ */
+ProcyonUsbBridge.prototype.getMemoryPartitions = async function() {
+  try {
+    var resp = await this.sendGetCommand(CMD.GET_NUMBER_MEMORY_PARTITIONS);
+    if (resp.success && resp.data && resp.data.length >= 1) {
+      var count = resp.data[0];
+      return { success: true, count: count };
+    }
+    return { success: false, count: 0 };
+  } catch (error) {
+    return { success: false, count: 0, error: error.message };
+  }
+};
+
+/**
+ * Download one-second data from device memory
+ * TODO: Full implementation
+ */
+ProcyonUsbBridge.prototype.downloadOneSecondData = async function() {
+  return { success: false, error: 'Not yet implemented', records: [] };
+};
+
+/**
+ * Run self-test sequence
+ * TODO: Full implementation
+ */
+ProcyonUsbBridge.prototype.runSelfTest = async function() {
+  return { success: false, error: 'Not yet implemented', results: [] };
+};
+
+/**
+ * Initialize logger configuration
+ * TODO: Full implementation
+ */
+ProcyonUsbBridge.prototype.initializeLogger = async function() {
+  return { success: false, error: 'Not yet implemented' };
+};
+
+// -- Utility functions --
+
+/**
+ * Parse IEEE 754 float from 4-byte little-endian buffer
+ */
+ProcyonUsbBridge.prototype._parseFloat = function(data) {
+  if (!data || data.length < 4) return 0;
+  var buf = Buffer.alloc(4);
+  buf[0] = data[0];
+  buf[1] = data[1];
+  buf[2] = data[2];
+  buf[3] = data[3];
+  return buf.readFloatLE(0);
+};
+
+/**
+ * Parse unsigned 32-bit int from 4-byte little-endian buffer
+ */
+ProcyonUsbBridge.prototype._parseU32 = function(data) {
+  if (!data || data.length < 4) return 0;
+  var buf = Buffer.alloc(4);
+  for (var i = 0; i < 4; i++) buf[i] = data[i];
+  return buf.readUInt32LE(0);
+};
+
+/**
+ * List all USB devices (for diagnostics)
+ */
+ProcyonUsbBridge.prototype.listDevices = function() {
+  try {
+    var devices = usb.getDeviceList();
+    return devices.map(function(d) {
+      var desc = d.deviceDescriptor;
+      var vid = desc ? desc.idVendor : 0;
+      var pid = desc ? desc.idProduct : 0;
+      return {
+        vid: '0x' + vid.toString(16).padStart(4, '0'),
+        pid: '0x' + pid.toString(16).padStart(4, '0'),
+        address: d.deviceAddress,
+        isProcyon: vid === PROCYON_VID && pid === PROCYON_PID,
+      };
+    });
+  } catch (error) {
+    return [];
+  }
+};
+
+/**
+ * Get device info
+ */
+ProcyonUsbBridge.prototype.getDeviceInfo = function() {
+  return this.deviceInfo;
+};
+
+/**
+ * Check if connected
+ */
+ProcyonUsbBridge.prototype.isConnected = function() {
+  return this.connected;
+};
+
+/**
+ * Diagnose USB connection
+ */
+ProcyonUsbBridge.prototype.diagnose = async function() {
+  try {
+    var result = {
+      success: true,
+      backend: 'node-usb-direct',
+      totalDevices: 0,
+      devices: [],
+      procyonDetail: null,
     };
-  }
 
-  /**
-   * Get memory erase percentage
-   */
-  async getMemoryErasePercent() {
     try {
-      const resp = await this.sendGetCommand(CMD.GET_MEMORY_ERASE_PERCENT);
-      if (resp.success && resp.data && resp.data.length >= 2) {
-        const percent = (resp.data[1] << 8) | resp.data[0];
-        return { success: true, percent };
-      }
-      return { success: false, percent: 0 };
-    } catch (error) {
-      return { success: false, percent: 0, error: error.message };
-    }
-  }
-
-  /**
-   * Get number of memory partitions
-   */
-  async getMemoryPartitions() {
-    try {
-      const resp = await this.sendGetCommand(CMD.GET_NUMBER_MEMORY_PARTITIONS);
-      if (resp.success && resp.data && resp.data.length >= 1) {
-        const count = resp.data[0];
-        return { success: true, count };
-      }
-      return { success: false, count: 0 };
-    } catch (error) {
-      return { success: false, count: 0, error: error.message };
-    }
-  }
-
-  /**
-   * Download one-second data from device memory
-   * TODO: Full implementation — requires MEMORY_DUMP_START, chunk reads, MEMORY_DUMP_END
-   */
-  async downloadOneSecondData(options = {}) {
-    return { success: false, error: 'Not yet implemented', records: [] };
-  }
-
-  /**
-   * Run self-test sequence
-   * TODO: Full implementation — requires SET_SELF_TEST_MODE, wait, GET results
-   */
-  async runSelfTest() {
-    return { success: false, error: 'Not yet implemented', results: [] };
-  }
-
-  /**
-   * Initialize logger configuration
-   * TODO: Full implementation
-   */
-  async initializeLogger(config) {
-    return { success: false, error: 'Not yet implemented' };
-  }
-
-  // ─── Utility functions ─────────────────────────────────────────────────
-
-  /**
-   * Parse IEEE 754 float from 4-byte little-endian buffer
-   */
-  _parseFloat(data) {
-    if (!data || data.length < 4) return 0;
-    const buf = Buffer.alloc(4);
-    buf[0] = data[0];
-    buf[1] = data[1];
-    buf[2] = data[2];
-    buf[3] = data[3];
-    return buf.readFloatLE(0);
-  }
-
-  /**
-   * Parse unsigned 32-bit int from 4-byte little-endian buffer
-   */
-  _parseU32(data) {
-    if (!data || data.length < 4) return 0;
-    const buf = Buffer.alloc(4);
-    for (let i = 0; i < 4; i++) buf[i] = data[i];
-    return buf.readUInt32LE(0);
-  }
-
-  /**
-   * List all USB devices (for diagnostics)
-   */
-  listDevices() {
-    try {
-      const devices = usb.getDeviceList();
-      return devices.map(d => {
-        const desc = d.deviceDescriptor;
-        const vid = desc ? desc.idVendor : 0;
-        const pid = desc ? desc.idProduct : 0;
+      var devices = usb.getDeviceList();
+      result.totalDevices = devices.length;
+      result.devices = devices.map(function(d) {
+        var desc = d.deviceDescriptor;
+        var vid = desc ? desc.idVendor : 0;
+        var pid = desc ? desc.idProduct : 0;
         return {
-          vid: `0x${vid.toString(16).padStart(4, '0')}`,
-          pid: `0x${pid.toString(16).padStart(4, '0')}`,
+          vid: '0x' + vid.toString(16).padStart(4, '0'),
+          pid: '0x' + pid.toString(16).padStart(4, '0'),
           address: d.deviceAddress,
           isProcyon: vid === PROCYON_VID && pid === PROCYON_PID,
         };
       });
-    } catch (error) {
-      return [];
-    }
-  }
 
-  /**
-   * Get device info
-   */
-  getDeviceInfo() {
-    return this.deviceInfo;
-  }
-
-  /**
-   * Check if connected
-   */
-  isConnected() {
-    return this.connected;
-  }
-
-  /**
-   * Diagnose USB connection
-   */
-  async diagnose() {
-    try {
-      const result = {
-        success: true,
-        backend: 'node-usb-direct',
-        totalDevices: 0,
-        devices: [],
-        procyonDetail: null,
-      };
-
-      try {
-        const devices = usb.getDeviceList();
-        result.totalDevices = devices.length;
-        result.devices = devices.map(d => {
-          const desc = d.deviceDescriptor;
-          const vid = desc ? desc.idVendor : 0;
-          const pid = desc ? desc.idProduct : 0;
-          return {
-            vid: `0x${vid.toString(16).padStart(4, '0')}`,
-            pid: `0x${pid.toString(16).padStart(4, '0')}`,
-            address: d.deviceAddress,
-            isProcyon: vid === PROCYON_VID && pid === PROCYON_PID,
-          };
-        });
-
-        const procyonDevice = devices.find(d => {
-          const desc = d.deviceDescriptor;
-          return desc && desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
-        });
-
-        if (procyonDevice) {
-          result.procyonDetail = {
-            found: true,
-            vid: `0x${PROCYON_VID.toString(16)}`,
-            pid: `0x${PROCYON_PID.toString(16)}`,
-            address: procyonDevice.deviceAddress,
-          };
-        } else {
-          result.procyonDetail = { found: false };
+      var procyonDevice = null;
+      for (var i = 0; i < devices.length; i++) {
+        var d = devices[i];
+        var desc = d.deviceDescriptor;
+        if (desc && desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID) {
+          procyonDevice = d;
+          break;
         }
-      } catch (usbErr) {
-        result.usbListError = usbErr.message;
       }
 
-      return result;
-    } catch (error) {
-      return { success: false, error: error.message };
+      if (procyonDevice) {
+        result.procyonDetail = {
+          found: true,
+          vid: '0x' + PROCYON_VID.toString(16),
+          pid: '0x' + PROCYON_PID.toString(16),
+          address: procyonDevice.deviceAddress,
+        };
+      } else {
+        result.procyonDetail = { found: false };
+      }
+    } catch (usbErr) {
+      result.usbListError = usbErr.message;
     }
-  }
-}
 
-const bridge = new ProcyonUsbBridge();
-module.exports = { bridge, PROCYON_VID, PROCYON_PID, CMD, buildCommandPacket, parseResponse };
+    return result;
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+// -- Create singleton --
+var bridge = new ProcyonUsbBridge();
+
+module.exports = {
+  bridge: bridge,
+  PROCYON_VID: PROCYON_VID,
+  PROCYON_PID: PROCYON_PID,
+  CMD: CMD,
+  buildCommandPacket: buildCommandPacket,
+  parseResponse: parseResponse,
+};
