@@ -1,176 +1,160 @@
-const { execFile } = require('child_process');
-const path = require('path');
+/**
+ * Procyon CM USB Bridge — Direct node-usb implementation
+ *
+ * Uses the `usb` npm package (libusb native binding) for direct USB Bulk transfer.
+ * No external procyon-usb.exe required.
+ *
+ * Device: VID=0x2269, PID=0xBEEF
+ * Driver: WinUSB (install via Zadig, replaces libusb-win32)
+ * Transfer: USB Bulk, EP1 OUT=0x01, EP1 IN=0x81, 64 bytes max packet
+ * Interface: 1 (Interface 0 does not exist on this device)
+ */
 
+const usb = require('usb');
+
+// ─── Device constants ────────────────────────────────────────────────────────
 const PROCYON_VID = 0x2269;
 const PROCYON_PID = 0xBEEF;
+const INTERFACE_NUM = 1;          // Device only has Interface 1
+const EP_OUT_ADDR = 0x01;         // EP1 OUT
+const EP_IN_ADDR = 0x81;          // EP1 IN
+const WRITE_TIMEOUT = 1000;       // DLL: WriteToDeviceAsync timeout = 1000ms
+const READ_TIMEOUT = 200;         // DLL: ReadFromDeviceAsync pre-determined = 200ms
+const READ_TIMEOUT_UNKNOWN = 75;  // DLL: unknown length = 75ms
+const SET_DELAY_MS = 50;          // DLL: EMSetInitParameters delay between SETs
 
-// USB Endpoints
-const EP_OUT = 0x01;
-const EP_IN = 0x81;
-
-// ============================================================
-// Procyon CM Protocol - Full Command Codes (from DLL decompilation)
-// ============================================================
-// Protocol format: [cmd_low, cmd_high, length_low, length_high, ...data]
-// - GET: length = 0, send exact 4 bytes (no padding needed)
-// - SET: length = data.length, send 4 + data.length bytes (exact, no padding)
-// - Response code = request code + 1
-// - String parameters: ASCII conversion (each char → byte), no null terminator
-// - 50ms delay required between SET commands
-// - After all SETs, send SET_PARAMETERS_INTO_FLASH to persist to flash
-// ============================================================
-
+// ─── Command codes (from DLL Command enum) ──────────────────────────────────
 const CMD = {
-  // --- Firmware / Device ---
-  GET_FIRMWARE_VERSION:                     5,     // 0x0005
-  GET_NUMBER_MEMORY_PARTITIONS:             10,    // 0x000A
-  GET_MEMORY_DUMP_CHUNK_DATA:               16,    // 0x0010
-  GET_PARTITION_WRITTEN_BYTE_COUNT:         25,    // 0x0019
-  GET_PARTITION_NUMBER_CHUNKS_WRITTEN:       27,    // 0x001B
-  GET_PARTITION_TOTAL_NUMBER_CHUNKS:         29,    // 0x001D
-  GET_MEMORY_DUMP_CHUNK_SIZE:               31,    // 0x001F
-  MEMORY_DUMP_START:                        12,    // 0x000C
-  MEMORY_DUMP_END:                          14,    // 0x000E
-  MEMORY_ERASE_USED:                        48,    // 0x0030
-  MEMORY_ERASE_ALL:                         50,    // 0x0032
-  GET_MEMORY_ERASE_PERCENT:                 52,    // 0x0034
-
-  // --- Device Time ---
-  GET_DEVICE_TIME:                          66,    // 0x0042
-  SET_DEVICE_TIME:                          68,    // 0x0044
-
-  // --- Firmware Update ---
-  ERASE_INTERNAL_FLASH:                     80,    // 0x0050
-  FIRMWARE_UPDATE_BUFFER:                   82,    // 0x0052
-  START_VERIFICATION:                       84,    // 0x0054
-  VERIFY_STATUS:                            86,    // 0x0056
-  LAUNCH_DEVICE:                            88,    // 0x0058
-  UPDATE_STATE:                             90,    // 0x005A
-  ABORT_FIRMWARE_UPDATE:                    92,    // 0x005C
-
-  // --- Sensor Data (CM) ---
-  GET_TEMPERATURE_DATA_CM:                  70,    // 0x0046
-  GET_ROTATIONAL_DATA_CM:                   144,   // 0x0090
-  GET_LOWSHOCK_DATA_CM:                     146,   // 0x0092
-  GET_HIGHSHOCK_DATA_CM:                    148,   // 0x0094
-  GET_PRESSURE_DATA_CM:                     150,   // 0x0096
-
-  // --- Battery / Flash Test ---
-  GET_BATTERY_VOLTAGE:                      64,    // 0x0040
-  GET_FLASH_TEST_DATA:                      167,   // 0x00A7
-
-  // --- Flash Persist ---
-  SET_PARAMETERS_INTO_FLASH:                256,   // 0x0100
-
-  // --- Sensor Data (EM) ---
-  GET_TEMPERATURE_DATA_EM:                  160,   // 0x00A0
-  GET_ROTATIONAL_DATA_EM:                   162,   // 0x00A2
-  GET_LOWSHOCK_DATA_EM:                     164,   // 0x00A4
-  GET_PRESSURE_DATA_EM:                     166,   // 0x00A6
-  GET_LIMPET_DATA_EM:                       168,   // 0x00A8
-
-  // --- Customer / Region ---
-  GET_CUSTOMER:                             258,   // 0x0102
-  SET_CUSTOMER:                             260,   // 0x0104
-  GET_COUNTRY:                              262,   // 0x0106
-  SET_COUNTRY:                              264,   // 0x0108
-  GET_DISTRICT:                             266,   // 0x010A
-  SET_DISTRICT:                             268,   // 0x010C
-
-  // --- Run ID ---
-  GET_RUN_ID_TYPE:                          270,   // 0x010E
-  SET_RUN_ID_TYPE:                          272,   // 0x0110
-  GET_RUN_ID:                               274,   // 0x0112
-  SET_RUN_ID:                               276,   // 0x0114
-
-  // --- Depth / Unique ---
-  GET_DEPT_OUT:                             278,   // 0x0116
-  SET_DEPT_OUT:                             280,   // 0x0118
-  GET_UNIQUE_ID:                            282,   // 0x011A
-  SET_UNIQUE_ID:                            284,   // 0x011C
-
-  // --- LDAP ---
-  GET_LDAP:                                 286,   // 0x011E
-  SET_LDAP:                                 288,   // 0x0120
-
-  // --- Tool Info ---
-  GET_TOOL_TYPE:                            304,   // 0x0130
-  SET_TOOL_TYPE:                            306,   // 0x0132
-  GET_TOOL_AXIAL_POSITION:                  308,   // 0x0134
-  SET_TOOL_AXIAL_POSITION:                  310,   // 0x0136
-  GET_TOOL_SIZE:                            312,   // 0x0138
-  SET_TOOL_SIZE:                            314,   // 0x013A
-  GET_TOOL_POSITION:                        316,   // 0x013C
-  SET_TOOL_POSITION:                        318,   // 0x013E
-
-  // --- Serial Numbers ---
-  GET_HOUSING_NUMBER:                       320,   // 0x0140
-  SET_HOUSING_NUMBER:                       322,   // 0x0142
-  GET_BHA_SERIAL_NUMBER:                    324,   // 0x0144
-  SET_BHA_SERIAL_NUMBER:                    326,   // 0x0146
-  GET_CONFIG_NAME:                          328,   // 0x0148
-  SET_CONFIG_NAME:                          330,   // 0x014A
-  GET_TOOL_SN:                              332,   // 0x014C
-  SET_TOOL_SN:                              334,   // 0x014E
-
-  // --- Drill Bit ---
-  GET_DRILL_BIT_INFO_BIT_BOM:               336,   // 0x0150
-  SET_DRILL_BIT_INFO_BIT_BOM:               338,   // 0x0152
-  GET_DRILL_BIT_INFO_BIT_BLADE_NUMBER:      340,   // 0x0154
-  SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER:      342,   // 0x0156
-
-  // --- Connection Types ---
-  GET_UH_CONNECTION_TYPE:                   352,   // 0x0160
-  SET_UH_CONNECTION_TYPE:                   354,   // 0x0162
-  GET_DH_CONNECTION_TYPE:                   356,   // 0x0164
-  SET_DH_CONNECTION_TYPE:                   358,   // 0x0166
-
-  // --- Pressure Sensors ---
-  GET_INT_PRESSURE_SENSOR_SERIAL_NUMBER:    360,   // 0x0168
-  SET_INT_PRESSURE_SENSOR_SERIAL_NUMBER:    362,   // 0x016A
-  GET_EXT_PRESSURE_SENSOR_SERIAL_NUMBER:    364,   // 0x016C
-  SET_EXT_PRESSURE_SENSOR_SERIAL_NUMBER:    366,   // 0x016E
-  GET_LIMPET_SENSOR_SERIAL_NUMBER:          368,   // 0x0170
-  SET_LIMPET_SENSOR_SERIAL_NUMBER:          370,   // 0x0172
-
-  // --- Self Test ---
-  SET_SELF_TEST_MODE:                       0x0057,
-  GET_SELF_TEST_MODE_STATUS:                0x0058,
-  GET_ACCEL_SELF_TEST_DATA:                 0x005A,
-  GET_GYRO_SELF_TEST_DATA:                  0x005C,
-  GET_GYRO_ACCEL_SELF_TEST_DATA:            0x005E,
+  // GET commands
+  GET_FIRMWARE_VERSION:       0x0005,
+  GET_NUMBER_MEMORY_PARTITIONS: 0x000A,
+  GET_MEMORY_DUMP_CHUNK_DATA: 0x0010,
+  GET_PARTITION_WRITTEN_BYTE_COUNT: 0x0019,
+  GET_PARTITION_NUMBER_CHUNKS_WRITTEN: 0x001B,
+  GET_PARTITION_TOTAL_NUMBER_CHUNKS: 0x001D,
+  GET_MEMORY_DUMP_CHUNK_SIZE: 0x001F,
+  MEMORY_ERASE_USED:          0x0030,
+  MEMORY_ERASE_ALL:           0x0032,
+  GET_MEMORY_ERASE_PERCENT:   0x0034,
+  MEMORY_DUMP_START:          0x000C,
+  MEMORY_DUMP_END:            0x000E,
+  GET_BATTERY_VOLTAGE:        0x0040,
+  GET_DEVICE_TIME:            0x0042,
+  SET_DEVICE_TIME:            0x0044,
+  GET_TEMPERATURE_DATA_CM:    0x0046,
+  GET_TEMPERATURE_DATA_EM:    0x00A0,
+  GET_ROTATIONAL_DATA_EM:     0x00A2,
+  GET_LOWSHOCK_DATA_EM:       0x00A4,
+  GET_HIGHSHOCK_DATA_CM:      0x0094,
+  GET_PRESSURE_DATA_EM:       0x00A6,
+  GET_FLASH_TEST_DATA:        0x00A7,
+  GET_LIMPET_DATA_EM:         0x00A8,
+  GET_ROTATIONAL_DATA_CM:     0x0090,
+  GET_LOWSHOCK_DATA_CM:       0x0092,
+  GET_PRESSURE_DATA_CM:       0x0096,
+  ERASE_INTERNAL_FLASH:       0x0050,
+  FIRMWARE_UPDATE_BUFFER:     0x0052,
+  START_VERIFICATION:         0x0054,
+  VERIFY_STATUS:              0x0056,
+  LAUNCH_DEVICE:              0x0058,
+  UPDATE_STATE:               0x005A,
+  ABORT_FIRMWARE_UPDATE:      0x005C,
+  // Parameter commands (GET/SET pairs)
+  SET_PARAMETERS_INTO_FLASH:  0x0100,
+  GET_CUSTOMER:               0x0102,
+  SET_CUSTOMER:               0x0104,
+  GET_COUNTRY:                0x0106,
+  SET_COUNTRY:                0x0108,
+  GET_DISTRICT:               0x010A,
+  SET_DISTRICT:               0x010C,
+  GET_RUN_ID_TYPE:            0x010E,
+  SET_RUN_ID_TYPE:            0x0110,
+  GET_RUN_ID:                 0x0112,
+  SET_RUN_ID:                 0x0114,
+  GET_DEPT_OUT:               0x0116,
+  SET_DEPT_OUT:               0x0118,
+  GET_UNIQUE_ID:              0x011A,
+  SET_UNIQUE_ID:              0x011C,
+  GET_LDAP:                   0x011E,
+  SET_LDAP:                   0x0120,
+  GET_TOOL_TYPE:              0x0130,
+  SET_TOOL_TYPE:              0x0132,
+  GET_TOOL_AXIAL_POSITION:    0x0134,
+  SET_TOOL_AXIAL_POSITION:    0x0136,
+  GET_TOOL_SIZE:              0x0138,
+  SET_TOOL_SIZE:              0x013A,
+  GET_TOOL_POSITION:          0x013C,
+  SET_TOOL_POSITION:          0x013E,
+  GET_HOUSING_NUMBER:         0x0140,
+  SET_HOUSING_NUMBER:         0x0142,
+  GET_BHA_SERIAL_NUMBER:      0x0144,
+  SET_BHA_SERIAL_NUMBER:      0x0146,
+  GET_CONFIG_NAME:            0x0148,
+  SET_CONFIG_NAME:            0x014A,
+  GET_TOOL_SN:                0x014C,
+  SET_TOOL_SN:                0x014E,
+  GET_UH_CONNECTION_TYPE:     0x0160,
+  SET_UH_CONNECTION_TYPE:     0x0162,
+  GET_DH_CONNECTION_TYPE:     0x0164,
+  SET_DH_CONNECTION_TYPE:     0x0166,
+  GET_INT_PRESSURE_SENSOR_SN: 0x0168,
+  SET_INT_PRESSURE_SENSOR_SN: 0x016A,
+  GET_EXT_PRESSURE_SENSOR_SN: 0x016C,
+  SET_EXT_PRESSURE_SENSOR_SN: 0x016E,
+  GET_LIMPET_SENSOR_SN:       0x0170,
+  SET_LIMPET_SENSOR_SN:       0x0172,
+  // Self test commands
+  SET_SELF_TEST_MODE:         0x0064,
+  GET_SELF_TEST_MODE_STATUS:  0x0066,
+  GET_GYRO_SELF_TEST_DATA:    0x0068,
+  GET_GYRO_ACCEL_SELF_TEST_DATA: 0x006A,
+  GET_ACCEL_SELF_TEST_DATA:   0x006C,
+  GET_SPI_TEST_DATA:          0x006E,
 };
 
+// ─── Packet helpers ─────────────────────────────────────────────────────────
+
 /**
- * Build a complete command packet (exact bytes, no padding)
- * GET: 4-byte header only [cmd_low, cmd_high, 0, 0]
- * SET: 4-byte header + data bytes [cmd_low, cmd_high, len_low, len_high, ...data]
- *
- * Per DLL decompilation (CommandDeviceAsync):
- *   array = new byte[4 + (data?.Length ?? 0)]
- *   array[0] = cmdlow, array[1] = cmdhigh, array[2] = lengthlow, array[3] = lengthhigh
- *   Array.Copy(data, 0, array, 4, data.Length)
- *   WriteToDeviceAsync(array)  // exact length, NO 64-byte padding
+ * Build a command packet: [cmdlow, cmdhigh, lengthlow, lengthhigh, ...data]
+ * From DLL IssueResponseInternal:
+ *   cmdhigh = (byte)(command >> 8), cmdlow = (byte)(command & 0xFF)
+ *   length = data.Length (0 for GET commands)
+ *   Array is exactly 4 + data.length bytes — NO 0xFF padding
  */
-function buildCommandPacket(cmdCode, data = []) {
-  const dataLen = data.length;
-  const packet = Buffer.alloc(4 + dataLen);
-  packet[0] = cmdCode & 0xFF;           // cmd_low
-  packet[1] = (cmdCode >> 8) & 0xFF;    // cmd_high
-  packet[2] = dataLen & 0xFF;           // length_low
-  packet[3] = (dataLen >> 8) & 0xFF;    // length_high
-  for (let i = 0; i < dataLen; i++) {
-    packet[4 + i] = data[i];
-  }
-  return packet;
+function buildCommandPacket(commandCode, dataBytes = []) {
+  const cmdlow = commandCode & 0xFF;
+  const cmdhigh = (commandCode >> 8) & 0xFF;
+  const len = dataBytes.length;
+  const lengthlow = len & 0xFF;
+  const lengthhigh = (len >> 8) & 0xFF;
+  const packet = [cmdlow, cmdhigh, lengthlow, lengthhigh, ...dataBytes];
+  return Buffer.from(packet);
 }
 
 /**
- * Convert string to ASCII byte array (per DLL DeviceResponseHelper.ASCIIconversion)
- * Each character → its byte value. No null terminator, no length prefix.
+ * Parse a device response packet
+ * Response format: [cmdlow_resp, cmdhigh_resp, lengthlow, lengthhigh, ...data]
+ * Response code = request code + 1
+ * Returns { commandCode, length, data } or null
+ */
+function parseResponse(buffer) {
+  if (!buffer || buffer.length < 4) return null;
+  const cmdlow = buffer[0];
+  const cmdhigh = buffer[1];
+  const commandCode = (cmdhigh << 8) | cmdlow;
+  const lengthlow = buffer[2];
+  const lengthhigh = buffer[3];
+  const length = (lengthhigh << 8) | lengthlow;
+  const data = buffer.slice(4, 4 + length);
+  return { commandCode, length, data };
+}
+
+/**
+ * Convert string to ASCII byte array (matches DLL ASCIIconversion)
+ * No null terminator, just (byte)char for each character
  */
 function asciiToBytes(str) {
-  if (!str || str.length === 0) return [];
+  if (!str) return [];
   const bytes = [];
   for (let i = 0; i < str.length; i++) {
     bytes.push(str.charCodeAt(i) & 0xFF);
@@ -179,7 +163,7 @@ function asciiToBytes(str) {
 }
 
 /**
- * Convert byte array to ASCII string (reverse of asciiToBytes)
+ * Convert byte array to ASCII string
  */
 function bytesToAscii(bytes) {
   if (!bytes || bytes.length === 0) return '';
@@ -191,142 +175,87 @@ function bytesToAscii(bytes) {
   return str;
 }
 
-/**
- * Parse response from device
- * Response format: [resp_low, resp_high, length_low, length_high, ...data]
- * Response code = request code + 1
- */
-function parseResponse(respBytes, expectedCmdCode) {
-  if (!respBytes || respBytes.length < 4) {
-    return { success: false, error: 'Response too short' };
-  }
+// ─── ProcyonUsbBridge class ─────────────────────────────────────────────────
 
-  const respCode = respBytes[0] | (respBytes[1] << 8);
-  const dataLength = respBytes[2] | (respBytes[3] << 8);
-  const expectedRespCode = expectedCmdCode + 1;
-
-  if (respCode !== expectedRespCode) {
-    return {
-      success: false,
-      error: `Unexpected response code 0x${respCode.toString(16)} (expected 0x${expectedRespCode.toString(16)})`,
-      respCode,
-      data: respBytes,
-    };
-  }
-
-  const data = respBytes.slice(4, 4 + dataLength);
-  return { success: true, respCode, dataLength, data };
-}
-
-/**
- * Procyon USB Bridge - libusb0/WinUSB Direct
- *
- * Uses procyon-usb.exe (compiled C#) which handles USB I/O
- * via libusb0 DeviceIoControl or WinUSB API.
- */
 class ProcyonUsbBridge {
   constructor() {
+    this.device = null;     // usb.Device
+    this.iface = null;      // usb.Interface
+    this.epOut = null;      // usb.OutEndpoint
+    this.epIn = null;       // usb.InEndpoint
     this.connected = false;
-    this.exePath = path.join(__dirname, 'procyon-usb.exe');
-    this.dataCallback = null;
+    this.deviceInfo = null;
   }
 
-  /**
-   * Execute procyon-usb.exe command and return parsed JSON result
-   */
-  _exec(args, timeout = 5000) {
-    return new Promise((resolve, reject) => {
-      const proc = execFile(this.exePath, args, {
-        timeout,
-        windowsHide: true,
-        maxBuffer: 1024 * 1024,
-      }, (error, stdout, stderr) => {
-        if (error) {
-          const output = (stdout || '').trim();
-          if (output.startsWith('{')) {
-            try {
-              resolve(JSON.parse(output));
-              return;
-            } catch (e) {
-              // Fall through to reject
-            }
-          }
-          reject(new Error(error.message + (stderr ? ' | ' + stderr.trim() : '')));
-          return;
-        }
-
-        const output = (stdout || '').trim();
-        if (!output) {
-          reject(new Error('No output from procyon-usb.exe'));
-          return;
-        }
-
-        try {
-          resolve(JSON.parse(output));
-        } catch (e) {
-          resolve({ raw: output });
-        }
-      });
-    });
-  }
+  // ─── Connection management ──────────────────────────────────────────────
 
   /**
-   * List all USB devices
-   */
-  listDevices() {
-    try {
-      const usb = require('usb');
-      const devices = usb.getDeviceList();
-      return devices.map(d => {
-        const desc = d.deviceDescriptor;
-        const vid = desc ? desc.idVendor : 0;
-        const pid = desc ? desc.idProduct : 0;
-        return {
-          vendorId: `0x${vid.toString(16).padStart(4, '0')}`,
-          productId: `0x${pid.toString(16).padStart(4, '0')}`,
-          deviceAddress: d.deviceAddress,
-          isProcyon: vid === PROCYON_VID && pid === PROCYON_PID,
-        };
-      });
-    } catch (error) {
-      console.error('[USB] Failed to list devices:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Connect to Procyon device
+   * Find and connect to the Procyon device
    */
   async connect() {
     try {
       if (this.connected) {
-        await this.disconnect();
+        return { success: true, message: 'Already connected' };
       }
 
-      const findResult = await this._exec(['find'], 3000);
-      if (!findResult.found) {
-        return {
-          success: false,
-          error: 'Procyon WinUSB device not found. Install WinUSB driver via Zadig.',
-        };
+      // Find device
+      const deviceList = usb.getDeviceList();
+      const procyonDev = deviceList.find(d => {
+        const desc = d.deviceDescriptor;
+        return desc && desc.idVendor === PROCYON_VID && desc.idProduct === PROCYON_PID;
+      });
+
+      if (!procyonDev) {
+        return { success: false, error: 'Procyon device not found (VID=0x2269 PID=0xBEEF). Check USB cable and WinUSB driver.' };
       }
 
-      console.log('[USB] Found Procyon device:', findResult.path);
+      this.device = procyonDev;
 
-      const connectResult = await this._exec(['connect'], 3000);
-      if (connectResult.connected) {
-        this.connected = true;
-        console.log('[USB] Connected, method:', connectResult.method);
-        return { success: true };
-      } else {
-        return {
-          success: false,
-          error: connectResult.error || 'Connection failed',
-        };
+      // Open device
+      try {
+        this.device.open();
+      } catch (openErr) {
+        return { success: false, error: `Cannot open device: ${openErr.message}. May need WinUSB driver (use Zadig).` };
       }
+
+      // Claim interface 1 (the only valid interface on this device)
+      try {
+        this.iface = this.device.interface(INTERFACE_NUM);
+        if (this.iface.isKernelDriverActive()) {
+          this.iface.detachKernelDriver();
+        }
+        this.iface.claim();
+      } catch (claimErr) {
+        this.device.close();
+        this.device = null;
+        return { success: false, error: `Cannot claim interface ${INTERFACE_NUM}: ${claimErr.message}` };
+      }
+
+      // Get endpoints
+      const ifaceDesc = this.iface.descriptor;
+      const epOutDesc = ifaceDesc.endpoints.find(e => e.bEndpointAddress === EP_OUT_ADDR);
+      const epInDesc = ifaceDesc.endpoints.find(e => e.bEndpointAddress === EP_IN_ADDR);
+
+      if (!epOutDesc || !epInDesc) {
+        this.iface.release(true, () => {});
+        this.device.close();
+        this.device = null;
+        return { success: false, error: 'Required USB endpoints not found (EP1 OUT=0x01, EP1 IN=0x81)' };
+      }
+
+      this.epOut = this.iface.endpoint(EP_OUT_ADDR);
+      this.epIn = this.iface.endpoint(EP_IN_ADDR);
+
+      this.connected = true;
+
+      // Read device info
+      await this._readDeviceInfo();
+
+      console.log('[USB] Connected to Procyon device');
+      return { success: true, message: 'Connected to Procyon device' };
     } catch (error) {
-      console.error('[USB] Connect error:', error);
-      return { success: false, error: `Connection error: ${error.message}` };
+      this.connected = false;
+      return { success: false, error: error.message };
     }
   }
 
@@ -335,450 +264,363 @@ class ProcyonUsbBridge {
    */
   async disconnect() {
     try {
-      if (this.connected) {
-        await this._exec(['disconnect'], 2000).catch(() => {});
+      if (this.iface) {
+        try {
+          this.iface.release(true, () => {});
+        } catch (e) {
+          // ignore release errors
+        }
+        this.iface = null;
       }
+      if (this.device) {
+        try {
+          this.device.close();
+        } catch (e) {
+          // ignore close errors
+        }
+        this.device = null;
+      }
+      this.epOut = null;
+      this.epIn = null;
       this.connected = false;
+      this.deviceInfo = null;
       console.log('[USB] Disconnected');
       return { success: true };
     } catch (error) {
-      this.connected = false;
       return { success: false, error: error.message };
     }
   }
 
   /**
-   * Send raw hex command and read response
-   * Uses procyon-usb.exe sendread command
+   * Read device identification info
    */
-  async _sendRawHex(hexData, timeout = 5000) {
-    if (!this.connected) {
-      throw new Error('Device not connected');
+  async _readDeviceInfo() {
+    try {
+      const fw = await this.getFirmwareVersion();
+      const sn = await this.getToolSN();
+      const uid = await this.getUniqueID();
+      this.deviceInfo = {
+        firmwareVersion: fw.success ? fw.value : 'unknown',
+        serialNumber: sn.success ? sn.value : 'unknown',
+        uniqueId: uid.success ? uid.value : 'unknown',
+      };
+    } catch (e) {
+      this.deviceInfo = { firmwareVersion: 'unknown', serialNumber: 'unknown', uniqueId: 'unknown' };
     }
+  }
 
-    const result = await this._exec(['sendread', hexData, String(timeout)], timeout + 2000);
+  // ─── Low-level USB transfer ─────────────────────────────────────────────
 
-    if (result.error) {
-      throw new Error(result.error);
-    }
-
-    if (result.readError || result.winError) {
-      throw new Error('No response from device (WinError=' + (result.winError || 0) + ')');
-    }
-
-    return this._hexToBytes(result.data || '');
+  /**
+   * Write bytes to EP1 OUT
+   * From DLL: WriteToDeviceAsync — writes exact bytes, 1000ms timeout
+   */
+  async _writeToDevice(buffer) {
+    return new Promise((resolve, reject) => {
+      if (!this.epOut) {
+        return reject(new Error('EP OUT not available'));
+      }
+      this.epOut.transfer(buffer, (err) => {
+        if (err) {
+          console.error('[USB] Write error:', err.message);
+          reject(new Error(`USB write failed: ${err.message}`));
+        } else {
+          resolve();
+        }
+      });
+    });
   }
 
   /**
-   * Send a command using the verified protocol and parse response
-   * @param {number} cmdCode - 16-bit command code
-   * @param {number[]} data - optional data bytes (for SET commands)
-   * @param {number} timeout - read timeout in ms
-   * @returns {object} parsed response with success, data, etc.
+   * Read bytes from EP1 IN
+   * From DLL: ReadFromDeviceAsync — reads with timeout, accumulates until no more data
+   * @param {number} expectedLength - expected response length (default 64)
+   * @param {number} timeout - read timeout in ms (default 200 for pre-determined)
    */
-  async sendCommand(cmdCode, data = [], timeout = 5000) {
-    const packet = buildCommandPacket(cmdCode, data);
-    const hexData = packet.toString('hex');
+  async _readFromDevice(expectedLength = 64, timeout = READ_TIMEOUT) {
+    return new Promise((resolve, reject) => {
+      if (!this.epIn) {
+        return reject(new Error('EP IN not available'));
+      }
 
-    console.log(`[USB] CMD 0x${cmdCode.toString(16).padStart(4, '0')} → ${hexData.substring(0, 16)}...`);
-
-    const respBytes = await this._sendRawHex(hexData, timeout);
-    const parsed = parseResponse(respBytes, cmdCode);
-
-    if (parsed.success) {
-      const dataHex = Array.from(parsed.data).map(b => b.toString(16).padStart(2, '0')).join(' ');
-      console.log(`[USB] RESP 0x${parsed.respCode.toString(16).padStart(4, '0')} len=${parsed.dataLength} [${dataHex}]`);
-    } else {
-      console.log(`[USB] RESP ERROR: ${parsed.error}`);
-    }
-
-    return parsed;
+      const buf = Buffer.alloc(expectedLength);
+      this.epIn.transfer(expectedLength, (err, receivedBuf, bytesReceived) => {
+        if (err) {
+          if (err.errno === usb.LIBUSB_ERROR_TIMEOUT) {
+            // Timeout — return whatever we got
+            if (bytesReceived > 0 && receivedBuf) {
+              resolve(receivedBuf.slice(0, bytesReceived));
+            } else {
+              resolve(null);
+            }
+          } else {
+            reject(new Error(`USB read failed: ${err.message}`));
+          }
+        } else {
+          const data = receivedBuf ? receivedBuf.slice(0, bytesReceived || receivedBuf.length) : null;
+          resolve(data);
+        }
+      });
+    });
   }
 
   /**
-   * Parse hex string to byte array
+   * Send a command and read the response
+   * From DLL: CommandDeviceAsync flow:
+   *   1. Build packet [cmdlow, cmdhigh, lengthlow, lengthhigh, ...data]
+   *   2. WriteToDeviceAsync(packet)
+   *   3. ReadFromDeviceAsync(responseLength, isLengthPreDetermined)
+   *
+   * For GET commands: data is empty, length=0, send 4-byte packet
+   * For SET commands: data = ASCII bytes, length = data.length
+   * Response code = request code + 1
+   *
+   * @param {number} commandCode - Command code from CMD enum
+   * @param {number[]} dataBytes - Optional data payload (empty for GET)
+   * @returns {object} { success, data, value, error }
    */
-  _hexToBytes(hex) {
-    const bytes = [];
-    for (let i = 0; i < hex.length; i += 2) {
-      bytes.push(parseInt(hex.substr(i, 2), 16));
-    }
-    return bytes;
-  }
-
-  /**
-   * Parse null-terminated string from response data
-   */
-  _parseString(data, start = 0, maxLength = 255) {
-    let str = '';
-    for (let i = start; i < data.length && i < start + maxLength; i++) {
-      if (data[i] === 0x00 || data[i] === 0xFF) break;
-      str += String.fromCharCode(data[i]);
-    }
-    return str.trim();
-  }
-
-  /**
-   * Parse IEEE 754 float from 4 bytes (little-endian)
-   */
-  _parseFloat(data, offset = 0) {
-    if (!data || data.length < offset + 4) return 0;
-    const buf = Buffer.from(data.slice(offset, offset + 4));
-    return buf.readFloatLE(0);
-  }
-
-  /**
-   * Parse 16-bit unsigned value (little-endian)
-   */
-  _parseU16(data, offset = 0) {
-    if (!data || data.length < offset + 2) return 0;
-    return data[offset] | (data[offset + 1] << 8);
-  }
-
-  /**
-   * Parse 32-bit unsigned value (little-endian)
-   */
-  _parseU32(data, offset = 0) {
-    if (!data || data.length < offset + 4) return 0;
-    return data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
-  }
-
-  // ============================================================
-  // High-level device operations
-  // ============================================================
-
-  /**
-   * Get device information (firmware, SN, battery, temperature, time)
-   */
-  async getDeviceInfo() {
+  async sendCommand(commandCode, dataBytes = []) {
     try {
       if (!this.connected) {
         return { success: false, error: 'Device not connected' };
       }
 
-      const info = {};
+      const packet = buildCommandPacket(commandCode, dataBytes);
+      console.log(`[USB] TX CMD 0x${commandCode.toString(16).padStart(4, '0')}: [${Array.from(packet).map(b => b.toString(16).padStart(2, '0')).join(', ')}]`);
 
-      // Firmware version (4 bytes: major.minor.patch.build)
-      try {
-        const fw = await this.sendCommand(CMD.GET_FIRMWARE_VERSION);
-        if (fw.success && fw.data.length >= 4) {
-          info.firmwareVersion = `${fw.data[0]}.${fw.data[1]}.${fw.data[2]}.${fw.data[3]}`;
-        } else {
-          info.firmwareVersion = 'N/A';
-        }
-      } catch (e) {
-        console.log('[USB] Get firmware failed:', e.message);
-        info.firmwareVersion = 'N/A';
+      // Write
+      await this._writeToDevice(packet);
+
+      // Read response — try reading with generous buffer
+      // DLL reads with expectedResponseLength and isLengthPreDetermined from CommandConfigurations
+      // We'll read up to 4096 bytes (more than any expected response)
+      const response = await this._readFromDevice(4096, READ_TIMEOUT);
+
+      if (!response || response.length < 4) {
+        console.log(`[USB] RX: no response or too short (${response ? response.length : 0} bytes)`);
+        return { success: false, error: 'No response from device (timeout)' };
       }
 
-      // Battery voltage (4 bytes float)
-      try {
-        const batt = await this.sendCommand(CMD.GET_BATTERY_VOLTAGE);
-        if (batt.success && batt.data.length >= 4) {
-          info.batteryVoltage = Math.round(this._parseFloat(batt.data) * 100) / 100;
-        } else {
-          info.batteryVoltage = 0;
-        }
-      } catch (e) {
-        console.log('[USB] Get battery failed:', e.message);
-        info.batteryVoltage = 0;
+      console.log(`[USB] RX: [${Array.from(response).map(b => b.toString(16).padStart(2, '0')).join(', ')}]`);
+
+      const parsed = parseResponse(response);
+      if (!parsed) {
+        return { success: false, error: 'Invalid response format' };
       }
 
-      // Temperature (4 bytes float, °C)
-      try {
-        const temp = await this.sendCommand(CMD.GET_TEMPERATURE_CM);
-        if (temp.success && temp.data.length >= 4) {
-          info.temperature = Math.round(this._parseFloat(temp.data) * 100) / 100;
-        } else {
-          info.temperature = undefined;
-        }
-      } catch (e) {
-        console.log('[USB] Get temperature failed:', e.message);
-        info.temperature = undefined;
+      // Verify response code = request code + 1
+      const expectedRespCode = commandCode + 1;
+      if (parsed.commandCode !== expectedRespCode) {
+        console.log(`[USB] Response code 0x${parsed.commandCode.toString(16)} != expected 0x${expectedRespCode.toString(16)}`);
+        // Still return the data — some commands may have different response codes
       }
 
-      // Device time (6 bytes: YY-MM-DD-HH-MM-SS)
-      try {
-        const dt = await this.sendCommand(CMD.GET_DEVICE_TIME);
-        if (dt.success && dt.data.length >= 6) {
-          const y = 2000 + dt.data[0];
-          const m = dt.data[1];
-          const d = dt.data[2];
-          const h = dt.data[3];
-          const min = dt.data[4];
-          const s = dt.data[5];
-          info.deviceTime = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')} ${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-        }
-      } catch (e) {
-        console.log('[USB] Get device time failed:', e.message);
-      }
+      // Convert data to ASCII string for string-type responses
+      const value = bytesToAscii(parsed.data);
 
-      // Tool SN
-      try {
-        const sn = await this.sendCommand(CMD.GET_TOOL_SN);
-        if (sn.success) {
-          info.toolSN = this._parseString(sn.data) || '';
-        } else {
-          info.toolSN = '';
-        }
-      } catch (e) {
-        console.log('[USB] Get Tool SN failed:', e.message);
-        info.toolSN = '';
-      }
-
-      // Customer
-      try {
-        const cust = await this.sendCommand(CMD.GET_CUSTOMER);
-        if (cust.success) {
-          info.customer = this._parseString(cust.data) || '';
-        } else {
-          info.customer = '';
-        }
-      } catch (e) {
-        console.log('[USB] Get Customer failed:', e.message);
-        info.customer = '';
-      }
-
-      // Country
-      try {
-        const country = await this.sendCommand(CMD.GET_COUNTRY);
-        if (country.success) {
-          info.country = this._parseString(country.data) || '';
-        } else {
-          info.country = '';
-        }
-      } catch (e) {
-        console.log('[USB] Get Country failed:', e.message);
-        info.country = '';
-      }
-
-      // Pressure CM (12 bytes)
-      try {
-        const pressure = await this.sendCommand(CMD.GET_PRESSURE_CM);
-        if (pressure.success) {
-          info.pressureCM = Array.from(pressure.data);
-        }
-      } catch (e) {
-        console.log('[USB] Get Pressure CM failed:', e.message);
-      }
-
-      return { success: true, info };
+      return { success: true, data: parsed.data, value, commandCode: parsed.commandCode, length: parsed.length };
     } catch (error) {
-      console.error('[USB] getDeviceInfo error:', error);
+      console.error(`[USB] sendCommand error:`, error);
       return { success: false, error: error.message };
     }
   }
 
   /**
-   * SET command helper - sends a SET command with ASCII string data
-   * Follows DLL protocol: ASCIIconversion → IssueResponseInternal → CommandDevice
-   * Packet format: [cmdlow, cmdhigh, lengthlow, lengthhigh, ...dataBytes]
-   * length = dataBytes.length (0 if no data)
-   * @param {number} cmdCode - 16-bit SET command code (e.g., CMD.SET_TOOL_SN = 0x014E)
-   * @param {string} value - string value to set
-   * @returns {object} { success: boolean, response: string|null }
+   * Send a GET command (no data payload, length=0)
    */
-  async _setStringParam(cmdCode, value) {
-    if (!this.connected) {
-      return { success: false, error: 'Device not connected' };
-    }
-    const dataBytes = asciiToBytes(value);
-    const resp = await this.sendCommand(cmdCode, dataBytes);
-    if (resp.success) {
-      // DLL: GetValueFromResponse reads response data after 4-byte header,
-      // formats via CommandResponseConfig, and checks last ByteConfig field.
-      // For SET commands, the response is an ASCII string value.
-      // "0" means failure, non-"0" non-null means success.
-      // Read all data after header as ASCII string for proper comparison.
-      const ackString = resp.data.length > 0
-        ? resp.data.map(b => String.fromCharCode(b)).join('')
-        : null;
-      if (ackString === '0') {
-        return { success: false, error: 'Device returned 0 (rejected)', response: ackString };
-      }
-      if (ackString === null) {
-        return { success: false, error: 'No response data' };
-      }
-      return { success: true, response: ackString };
-    }
-    return { success: false, error: resp.error || 'No response' };
+  async sendGetCommand(commandCode) {
+    return this.sendCommand(commandCode, []);
   }
 
   /**
-   * SET command helper for integer/numeric parameters
-   * @param {number} cmdCode - 16-bit SET command code
-   * @param {number} value - numeric value to set
-   * @param {number} byteCount - number of bytes (1, 2, or 4)
-   * @returns {object} { success: boolean }
+   * Send a SET string command
+   * From DLL: ASCIIconversion → IssueResponseInternal → CommandDeviceAsync
+   * Response: value != "0" and value != null means success
    */
-  async _setNumericParam(cmdCode, value, byteCount = 1) {
-    if (!this.connected) {
-      return { success: false, error: 'Device not connected' };
+  async sendSetCommand(commandCode, stringValue) {
+    const dataBytes = asciiToBytes(stringValue);
+    const result = await this.sendCommand(commandCode, dataBytes);
+
+    if (!result.success) {
+      return result;
     }
-    const dataBytes = [];
-    for (let i = 0; i < byteCount; i++) {
-      dataBytes.push((value >> (i * 8)) & 0xFF);
+
+    // DLL: return valueFromResponse != "0" && valueFromResponse != null
+    if (result.value === '0' || result.value === '') {
+      return { success: false, error: 'Device returned 0 (failure)', value: result.value };
     }
-    const resp = await this.sendCommand(cmdCode, dataBytes);
-    if (resp.success) {
-      // Same ACK logic as _setStringParam: read data after header as ASCII string
-      const ackString = resp.data.length > 0
-        ? resp.data.map(b => String.fromCharCode(b)).join('')
-        : null;
-      if (ackString === '0') {
-        return { success: false, error: 'Device returned 0 (rejected)', response: ackString };
+
+    return result;
+  }
+
+  /**
+   * Send an ACK-only command (no data, just check for non-null response)
+   * From DLL: AckResponseAsync — if IssueResponseAsync returns non-null, success
+   */
+  async sendAckCommand(commandCode, dataBytes = []) {
+    const result = await this.sendCommand(commandCode, dataBytes);
+
+    if (!result.success) {
+      return result;
+    }
+
+    // AckResponseAsync: any non-null response means success
+    return { success: true };
+  }
+
+  // ─── GET commands ──────────────────────────────────────────────────────
+
+  async getFirmwareVersion() {
+    try {
+      const resp = await this.sendGetCommand(CMD.GET_FIRMWARE_VERSION);
+      if (resp.success && resp.data && resp.data.length >= 6) {
+        // Firmware version: 3 bytes [Major, Minor, Patch]
+        const major = resp.data[0];
+        const minor = resp.data[1];
+        const patch = resp.data[2];
+        return { success: true, value: `${major}.${minor}.${patch}` };
       }
-      if (ackString === null) {
-        return { success: false, error: 'No response data' };
+      return { success: false, value: null };
+    } catch (error) {
+      return { success: false, value: null, error: error.message };
+    }
+  }
+
+  async getBatteryVoltage() {
+    try {
+      const resp = await this.sendGetCommand(CMD.GET_BATTERY_VOLTAGE);
+      if (resp.success && resp.data && resp.data.length >= 4) {
+        const voltage = this._parseFloat(resp.data);
+        return { success: true, voltage: Math.round(voltage * 100) / 100 };
       }
-      return { success: true, response: ackString };
+      return { success: false, voltage: 0 };
+    } catch (error) {
+      return { success: false, voltage: 0, error: error.message };
     }
-    return { success: false, error: resp.error || 'No response' };
   }
 
-  // ---- Individual SET Commands (from DLL decompilation) ----
-
-  async setToolSN(sn) {
-    return this._setStringParam(CMD.SET_TOOL_SN, sn);
+  async getDeviceTime() {
+    try {
+      const resp = await this.sendGetCommand(CMD.GET_DEVICE_TIME);
+      if (resp.success && resp.data && resp.data.length >= 4) {
+        // 4-byte Unix timestamp (little-endian)
+        const ts = resp.data.readUInt32LE(0);
+        return { success: true, timestamp: ts, date: new Date(ts * 1000).toISOString() };
+      }
+      return { success: false };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
   }
 
-  async setRunID(runId) {
-    return this._setStringParam(CMD.SET_RUN_ID, runId);
+  async getTemperature() {
+    try {
+      const resp = await this.sendGetCommand(CMD.GET_TEMPERATURE_DATA_CM);
+      if (resp.success && resp.data && resp.data.length >= 4) {
+        const temp = this._parseFloat(resp.data);
+        return { success: true, temperature: Math.round(temp * 100) / 100 };
+      }
+      return { success: false, temperature: 0 };
+    } catch (error) {
+      return { success: false, temperature: 0, error: error.message };
+    }
   }
 
-  async setRunIDType(runIdType) {
-    return this._setStringParam(CMD.SET_RUN_ID_TYPE, runIdType);
+  // String GET commands — these return ASCII string values
+  async getCustomer()      { return this._getStringParam(CMD.GET_CUSTOMER); }
+  async getCountry()       { return this._getStringParam(CMD.GET_COUNTRY); }
+  async getDistrict()      { return this._getStringParam(CMD.GET_DISTRICT); }
+  async getRunIDType()     { return this._getStringParam(CMD.GET_RUN_ID_TYPE); }
+  async getRunID()         { return this._getStringParam(CMD.GET_RUN_ID); }
+  async getDepthOut()      { return this._getStringParam(CMD.GET_DEPT_OUT); }
+  async getUniqueID()      { return this._getStringParam(CMD.GET_UNIQUE_ID); }
+  async getLDAP()          { return this._getStringParam(CMD.GET_LDAP); }
+  async getToolType()      { return this._getStringParam(CMD.GET_TOOL_TYPE); }
+  async getToolSize()      { return this._getStringParam(CMD.GET_TOOL_SIZE); }
+  async getToolPosition()  { return this._getStringParam(CMD.GET_TOOL_POSITION); }
+  async getToolSN()        { return this._getStringParam(CMD.GET_TOOL_SN); }
+  async getConfigName()    { return this._getStringParam(CMD.GET_CONFIG_NAME); }
+  async getUHConnectionType()  { return this._getStringParam(CMD.GET_UH_CONNECTION_TYPE); }
+  async getDHConnectionType()  { return this._getStringParam(CMD.GET_DH_CONNECTION_TYPE); }
+  async getIntPressureSN()     { return this._getStringParam(CMD.GET_INT_PRESSURE_SENSOR_SN); }
+  async getExtPressureSN()     { return this._getStringParam(CMD.GET_EXT_PRESSURE_SENSOR_SN); }
+  async getLimpetSN()          { return this._getStringParam(CMD.GET_LIMPET_SENSOR_SN); }
+
+  async _getStringParam(commandCode) {
+    try {
+      const resp = await this.sendGetCommand(commandCode);
+      if (resp.success) {
+        return { success: true, value: resp.value || '' };
+      }
+      return { success: false, value: '' };
+    } catch (error) {
+      return { success: false, value: '', error: error.message };
+    }
   }
 
-  async setCustomer(customer) {
-    return this._setStringParam(CMD.SET_CUSTOMER, customer);
-  }
+  // ─── SET commands ──────────────────────────────────────────────────────
 
-  async setDistrict(district) {
-    return this._setStringParam(CMD.SET_DISTRICT, district);
-  }
+  async setToolSN(val)            { return this.sendSetCommand(CMD.SET_TOOL_SN, val); }
+  async setCustomer(val)          { return this.sendSetCommand(CMD.SET_CUSTOMER, val); }
+  async setCountry(val)           { return this.sendSetCommand(CMD.SET_COUNTRY, val); }
+  async setDistrict(val)          { return this.sendSetCommand(CMD.SET_DISTRICT, val); }
+  async setRunIDType(val)         { return this.sendSetCommand(CMD.SET_RUN_ID_TYPE, val); }
+  async setRunID(val)             { return this.sendSetCommand(CMD.SET_RUN_ID, val); }
+  async setDepthOut(val)          { return this.sendSetCommand(CMD.SET_DEPT_OUT, val); }
+  async setUniqueID(val)          { return this.sendSetCommand(CMD.SET_UNIQUE_ID, val); }
+  async setLDAP(val)              { return this.sendSetCommand(CMD.SET_LDAP, val); }
+  async setToolType(val)          { return this.sendSetCommand(CMD.SET_TOOL_TYPE, val); }
+  async setToolPosition(val)      { return this.sendSetCommand(CMD.SET_TOOL_POSITION, val); }
+  async setToolSize(val)          { return this.sendSetCommand(CMD.SET_TOOL_SIZE, val); }
+  async setConfigName(val)        { return this.sendSetCommand(CMD.SET_CONFIG_NAME, val); }
+  async setUHConnectionType(val)  { return this.sendSetCommand(CMD.SET_UH_CONNECTION_TYPE, val); }
+  async setDHConnectionType(val)  { return this.sendSetCommand(CMD.SET_DH_CONNECTION_TYPE, val); }
+  async setIntPressureSN(val)     { return this.sendSetCommand(CMD.SET_INT_PRESSURE_SENSOR_SN, val); }
+  async setExtPressureSN(val)     { return this.sendSetCommand(CMD.SET_EXT_PRESSURE_SENSOR_SN, val); }
+  async setLimpetSN(val)          { return this.sendSetCommand(CMD.SET_LIMPET_SENSOR_SN, val); }
+  async setToolAxialPosition(val) { return this.sendSetCommand(CMD.SET_TOOL_AXIAL_POSITION, val); }
 
-  async setCountry(country) {
-    return this._setStringParam(CMD.SET_COUNTRY, country);
-  }
-
-  async setDepthOut(depth) {
-    return this._setStringParam(CMD.SET_DEPT_OUT, depth);
-  }
-
-  async setLDAP(ldap) {
-    return this._setStringParam(CMD.SET_LDAP, ldap);
-  }
-
-  async setUniqueID(uniqueId) {
-    return this._setStringParam(CMD.SET_UNIQUE_ID, uniqueId);
-  }
-
-  async setToolType(toolType) {
-    return this._setStringParam(CMD.SET_TOOL_TYPE, toolType);
-  }
-
-  async setToolPosition(position) {
-    return this._setStringParam(CMD.SET_TOOL_POSITION, position);
-  }
-
-  async setToolSize(size) {
-    return this._setStringParam(CMD.SET_TOOL_SIZE, size);
-  }
-
-  async setToolAxialPosition(axial) {
-    return this._setStringParam(CMD.SET_TOOL_AXIAL_POSITION, axial);
-  }
-
-  async setConfigName(configName) {
-    return this._setStringParam(CMD.SET_CONFIG_NAME, configName);
-  }
-
-  async setUHConnectionType(connType) {
-    return this._setStringParam(CMD.SET_UH_CONNECTION_TYPE, connType);
-  }
-
-  async setDHConnectionType(connType) {
-    return this._setStringParam(CMD.SET_DH_CONNECTION_TYPE, connType);
-  }
-
-  async setIntPressureSN(sn) {
-    return this._setStringParam(CMD.SET_INT_PRESSURE_SENSOR_SN, sn);
-  }
-
-  async setExtPressureSN(sn) {
-    return this._setStringParam(CMD.SET_EXT_PRESSURE_SENSOR_SN, sn);
-  }
-
-  async setLimpetSN(sn) {
-    return this._setStringParam(CMD.SET_LIMPET_SENSOR_SN, sn);
-  }
-
-  async setDeviceTime(date) {
-    // date: ISO date string (e.g. "2025-01-15T10:30:00.000Z") or { year, month, day, hour, minute, second }
-    // From DLL: SET_DEVICE_TIME = 0x0044, data = [YY, MM, DD, HH, MM, SS]
-    let dataBytes;
-    if (typeof date === 'string') {
-      // Parse ISO string
-      const d = new Date(date);
-      dataBytes = [
-        d.getFullYear() - 2000,
-        d.getMonth() + 1,
-        d.getDate(),
-        d.getHours(),
-        d.getMinutes(),
-        d.getSeconds(),
+  /**
+   * Set device time — sends 4-byte Unix timestamp (little-endian)
+   * From DLL: SET_DEVICE_TIME = 68 (0x0044), data = 4-byte unix timestamp
+   */
+  async setDeviceTime(dateInput) {
+    try {
+      if (!this.connected) {
+        return { success: false, error: 'Device not connected' };
+      }
+      const date = dateInput ? new Date(dateInput) : new Date();
+      const unixTs = Math.floor(date.getTime() / 1000);
+      // 4-byte little-endian Unix timestamp
+      const dataBytes = [
+        unixTs & 0xFF,
+        (unixTs >> 8) & 0xFF,
+        (unixTs >> 16) & 0xFF,
+        (unixTs >> 24) & 0xFF,
       ];
-    } else if (date && typeof date === 'object') {
-      dataBytes = [
-        (date.year || 2025) - 2000,
-        date.month || 1,
-        date.day || 1,
-        date.hour || 0,
-        date.minute || 0,
-        date.second || 0,
-      ];
-    } else {
-      // Default: current time
-      const now = new Date();
-      dataBytes = [
-        now.getFullYear() - 2000,
-        now.getMonth() + 1,
-        now.getDate(),
-        now.getHours(),
-        now.getMinutes(),
-        now.getSeconds(),
-      ];
+      return await this.sendCommand(CMD.SET_DEVICE_TIME, dataBytes);
+    } catch (error) {
+      return { success: false, error: error.message };
     }
-    if (!this.connected) {
-      return { success: false, error: 'Device not connected' };
-    }
-    console.log('[USB] Setting device time:', dataBytes);
-    const resp = await this.sendCommand(CMD.SET_DEVICE_TIME, dataBytes);
-    if (resp.success) {
-      return { success: true };
-    }
-    return { success: false, error: resp.error || 'No response' };
   }
 
   /**
    * Write all SET parameters into Flash memory
-   * MUST be called after all SET commands to persist changes
    * From DLL: WriteIntoFlashAsync → AckResponseAsync(Command.SET_PARAMETERS_INTO_FLASH)
+   * SET_PARAMETERS_INTO_FLASH = 0x0100, no data payload, just check for non-null response
    */
   async writeIntoFlash() {
     if (!this.connected) {
       return { success: false, error: 'Device not connected' };
     }
     console.log('[USB] Writing parameters into Flash...');
-    // SET_PARAMETERS_INTO_FLASH (0x0100) has no data payload
-    const resp = await this.sendCommand(CMD.SET_PARAMETERS_INTO_FLASH);
-    if (resp.success) {
+    const result = await this.sendAckCommand(CMD.SET_PARAMETERS_INTO_FLASH);
+    if (result.success) {
       console.log('[USB] Flash write successful');
-      return { success: true };
+    } else {
+      console.log('[USB] Flash write failed:', result.error);
     }
-    console.log('[USB] Flash write failed:', resp.error);
-    return { success: false, error: resp.error || 'Flash write failed' };
+    return result;
   }
 
   /**
@@ -790,12 +632,7 @@ class ProcyonUsbBridge {
       return { success: false, error: 'Device not connected' };
     }
     console.log('[USB] Erasing used memory...');
-    const resp = await this.sendCommand(CMD.MEMORY_ERASE_USED);
-    if (resp.success) {
-      console.log('[USB] Erase used memory initiated');
-      return { success: true };
-    }
-    return { success: false, error: resp.error || 'Erase failed' };
+    return await this.sendAckCommand(CMD.MEMORY_ERASE_USED);
   }
 
   /**
@@ -807,24 +644,12 @@ class ProcyonUsbBridge {
       return { success: false, error: 'Device not connected' };
     }
     console.log('[USB] Erasing all memory...');
-    const resp = await this.sendCommand(CMD.MEMORY_ERASE_ALL);
-    if (resp.success) {
-      console.log('[USB] Erase all memory initiated');
-      return { success: true };
-    }
-    return { success: false, error: resp.error || 'Erase failed' };
+    return await this.sendAckCommand(CMD.MEMORY_ERASE_ALL);
   }
 
   /**
    * Set all initialization parameters (EM variant) and write to Flash
-   * Follows DLL EMSetInitParameters flow:
-   *   1. Set each parameter sequentially
-   *   2. 50ms delay between each SET command
-   *   3. WriteIntoFlash at the end
-   * @param {object} params - { customer, country, district, ldap, toolType,
-   *   toolPosition, toolSN, toolSize, uhConnectionType, dhConnectionType,
-   *   intPressureSN, extPressureSN, limpetSN, configName, uniqueId }
-   * @returns {object} { success: boolean, results: object, flashResult: object }
+   * Follows DLL EMSetInitParameters flow with 50ms delays
    */
   async setInitParameters(params) {
     if (!this.connected) {
@@ -832,25 +657,24 @@ class ProcyonUsbBridge {
     }
 
     const results = {};
-    const SET_DELAY_MS = 50; // DLL uses Task.Delay(50) between each SET
 
     // Order matches DLL EMSetInitParameters
     const steps = [
-      ['customer', () => this.setCustomer(params.customer || 'N/A')],
-      ['country', () => this.setCountry(params.country || 'N/A')],
-      ['district', () => this.setDistrict(params.district || 'N/A')],
-      ['ldap', () => this.setLDAP(params.ldap || 'N/A')],
-      ['toolType', () => this.setToolType(params.toolType || 'N/A')],
-      ['toolPosition', () => this.setToolPosition(params.toolPosition || 'N/A')],
-      ['toolSN', () => this.setToolSN(params.toolSN || 'N/A')],
-      ['toolSize', () => this.setToolSize(params.toolSize || 'N/A')],
-      ['uhConnectionType', () => this.setUHConnectionType(params.uhConnectionType || 'N/A')],
-      ['dhConnectionType', () => this.setDHConnectionType(params.dhConnectionType || 'N/A')],
-      ['intPressureSN', () => this.setIntPressureSN(params.intPressureSN || 'N/A')],
-      ['extPressureSN', () => this.setExtPressureSN(params.extPressureSN || 'N/A')],
-      ['limpetSN', () => this.setLimpetSN(params.limpetSN || 'N/A')],
-      ['configName', () => this.setConfigName(params.configName || 'N/A')],
-      ['uniqueId', () => this.setUniqueID(params.uniqueId || 'N/A')],
+      ['customer',          () => this.setCustomer(params.customer || 'N/A')],
+      ['country',           () => this.setCountry(params.country || 'N/A')],
+      ['district',          () => this.setDistrict(params.district || 'N/A')],
+      ['ldap',              () => this.setLDAP(params.ldap || 'N/A')],
+      ['toolType',          () => this.setToolType(params.toolType || 'N/A')],
+      ['toolPosition',      () => this.setToolPosition(params.toolPosition || 'N/A')],
+      ['toolSN',            () => this.setToolSN(params.toolSN || 'N/A')],
+      ['toolSize',          () => this.setToolSize(params.toolSize || 'N/A')],
+      ['uhConnectionType',  () => this.setUHConnectionType(params.uhConnectionType || 'N/A')],
+      ['dhConnectionType',  () => this.setDHConnectionType(params.dhConnectionType || 'N/A')],
+      ['intPressureSN',     () => this.setIntPressureSN(params.intPressureSN || 'N/A')],
+      ['extPressureSN',     () => this.setExtPressureSN(params.extPressureSN || 'N/A')],
+      ['limpetSN',          () => this.setLimpetSN(params.limpetSN || 'N/A')],
+      ['configName',        () => this.setConfigName(params.configName || 'N/A')],
+      ['uniqueId',          () => this.setUniqueID(params.uniqueId || 'N/A')],
     ];
 
     for (const [name, fn] of steps) {
@@ -862,16 +686,13 @@ class ProcyonUsbBridge {
         results[name] = false;
         console.log(`[USB] SET ${name}: ERROR - ${e.message}`);
       }
-      // 50ms delay between SET commands (from DLL)
       await new Promise(resolve => setTimeout(resolve, SET_DELAY_MS));
     }
 
-    // Check if all succeeded
     const allSuccess = Object.values(results).every(v => v === true);
 
     let flashResult = { success: false };
     if (allSuccess) {
-      // Write to Flash (from DLL: only write if all SETs succeed)
       flashResult = await this.writeIntoFlash();
     } else {
       console.log('[USB] Not all SETs succeeded, skipping Flash write');
@@ -885,52 +706,30 @@ class ProcyonUsbBridge {
   }
 
   /**
-   * Get battery voltage
+   * Get memory erase percentage
    */
-  async getBatteryVoltage() {
+  async getMemoryErasePercent() {
     try {
-      if (!this.connected) {
-        return { success: false, voltage: 0, error: 'Device not connected' };
+      const resp = await this.sendGetCommand(CMD.GET_MEMORY_ERASE_PERCENT);
+      if (resp.success && resp.data && resp.data.length >= 2) {
+        const percent = (resp.data[1] << 8) | resp.data[0];
+        return { success: true, percent };
       }
-      const resp = await this.sendCommand(CMD.GET_BATTERY_VOLTAGE);
-      if (resp.success && resp.data.length >= 4) {
-        return { success: true, voltage: Math.round(this._parseFloat(resp.data) * 100) / 100 };
-      }
-      return { success: false, voltage: 0 };
+      return { success: false, percent: 0 };
     } catch (error) {
-      return { success: false, voltage: 0, error: error.message };
+      return { success: false, percent: 0, error: error.message };
     }
   }
 
   /**
-   * Get temperature
+   * Get number of memory partitions
    */
-  async getTemperature() {
+  async getMemoryPartitions() {
     try {
-      if (!this.connected) {
-        return { success: false, temperature: 0, error: 'Device not connected' };
-      }
-      const resp = await this.sendCommand(CMD.GET_TEMPERATURE_CM);
-      if (resp.success && resp.data.length >= 4) {
-        return { success: true, temperature: Math.round(this._parseFloat(resp.data) * 100) / 100 };
-      }
-      return { success: false, temperature: 0 };
-    } catch (error) {
-      return { success: false, temperature: 0, error: error.message };
-    }
-  }
-
-  /**
-   * Get record count from device memory
-   */
-  async getRecordCount() {
-    try {
-      if (!this.connected) {
-        return { success: false, count: 0, error: 'Device not connected' };
-      }
-      const resp = await this.sendCommand(CMD.GET_RECORD_COUNT);
-      if (resp.success && resp.data.length >= 4) {
-        return { success: true, count: this._parseU32(resp.data) };
+      const resp = await this.sendGetCommand(CMD.GET_NUMBER_MEMORY_PARTITIONS);
+      if (resp.success && resp.data && resp.data.length >= 1) {
+        const count = resp.data[0];
+        return { success: true, count };
       }
       return { success: false, count: 0 };
     } catch (error) {
@@ -940,54 +739,87 @@ class ProcyonUsbBridge {
 
   /**
    * Download one-second data from device memory
-   * NOTE: Data download protocol needs verification - memory dump uses different commands
+   * TODO: Full implementation — requires MEMORY_DUMP_START, chunk reads, MEMORY_DUMP_END
    */
   async downloadOneSecondData(options = {}) {
+    return { success: false, error: 'Not yet implemented', records: [] };
+  }
+
+  /**
+   * Run self-test sequence
+   * TODO: Full implementation — requires SET_SELF_TEST_MODE, wait, GET results
+   */
+  async runSelfTest() {
+    return { success: false, error: 'Not yet implemented', results: [] };
+  }
+
+  /**
+   * Initialize logger configuration
+   * TODO: Full implementation
+   */
+  async initializeLogger(config) {
+    return { success: false, error: 'Not yet implemented' };
+  }
+
+  // ─── Utility functions ─────────────────────────────────────────────────
+
+  /**
+   * Parse IEEE 754 float from 4-byte little-endian buffer
+   */
+  _parseFloat(data) {
+    if (!data || data.length < 4) return 0;
+    const buf = Buffer.alloc(4);
+    buf[0] = data[0];
+    buf[1] = data[1];
+    buf[2] = data[2];
+    buf[3] = data[3];
+    return buf.readFloatLE(0);
+  }
+
+  /**
+   * Parse unsigned 32-bit int from 4-byte little-endian buffer
+   */
+  _parseU32(data) {
+    if (!data || data.length < 4) return 0;
+    const buf = Buffer.alloc(4);
+    for (let i = 0; i < 4; i++) buf[i] = data[i];
+    return buf.readUInt32LE(0);
+  }
+
+  /**
+   * List all USB devices (for diagnostics)
+   */
+  listDevices() {
     try {
-      if (!this.connected) {
-        return { success: false, data: [], totalRecords: 0, error: 'Device not connected' };
-      }
-
-      // Get total record count
-      const countResult = await this.getRecordCount();
-      if (!countResult.success) {
-        return { success: false, data: [], totalRecords: 0, error: countResult.error };
-      }
-
-      const totalRecords = countResult.count;
-      const records = [];
-
-      console.log('[USB] Starting download, records:', totalRecords);
-
-      // TODO: Implement actual memory dump protocol
-      // From DLL: GET_MEMORY_DUMP_CHUNK_SIZE, GET_MEMORY_DUMP_CHUNK_DATA,
-      // GET_MEMORY_ERASE_PERCENT, MEMORY_DUMP_START
-      // These use different command codes than simple GET
-
-      return { success: true, data: records, totalRecords };
+      const devices = usb.getDeviceList();
+      return devices.map(d => {
+        const desc = d.deviceDescriptor;
+        const vid = desc ? desc.idVendor : 0;
+        const pid = desc ? desc.idProduct : 0;
+        return {
+          vid: `0x${vid.toString(16).padStart(4, '0')}`,
+          pid: `0x${pid.toString(16).padStart(4, '0')}`,
+          address: d.deviceAddress,
+          isProcyon: vid === PROCYON_VID && pid === PROCYON_PID,
+        };
+      });
     } catch (error) {
-      console.error('[USB] downloadOneSecondData error:', error);
-      return { success: false, data: [], totalRecords: 0, error: error.message };
+      return [];
     }
   }
 
   /**
-   * Run self test (placeholder - test protocol needs verification)
+   * Get device info
    */
-  async runSelfTest() {
-    try {
-      if (!this.connected) {
-        return { success: false, error: 'Device not connected' };
-      }
+  getDeviceInfo() {
+    return this.deviceInfo;
+  }
 
-      // From DLL: SET_SELF_TEST_MODE sets mode, then results via GET_SELF_TEST_MODE_STATUS
-      // and individual sensor test data commands
-      console.log('[USB] Self test not yet fully implemented');
-      return { success: false, error: 'Self test not yet implemented' };
-    } catch (error) {
-      console.error('[USB] runSelfTest error:', error);
-      return { success: false, error: error.message };
-    }
+  /**
+   * Check if connected
+   */
+  isConnected() {
+    return this.connected;
   }
 
   /**
@@ -997,15 +829,13 @@ class ProcyonUsbBridge {
     try {
       const result = {
         success: true,
-        backend: 'libusb0-winusb',
+        backend: 'node-usb-direct',
         totalDevices: 0,
         devices: [],
         procyonDetail: null,
-        usbTest: null,
       };
 
       try {
-        const usb = require('usb');
         const devices = usb.getDeviceList();
         result.totalDevices = devices.length;
         result.devices = devices.map(d => {
@@ -1039,32 +869,10 @@ class ProcyonUsbBridge {
         result.usbListError = usbErr.message;
       }
 
-      try {
-        const findResult = await this._exec(['find'], 3000);
-        result.usbTest = {
-          exeFound: true,
-          deviceFound: findResult.found || false,
-          devicePath: findResult.path || null,
-          findError: findResult.error || null,
-        };
-      } catch (exeErr) {
-        result.usbTest = {
-          exeFound: false,
-          error: exeErr.message,
-        };
-      }
-
       return result;
     } catch (error) {
       return { success: false, error: error.message };
     }
-  }
-
-  /**
-   * Check if connected
-   */
-  isConnected() {
-    return this.connected;
   }
 }
 
