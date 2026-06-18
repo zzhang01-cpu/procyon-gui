@@ -197,6 +197,140 @@ export async function setDepthOut(depth: number): Promise<{ success: boolean; er
 }
 
 /**
+ * Write all SET parameters into flash memory
+ * Must be called after all SET commands succeed
+ */
+export async function writeIntoFlash(): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.writeIntoFlash() as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set multiple init parameters at once with 50ms delays between each
+ * Then write into flash
+ */
+export async function setInitParameters(params: {
+  customer?: string;
+  country?: string;
+  district?: string;
+  ldap?: string;
+  toolType?: string;
+  toolPosition?: string;
+  toolSN?: string;
+  toolSize?: string;
+  configName?: string;
+  uniqueId?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setInitParameters(params) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set LDAP
+ */
+export async function setLDAP(ldap: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setLDAP(ldap) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set tool type
+ */
+export async function setToolType(toolType: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setToolType(toolType) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set tool position
+ */
+export async function setToolPosition(position: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setToolPosition(position) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set tool size
+ */
+export async function setToolSize(size: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setToolSize(size) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set config name
+ */
+export async function setConfigName(name: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setConfigName(name) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set unique ID
+ */
+export async function setUniqueID(id: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setUniqueID(id) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set device time
+ */
+export async function setDeviceTime(): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setDeviceTime() as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Erase used memory
+ */
+export async function eraseUsedMemory(): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.eraseUsedMemory() as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Erase all memory
+ */
+export async function eraseAllMemory(): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.eraseAllMemory() as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
  * Get number of memory partitions
  */
 export async function getMemoryPartitions(): Promise<{ success: boolean; count: number; error?: string }> {

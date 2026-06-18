@@ -115,9 +115,83 @@ interface DeviceContextType {
 - **设备类**: CDC ACM (0x0A)，但使用 Bulk 传输而非虚拟串口
 - **接口**: 只有 Interface 1（Interface 0 不存在，ClaimInterface(0) 会失败）
 - **原始软件**: Procyon.exe 使用 LibUsbDotNet.dll (v2.2.8.0/v3.0.0.0 LibUsb 后端)
-- **已知问题**: Bulk Write 成功但 Bulk Read 超时，需要从 Procyon.dll 逆向通信协议
+- **DLL 逆向**: ILSpy 成功反编译 Procyon.dll → decompiled.cs (4.2MB)，已提取完整协议
 - **沙箱注意**: Web 模式下 USB 不可用；Electron 模式需在本地 Windows 运行
 - **沙箱构建**: `ELECTRON_SKIP_BINARY_DOWNLOAD=1` 必须设置，否则 pnpm install 会因 Electron 下载超时而失败
+
+## USB 通信协议（从 Procyon.dll 逆向确认）
+
+### 通用包格式
+```
+[cmdlow, cmdhigh, lengthlow, lengthhigh, ...data]
+```
+- cmdlow = commandCode & 0xFF, cmdhigh = (commandCode >> 8) & 0xFF
+- lengthlow = data.length & 0xFF, lengthhigh = (data.length >> 8) & 0xFF
+- GET 命令: data 为空, length = 0 → 4 字节包
+- SET 命令: data = ASCII 编码的字符串值, length = data.length → 4+data.length 字节包
+- **发送精确字节数**，不用 0xFF 填充到 64 字节
+- **响应码**：设备响应的 command code = 请求码 + 1
+
+### GET 命令（已验证成功）
+| 命令 | 枚举值 | Hex |
+|------|--------|-----|
+| GET_FIRMWARE_VERSION | 5 | 0x0005 |
+| GET_BATTERY_VOLTAGE | 64 | 0x0040 |
+| GET_DEVICE_TIME | 66 | 0x0042 |
+| GET_TEMPERATURE_DATA_CM | 70 | 0x0046 |
+| GET_CUSTOMER | 258 | 0x0102 |
+| GET_COUNTRY | 262 | 0x0106 |
+| GET_DISTRICT | 266 | 0x010A |
+| GET_RUN_ID_TYPE | 270 | 0x010E |
+| GET_RUN_ID | 274 | 0x0112 |
+| GET_DEPT_OUT | 278 | 0x0116 |
+| GET_UNIQUE_ID | 282 | 0x011A |
+| GET_LDAP | 286 | 0x011E |
+| GET_TOOL_TYPE | 304 | 0x0130 |
+| GET_TOOL_SIZE | 312 | 0x0138 |
+| GET_TOOL_POSITION | 316 | 0x013C |
+| GET_CONFIG_NAME | 328 | 0x0148 |
+| GET_TOOL_SN | 332 | 0x014C |
+
+### SET 命令（从 DLL 确认，待设备验证）
+| 命令 | 枚举值 | Hex | 数据格式 |
+|------|--------|-----|----------|
+| SET_DEVICE_TIME | 68 | 0x0044 | 4字节 unix timestamp |
+| SET_PARAMETERS_INTO_FLASH | 256 | 0x0100 | 无数据（确认写 Flash） |
+| SET_CUSTOMER | 260 | 0x0104 | ASCII 字符串 |
+| SET_COUNTRY | 264 | 0x0108 | ASCII 字符串 |
+| SET_DISTRICT | 268 | 0x010C | ASCII 字符串 |
+| SET_RUN_ID_TYPE | 272 | 0x0110 | ASCII 字符串 |
+| SET_RUN_ID | 276 | 0x0114 | ASCII 字符串 |
+| SET_DEPT_OUT | 280 | 0x0118 | ASCII 字符串 |
+| SET_UNIQUE_ID | 284 | 0x011C | ASCII 字符串 |
+| SET_LDAP | 288 | 0x0120 | ASCII 字符串 |
+| SET_TOOL_TYPE | 306 | 0x0132 | ASCII 字符串 |
+| SET_TOOL_SIZE | 314 | 0x013A | ASCII 字符串 |
+| SET_TOOL_POSITION | 318 | 0x013E | ASCII 字符串 |
+| SET_CONFIG_NAME | 330 | 0x014A | ASCII 字符串 |
+| SET_TOOL_SN | 334 | 0x014E | ASCII 字符串 |
+| SET_UH_CONNECTION_TYPE | 354 | 0x0162 | ASCII 字符串 |
+| SET_DH_CONNECTION_TYPE | 358 | 0x0166 | ASCII 字符串 |
+| SET_INT_PRESSURE_SENSOR_SN | 362 | 0x016A | ASCII 字符串 |
+| SET_EXT_PRESSURE_SENSOR_SN | 366 | 0x016E | ASCII 字符串 |
+| SET_LIMPET_SENSOR_SN | 370 | 0x0172 | ASCII 字符串 |
+
+### SET 协议关键规则（从 DLL 确认）
+1. **ASCII 编码**: `ASCIIconversion()` 将字符串每个字符直接转 byte（无 null 终止符）
+2. **length 字段**: = data 字节数（即字符串长度），不是固定值
+3. **精确字节数**: `WriteToDeviceAsync` 直接写 `4+data.length` 字节，不填充 0xFF
+4. **50ms 延迟**: EMSetInitParameters 在每个 SET 命令间 `await Task.Delay(50)`
+5. **Flash 写入**: 所有 SET 完成后，发送 `SET_PARAMETERS_INTO_FLASH (0x0100)` 持久化
+6. **WriteIntoFlash**: 调用 `AckResponseAsync(SET_PARAMETERS_INTO_FLASH)` → 发4字节包，等 ACK
+7. **读超时**: 预知长度 200ms，未知长度 75ms
+8. **写超时**: 1000ms
+9. **Read endpoint**: `OpenEndpointReader(ReadEndpointID 129)` = EP1 IN (0x81)
+10. **Write endpoint**: `OpenEndpointWriter(WriteEndpointID 1)` = EP1 OUT (0x01)
+
+### SET 响应判断
+- SET 命令返回字符串值，`"0"` 表示失败，非零非null 表示成功
+- 响应包格式: `[cmdlow_resp, cmdhigh_resp, lengthlow, lengthhigh, ...data]` (响应码 = 请求码 + 1)
 
 ## 编码规范
 

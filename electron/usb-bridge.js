@@ -9,90 +9,186 @@ const EP_OUT = 0x01;
 const EP_IN = 0x81;
 
 // ============================================================
-// Procyon CM Protocol - Verified Command Codes
+// Procyon CM Protocol - Full Command Codes (from DLL decompilation)
 // ============================================================
-// Protocol format: 4-byte header [cmd_low, cmd_high, length_low, length_high]
-// Response code = request code + 1
-// GET commands: 4-byte header only, device returns header + data
-// SET commands: header + data (protocol TBD - pending DLL decompilation)
+// Protocol format: [cmd_low, cmd_high, length_low, length_high, ...data]
+// - GET: length = 0, send exact 4 bytes (no padding needed)
+// - SET: length = data.length, send 4 + data.length bytes (exact, no padding)
+// - Response code = request code + 1
+// - String parameters: ASCII conversion (each char → byte), no null terminator
+// - 50ms delay required between SET commands
+// - After all SETs, send SET_PARAMETERS_INTO_FLASH to persist to flash
 // ============================================================
 
 const CMD = {
-  // --- GET commands (verified via USB testing) ---
-  GET_FIRMWARE_VERSION:       0x0005,  // 4B: v2.0.6.2
-  GET_UNKNOWN_0A:             0x000A,  // 1B: 0x03
-  CMD_MODE_SWITCH_C:          0x000C,  // 0B response (mode/unlock?)
-  CMD_MODE_SWITCH_E:          0x000E,  // 0B response (mode/unlock?)
-  GET_RECORD_COUNT:           0x001F,  // 4B: record count
-  GET_UNKNOWN_30:             0x0030,  // 0B
-  GET_UNKNOWN_32:             0x0032,  // 0B
-  GET_UNKNOWN_34:             0x0034,  // 1B (varies)
-  GET_BATTERY_VOLTAGE:        0x0040,  // 4B float
-  GET_DEVICE_TIME:            0x0042,  // 6B: YY-MM-DD-HH-MM-SS
-  GET_TEMPERATURE_CM:         0x0046,  // 4B float
-  GET_SENSOR_50:              0x0050,  // 1B
-  GET_SENSOR_52:              0x0052,  // 1B
-  GET_SENSOR_54:              0x0054,  // 1B
-  GET_SENSOR_56:              0x0056,  // 1B
-  GET_PRESSURE_CM:            0x0096,  // 12B (zero=not downhole)
-  GET_CUSTOMER:               0x0102,  // 0B (empty)
-  GET_COUNTRY:                0x0106,  // 0B (empty)
-  GET_TOOL_SN:                0x014C,  // 0B (empty)
+  // --- Firmware / Device ---
+  GET_FIRMWARE_VERSION:                     5,     // 0x0005
+  GET_NUMBER_MEMORY_PARTITIONS:             10,    // 0x000A
+  GET_MEMORY_DUMP_CHUNK_DATA:               16,    // 0x0010
+  GET_PARTITION_WRITTEN_BYTE_COUNT:         25,    // 0x0019
+  GET_PARTITION_NUMBER_CHUNKS_WRITTEN:       27,    // 0x001B
+  GET_PARTITION_TOTAL_NUMBER_CHUNKS:         29,    // 0x001D
+  GET_MEMORY_DUMP_CHUNK_SIZE:               31,    // 0x001F
+  MEMORY_DUMP_START:                        12,    // 0x000C
+  MEMORY_DUMP_END:                          14,    // 0x000E
+  MEMORY_ERASE_USED:                        48,    // 0x0030
+  MEMORY_ERASE_ALL:                         50,    // 0x0032
+  GET_MEMORY_ERASE_PERCENT:                 52,    // 0x0034
 
-  // --- SET commands (codes TBD - from DLL string analysis, likely at odd offsets) ---
-  // The DLL reveals these SET command names but exact codes need DLL decompilation:
-  // SET_CUSTOMER, SET_COUNTRY, SET_TOOL_SN, SET_DEVICE_TIME,
-  // SET_RUN_ID, SET_DISTRICT, SET_DEPT_OUT, SET_UNIQUE_ID, SET_LDAP,
-  // SET_CONFIG_NAME, SET_TOOL_TYPE, SET_TOOL_SIZE, SET_TOOL_POSITION,
-  // SET_TOOL_AXIAL_POSITION, SET_DH_CONNECTION_TYPE, SET_UH_CONNECTION_TYPE,
-  // SET_RUN_ID_TYPE, SET_HOUSING_NUMBER, SET_BHA_SERIAL_NUMBER,
-  // SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER, SET_DRILL_BIT_INFO_BIT_BOM,
-  // SET_AMPLIFIER_DAC_OFFSET, SET_AMPLIFIER_FIRST_STAGE_GAIN,
-  // SET_AMPLIFIER_SECOND_STAGE_GAIN, SET_SELF_TEST_MODE,
-  // SET_PARAMETERS_INTO_FLASH
-  //
-  // DLL key functions: SetDeviceParameter<T>, WriteIntoFlashAsync, DelayBetweenWrites
-  // SET uses a different code path than GET (not simple CommandDevice)
+  // --- Device Time ---
+  GET_DEVICE_TIME:                          66,    // 0x0042
+  SET_DEVICE_TIME:                          68,    // 0x0044
 
-  // --- Memory/Data commands ---
-  GET_MEMORY_DUMP_CHUNK_SIZE: 0x0035,
-  MEMORY_DUMP_START:          0x0031,
-  GET_MEMORY_ERASE_PERCENT:   0x0033,
+  // --- Firmware Update ---
+  ERASE_INTERNAL_FLASH:                     80,    // 0x0050
+  FIRMWARE_UPDATE_BUFFER:                   82,    // 0x0052
+  START_VERIFICATION:                       84,    // 0x0054
+  VERIFY_STATUS:                            86,    // 0x0056
+  LAUNCH_DEVICE:                            88,    // 0x0058
+  UPDATE_STATE:                             90,    // 0x005A
+  ABORT_FIRMWARE_UPDATE:                    92,    // 0x005C
+
+  // --- Sensor Data (CM) ---
+  GET_TEMPERATURE_DATA_CM:                  70,    // 0x0046
+  GET_ROTATIONAL_DATA_CM:                   144,   // 0x0090
+  GET_LOWSHOCK_DATA_CM:                     146,   // 0x0092
+  GET_HIGHSHOCK_DATA_CM:                    148,   // 0x0094
+  GET_PRESSURE_DATA_CM:                     150,   // 0x0096
+
+  // --- Battery / Flash Test ---
+  GET_BATTERY_VOLTAGE:                      64,    // 0x0040
+  GET_FLASH_TEST_DATA:                      167,   // 0x00A7
+
+  // --- Flash Persist ---
+  SET_PARAMETERS_INTO_FLASH:                256,   // 0x0100
+
+  // --- Sensor Data (EM) ---
+  GET_TEMPERATURE_DATA_EM:                  160,   // 0x00A0
+  GET_ROTATIONAL_DATA_EM:                   162,   // 0x00A2
+  GET_LOWSHOCK_DATA_EM:                     164,   // 0x00A4
+  GET_PRESSURE_DATA_EM:                     166,   // 0x00A6
+  GET_LIMPET_DATA_EM:                       168,   // 0x00A8
+
+  // --- Customer / Region ---
+  GET_CUSTOMER:                             258,   // 0x0102
+  SET_CUSTOMER:                             260,   // 0x0104
+  GET_COUNTRY:                              262,   // 0x0106
+  SET_COUNTRY:                              264,   // 0x0108
+  GET_DISTRICT:                             266,   // 0x010A
+  SET_DISTRICT:                             268,   // 0x010C
+
+  // --- Run ID ---
+  GET_RUN_ID_TYPE:                          270,   // 0x010E
+  SET_RUN_ID_TYPE:                          272,   // 0x0110
+  GET_RUN_ID:                               274,   // 0x0112
+  SET_RUN_ID:                               276,   // 0x0114
+
+  // --- Depth / Unique ---
+  GET_DEPT_OUT:                             278,   // 0x0116
+  SET_DEPT_OUT:                             280,   // 0x0118
+  GET_UNIQUE_ID:                            282,   // 0x011A
+  SET_UNIQUE_ID:                            284,   // 0x011C
+
+  // --- LDAP ---
+  GET_LDAP:                                 286,   // 0x011E
+  SET_LDAP:                                 288,   // 0x0120
+
+  // --- Tool Info ---
+  GET_TOOL_TYPE:                            304,   // 0x0130
+  SET_TOOL_TYPE:                            306,   // 0x0132
+  GET_TOOL_AXIAL_POSITION:                  308,   // 0x0134
+  SET_TOOL_AXIAL_POSITION:                  310,   // 0x0136
+  GET_TOOL_SIZE:                            312,   // 0x0138
+  SET_TOOL_SIZE:                            314,   // 0x013A
+  GET_TOOL_POSITION:                        316,   // 0x013C
+  SET_TOOL_POSITION:                        318,   // 0x013E
+
+  // --- Serial Numbers ---
+  GET_HOUSING_NUMBER:                       320,   // 0x0140
+  SET_HOUSING_NUMBER:                       322,   // 0x0142
+  GET_BHA_SERIAL_NUMBER:                    324,   // 0x0144
+  SET_BHA_SERIAL_NUMBER:                    326,   // 0x0146
+  GET_CONFIG_NAME:                          328,   // 0x0148
+  SET_CONFIG_NAME:                          330,   // 0x014A
+  GET_TOOL_SN:                              332,   // 0x014C
+  SET_TOOL_SN:                              334,   // 0x014E
+
+  // --- Drill Bit ---
+  GET_DRILL_BIT_INFO_BIT_BOM:               336,   // 0x0150
+  SET_DRILL_BIT_INFO_BIT_BOM:               338,   // 0x0152
+  GET_DRILL_BIT_INFO_BIT_BLADE_NUMBER:      340,   // 0x0154
+  SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER:      342,   // 0x0156
+
+  // --- Connection Types ---
+  GET_UH_CONNECTION_TYPE:                   352,   // 0x0160
+  SET_UH_CONNECTION_TYPE:                   354,   // 0x0162
+  GET_DH_CONNECTION_TYPE:                   356,   // 0x0164
+  SET_DH_CONNECTION_TYPE:                   358,   // 0x0166
+
+  // --- Pressure Sensors ---
+  GET_INT_PRESSURE_SENSOR_SERIAL_NUMBER:    360,   // 0x0168
+  SET_INT_PRESSURE_SENSOR_SERIAL_NUMBER:    362,   // 0x016A
+  GET_EXT_PRESSURE_SENSOR_SERIAL_NUMBER:    364,   // 0x016C
+  SET_EXT_PRESSURE_SENSOR_SERIAL_NUMBER:    366,   // 0x016E
+  GET_LIMPET_SENSOR_SERIAL_NUMBER:          368,   // 0x0170
+  SET_LIMPET_SENSOR_SERIAL_NUMBER:          370,   // 0x0172
 
   // --- Self Test ---
-  SET_SELF_TEST_MODE:         0x0057,  // 1B: 0x03 (mode value)
+  SET_SELF_TEST_MODE:                       0x0057,
+  GET_SELF_TEST_MODE_STATUS:                0x0058,
+  GET_ACCEL_SELF_TEST_DATA:                 0x005A,
+  GET_GYRO_SELF_TEST_DATA:                  0x005C,
+  GET_GYRO_ACCEL_SELF_TEST_DATA:            0x005E,
 };
 
-const PACKET_SIZE = 64;
-
 /**
- * Build 4-byte command header
- * Format: [cmd_low, cmd_high, length_low, length_high]
+ * Build a complete command packet (exact bytes, no padding)
+ * GET: 4-byte header only [cmd_low, cmd_high, 0, 0]
+ * SET: 4-byte header + data bytes [cmd_low, cmd_high, len_low, len_high, ...data]
+ *
+ * Per DLL decompilation (CommandDeviceAsync):
+ *   array = new byte[4 + (data?.Length ?? 0)]
+ *   array[0] = cmdlow, array[1] = cmdhigh, array[2] = lengthlow, array[3] = lengthhigh
+ *   Array.Copy(data, 0, array, 4, data.Length)
+ *   WriteToDeviceAsync(array)  // exact length, NO 64-byte padding
  */
-function buildCommandHeader(cmdCode, dataLength = 0) {
-  return [
-    cmdCode & 0xFF,          // cmd_low
-    (cmdCode >> 8) & 0xFF,   // cmd_high
-    dataLength & 0xFF,        // length_low
-    (dataLength >> 8) & 0xFF, // length_high
-  ];
+function buildCommandPacket(cmdCode, data = []) {
+  const dataLen = data.length;
+  const packet = Buffer.alloc(4 + dataLen);
+  packet[0] = cmdCode & 0xFF;           // cmd_low
+  packet[1] = (cmdCode >> 8) & 0xFF;    // cmd_high
+  packet[2] = dataLen & 0xFF;           // length_low
+  packet[3] = (dataLen >> 8) & 0xFF;    // length_high
+  for (let i = 0; i < dataLen; i++) {
+    packet[4 + i] = data[i];
+  }
+  return packet;
 }
 
 /**
- * Build a complete command packet
- * GET: 4-byte header only (pad to 64 bytes with 0xFF for USB transport)
- * SET: 4-byte header + data bytes (pad to 64 bytes)
+ * Convert string to ASCII byte array (per DLL DeviceResponseHelper.ASCIIconversion)
+ * Each character → its byte value. No null terminator, no length prefix.
  */
-function buildCommandPacket(cmdCode, data = []) {
-  const header = buildCommandHeader(cmdCode, data.length);
-  const packet = Buffer.alloc(PACKET_SIZE, 0xFF);
-  // Write header
-  for (let i = 0; i < header.length; i++) packet[i] = header[i];
-  // Write data after header
-  for (let i = 0; i < data.length && i + 4 < PACKET_SIZE; i++) {
-    packet[i + 4] = data[i];
+function asciiToBytes(str) {
+  if (!str || str.length === 0) return [];
+  const bytes = [];
+  for (let i = 0; i < str.length; i++) {
+    bytes.push(str.charCodeAt(i) & 0xFF);
   }
-  return packet;
+  return bytes;
+}
+
+/**
+ * Convert byte array to ASCII string (reverse of asciiToBytes)
+ */
+function bytesToAscii(bytes) {
+  if (!bytes || bytes.length === 0) return '';
+  let str = '';
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 0) break; // null terminator
+    str += String.fromCharCode(bytes[i]);
+  }
+  return str;
 }
 
 /**
@@ -474,52 +570,244 @@ class ProcyonUsbBridge {
   }
 
   /**
-   * Set tool serial number (placeholder - SET protocol TBD)
+   * SET command helper - sends a SET command with ASCII string data
+   * Follows DLL protocol: ASCIIconversion → IssueResponseInternal → CommandDevice
+   * Packet format: [cmdlow, cmdhigh, lengthlow, lengthhigh, ...dataBytes]
+   * length = dataBytes.length (0 if no data)
+   * @param {number} cmdCode - 16-bit SET command code (e.g., CMD.SET_TOOL_SN = 0x014E)
+   * @param {string} value - string value to set
+   * @returns {object} { success: boolean, response: string|null }
    */
+  async _setStringParam(cmdCode, value) {
+    if (!this.connected) {
+      return { success: false, error: 'Device not connected' };
+    }
+    const dataBytes = asciiToBytes(value);
+    const resp = await this.sendCommand(cmdCode, dataBytes);
+    if (resp.success) {
+      // DLL: GetValueFromResponse returns non-"0" string on success
+      // Response data after 4-byte header contains the ack value
+      const ackValue = resp.data.length > 0 ? String(resp.data[0]) : null;
+      if (ackValue === '0') {
+        return { success: false, error: 'Device returned 0 (rejected)', response: ackValue };
+      }
+      return { success: true, response: ackValue };
+    }
+    return { success: false, error: resp.error || 'No response' };
+  }
+
+  /**
+   * SET command helper for integer/numeric parameters
+   * @param {number} cmdCode - 16-bit SET command code
+   * @param {number} value - numeric value to set
+   * @param {number} byteCount - number of bytes (1, 2, or 4)
+   * @returns {object} { success: boolean }
+   */
+  async _setNumericParam(cmdCode, value, byteCount = 1) {
+    if (!this.connected) {
+      return { success: false, error: 'Device not connected' };
+    }
+    const dataBytes = [];
+    for (let i = 0; i < byteCount; i++) {
+      dataBytes.push((value >> (i * 8)) & 0xFF);
+    }
+    const resp = await this.sendCommand(cmdCode, dataBytes);
+    if (resp.success) {
+      const ackValue = resp.data.length > 0 ? String(resp.data[0]) : null;
+      if (ackValue === '0') {
+        return { success: false, error: 'Device returned 0 (rejected)', response: ackValue };
+      }
+      return { success: true, response: ackValue };
+    }
+    return { success: false, error: resp.error || 'No response' };
+  }
+
+  // ---- Individual SET Commands (from DLL decompilation) ----
+
   async setToolSN(sn) {
-    // TODO: Implement once SET command codes and protocol are confirmed from DLL decompilation
-    console.log('[USB] SET_TOOL_SN not yet implemented - pending DLL decompilation');
-    return { success: false, error: 'SET commands not yet implemented' };
+    return this._setStringParam(CMD.SET_TOOL_SN, sn);
   }
 
-  /**
-   * Set run ID (placeholder - SET protocol TBD)
-   */
   async setRunID(runId) {
-    console.log('[USB] SET_RUN_ID not yet implemented - pending DLL decompilation');
-    return { success: false, error: 'SET commands not yet implemented' };
+    return this._setStringParam(CMD.SET_RUN_ID, runId);
   }
 
-  /**
-   * Set customer (placeholder - SET protocol TBD)
-   */
+  async setRunIDType(runIdType) {
+    return this._setStringParam(CMD.SET_RUN_ID_TYPE, runIdType);
+  }
+
   async setCustomer(customer) {
-    console.log('[USB] SET_CUSTOMER not yet implemented - pending DLL decompilation');
-    return { success: false, error: 'SET commands not yet implemented' };
+    return this._setStringParam(CMD.SET_CUSTOMER, customer);
   }
 
-  /**
-   * Set district (placeholder - SET protocol TBD)
-   */
   async setDistrict(district) {
-    console.log('[USB] SET_DISTRICT not yet implemented - pending DLL decompilation');
-    return { success: false, error: 'SET commands not yet implemented' };
+    return this._setStringParam(CMD.SET_DISTRICT, district);
   }
 
-  /**
-   * Set country (placeholder - SET protocol TBD)
-   */
   async setCountry(country) {
-    console.log('[USB] SET_COUNTRY not yet implemented - pending DLL decompilation');
-    return { success: false, error: 'SET commands not yet implemented' };
+    return this._setStringParam(CMD.SET_COUNTRY, country);
+  }
+
+  async setDepthOut(depth) {
+    return this._setStringParam(CMD.SET_DEPT_OUT, depth);
+  }
+
+  async setLDAP(ldap) {
+    return this._setStringParam(CMD.SET_LDAP, ldap);
+  }
+
+  async setUniqueID(uniqueId) {
+    return this._setStringParam(CMD.SET_UNIQUE_ID, uniqueId);
+  }
+
+  async setToolType(toolType) {
+    return this._setStringParam(CMD.SET_TOOL_TYPE, toolType);
+  }
+
+  async setToolPosition(position) {
+    return this._setStringParam(CMD.SET_TOOL_POSITION, position);
+  }
+
+  async setToolSize(size) {
+    return this._setStringParam(CMD.SET_TOOL_SIZE, size);
+  }
+
+  async setToolAxialPosition(axial) {
+    return this._setStringParam(CMD.SET_TOOL_AXIAL_POSITION, axial);
+  }
+
+  async setConfigName(configName) {
+    return this._setStringParam(CMD.SET_CONFIG_NAME, configName);
+  }
+
+  async setUHConnectionType(connType) {
+    return this._setStringParam(CMD.SET_UH_CONNECTION_TYPE, connType);
+  }
+
+  async setDHConnectionType(connType) {
+    return this._setStringParam(CMD.SET_DH_CONNECTION_TYPE, connType);
+  }
+
+  async setIntPressureSN(sn) {
+    return this._setStringParam(CMD.SET_INT_PRESSURE_SENSOR_SN, sn);
+  }
+
+  async setExtPressureSN(sn) {
+    return this._setStringParam(CMD.SET_EXT_PRESSURE_SENSOR_SN, sn);
+  }
+
+  async setLimpetSN(sn) {
+    return this._setStringParam(CMD.SET_LIMPET_SENSOR_SN, sn);
+  }
+
+  async setDeviceTime(date) {
+    // date: { year, month, day, hour, minute, second }
+    // From DLL: SET_DEVICE_TIME = 0x0044, data = [YY, MM, DD, HH, MM, SS]
+    const dataBytes = [
+      (date.year || 2025) - 2000,
+      date.month || 1,
+      date.day || 1,
+      date.hour || 0,
+      date.minute || 0,
+      date.second || 0,
+    ];
+    if (!this.connected) {
+      return { success: false, error: 'Device not connected' };
+    }
+    const resp = await this.sendCommand(CMD.SET_DEVICE_TIME, dataBytes);
+    if (resp.success) {
+      return { success: true };
+    }
+    return { success: false, error: resp.error || 'No response' };
   }
 
   /**
-   * Set depth out (placeholder - SET protocol TBD)
+   * Write all SET parameters into Flash memory
+   * MUST be called after all SET commands to persist changes
+   * From DLL: WriteIntoFlashAsync → AckResponseAsync(Command.SET_PARAMETERS_INTO_FLASH)
    */
-  async setDepthOut(depth) {
-    console.log('[USB] SET_DEPT_OUT not yet implemented - pending DLL decompilation');
-    return { success: false, error: 'SET commands not yet implemented' };
+  async writeIntoFlash() {
+    if (!this.connected) {
+      return { success: false, error: 'Device not connected' };
+    }
+    console.log('[USB] Writing parameters into Flash...');
+    // SET_PARAMETERS_INTO_FLASH (0x0100) has no data payload
+    const resp = await this.sendCommand(CMD.SET_PARAMETERS_INTO_FLASH);
+    if (resp.success) {
+      console.log('[USB] Flash write successful');
+      return { success: true };
+    }
+    console.log('[USB] Flash write failed:', resp.error);
+    return { success: false, error: resp.error || 'Flash write failed' };
+  }
+
+  /**
+   * Set all initialization parameters (EM variant) and write to Flash
+   * Follows DLL EMSetInitParameters flow:
+   *   1. Set each parameter sequentially
+   *   2. 50ms delay between each SET command
+   *   3. WriteIntoFlash at the end
+   * @param {object} params - { customer, country, district, ldap, toolType,
+   *   toolPosition, toolSN, toolSize, uhConnectionType, dhConnectionType,
+   *   intPressureSN, extPressureSN, limpetSN, configName, uniqueId }
+   * @returns {object} { success: boolean, results: object, flashResult: object }
+   */
+  async setInitParameters(params) {
+    if (!this.connected) {
+      return { success: false, error: 'Device not connected' };
+    }
+
+    const results = {};
+    const SET_DELAY_MS = 50; // DLL uses Task.Delay(50) between each SET
+
+    // Order matches DLL EMSetInitParameters
+    const steps = [
+      ['customer', () => this.setCustomer(params.customer || 'N/A')],
+      ['country', () => this.setCountry(params.country || 'N/A')],
+      ['district', () => this.setDistrict(params.district || 'N/A')],
+      ['ldap', () => this.setLDAP(params.ldap || 'N/A')],
+      ['toolType', () => this.setToolType(params.toolType || 'N/A')],
+      ['toolPosition', () => this.setToolPosition(params.toolPosition || 'N/A')],
+      ['toolSN', () => this.setToolSN(params.toolSN || 'N/A')],
+      ['toolSize', () => this.setToolSize(params.toolSize || 'N/A')],
+      ['uhConnectionType', () => this.setUHConnectionType(params.uhConnectionType || 'N/A')],
+      ['dhConnectionType', () => this.setDHConnectionType(params.dhConnectionType || 'N/A')],
+      ['intPressureSN', () => this.setIntPressureSN(params.intPressureSN || 'N/A')],
+      ['extPressureSN', () => this.setExtPressureSN(params.extPressureSN || 'N/A')],
+      ['limpetSN', () => this.setLimpetSN(params.limpetSN || 'N/A')],
+      ['configName', () => this.setConfigName(params.configName || 'N/A')],
+      ['uniqueId', () => this.setUniqueID(params.uniqueId || 'N/A')],
+    ];
+
+    for (const [name, fn] of steps) {
+      try {
+        const result = await fn();
+        results[name] = result.success;
+        console.log(`[USB] SET ${name}: ${result.success ? 'OK' : 'FAIL'}`);
+      } catch (e) {
+        results[name] = false;
+        console.log(`[USB] SET ${name}: ERROR - ${e.message}`);
+      }
+      // 50ms delay between SET commands (from DLL)
+      await new Promise(resolve => setTimeout(resolve, SET_DELAY_MS));
+    }
+
+    // Check if all succeeded
+    const allSuccess = Object.values(results).every(v => v === true);
+
+    let flashResult = { success: false };
+    if (allSuccess) {
+      // Write to Flash (from DLL: only write if all SETs succeed)
+      flashResult = await this.writeIntoFlash();
+    } else {
+      console.log('[USB] Not all SETs succeeded, skipping Flash write');
+    }
+
+    return {
+      success: allSuccess && flashResult.success,
+      results,
+      flashResult,
+    };
   }
 
   /**

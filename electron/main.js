@@ -100,6 +100,66 @@ function initUsbBridge() {
     return bridge.setDepthOut(depth);
   });
 
+  ipcMain.handle('device:set-ldap', async (_event, ldap) => {
+    return bridge.setLDAP(ldap);
+  });
+
+  ipcMain.handle('device:set-unique-id', async (_event, uniqueId) => {
+    return bridge.setUniqueID(uniqueId);
+  });
+
+  ipcMain.handle('device:set-tool-type', async (_event, toolType) => {
+    return bridge.setToolType(toolType);
+  });
+
+  ipcMain.handle('device:set-tool-position', async (_event, position) => {
+    return bridge.setToolPosition(position);
+  });
+
+  ipcMain.handle('device:set-tool-size', async (_event, size) => {
+    return bridge.setToolSize(size);
+  });
+
+  ipcMain.handle('device:set-config-name', async (_event, configName) => {
+    return bridge.setConfigName(configName);
+  });
+
+  ipcMain.handle('device:set-run-id-type', async (_event, runIdType) => {
+    return bridge.setRunIDType(runIdType);
+  });
+
+  ipcMain.handle('device:set-uh-connection-type', async (_event, connType) => {
+    return bridge.setUHConnectionType(connType);
+  });
+
+  ipcMain.handle('device:set-dh-connection-type', async (_event, connType) => {
+    return bridge.setDHConnectionType(connType);
+  });
+
+  ipcMain.handle('device:set-int-pressure-sn', async (_event, sn) => {
+    return bridge.setIntPressureSN(sn);
+  });
+
+  ipcMain.handle('device:set-ext-pressure-sn', async (_event, sn) => {
+    return bridge.setExtPressureSN(sn);
+  });
+
+  ipcMain.handle('device:set-limpet-sn', async (_event, sn) => {
+    return bridge.setLimpetSN(sn);
+  });
+
+  ipcMain.handle('device:set-device-time', async (_event, date) => {
+    return bridge.setDeviceTime(date);
+  });
+
+  ipcMain.handle('device:write-into-flash', async () => {
+    return bridge.writeIntoFlash();
+  });
+
+  ipcMain.handle('device:set-init-parameters', async (_event, params) => {
+    return bridge.setInitParameters(params);
+  });
+
   // Data operations
   ipcMain.handle('device:get-memory-partitions', async () => {
     return bridge.getMemoryPartitions();

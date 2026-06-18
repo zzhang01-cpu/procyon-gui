@@ -13,6 +13,15 @@ import {
   setDistrict as usbSetDistrict,
   setCountry as usbSetCountry,
   setDepthOut as usbSetDepthOut,
+  setLDAP as usbSetLDAP,
+  setToolType as usbSetToolType,
+  setToolPosition as usbSetToolPosition,
+  setToolSize as usbSetToolSize,
+  setConfigName as usbSetConfigName,
+  setUniqueID as usbSetUniqueID,
+  setDeviceTime as usbSetDeviceTime,
+  writeIntoFlash as usbWriteIntoFlash,
+  setInitParameters as usbSetInitParameters,
   downloadOneSecondData,
   runSelfTest as usbRunSelfTest,
   initializeLogger,
@@ -51,6 +60,30 @@ interface DeviceContextType {
   setDistrict: (district: string) => Promise<void>;
   setCountry: (country: string) => Promise<void>;
   setDepthOut: (depth: number) => Promise<void>;
+  setLDAP: (ldap: string) => Promise<void>;
+  setToolType: (toolType: string) => Promise<void>;
+  setToolPosition: (position: string) => Promise<void>;
+  setToolSize: (size: string) => Promise<void>;
+  setConfigName: (configName: string) => Promise<void>;
+  setUniqueID: (uniqueId: string) => Promise<void>;
+  setDeviceTime: () => Promise<void>;
+
+  // Flash write
+  writeIntoFlash: () => Promise<boolean>;
+
+  // Batch parameter setting (sets all params with 50ms delays + flash write)
+  setInitParameters: (params: {
+    customer?: string;
+    country?: string;
+    district?: string;
+    ldap?: string;
+    toolType?: string;
+    toolPosition?: string;
+    toolSN?: string;
+    toolSize?: string;
+    configName?: string;
+    uniqueId?: string;
+  }) => Promise<boolean>;
 
   // Data download
   downloadedData: OneSecondRecord[];
@@ -203,6 +236,122 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const handleSetLDAP = useCallback(async (ldap: string) => {
+    try {
+      const result = await usbSetLDAP(ldap);
+      if (!result.success) {
+        setError(result.error || 'Set LDAP failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set LDAP failed');
+    }
+  }, []);
+
+  const handleSetToolType = useCallback(async (toolType: string) => {
+    try {
+      const result = await usbSetToolType(toolType);
+      if (!result.success) {
+        setError(result.error || 'Set Tool Type failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Tool Type failed');
+    }
+  }, []);
+
+  const handleSetToolPosition = useCallback(async (position: string) => {
+    try {
+      const result = await usbSetToolPosition(position);
+      if (!result.success) {
+        setError(result.error || 'Set Tool Position failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Tool Position failed');
+    }
+  }, []);
+
+  const handleSetToolSize = useCallback(async (size: string) => {
+    try {
+      const result = await usbSetToolSize(size);
+      if (!result.success) {
+        setError(result.error || 'Set Tool Size failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Tool Size failed');
+    }
+  }, []);
+
+  const handleSetConfigName = useCallback(async (configName: string) => {
+    try {
+      const result = await usbSetConfigName(configName);
+      if (!result.success) {
+        setError(result.error || 'Set Config Name failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Config Name failed');
+    }
+  }, []);
+
+  const handleSetUniqueID = useCallback(async (uniqueId: string) => {
+    try {
+      const result = await usbSetUniqueID(uniqueId);
+      if (!result.success) {
+        setError(result.error || 'Set Unique ID failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Unique ID failed');
+    }
+  }, []);
+
+  const handleSetDeviceTime = useCallback(async () => {
+    try {
+      const result = await usbSetDeviceTime();
+      if (!result.success) {
+        setError(result.error || 'Set Device Time failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Device Time failed');
+    }
+  }, []);
+
+  const handleWriteIntoFlash = useCallback(async (): Promise<boolean> => {
+    try {
+      const result = await usbWriteIntoFlash();
+      if (!result.success) {
+        setError(result.error || 'Write Into Flash failed');
+        return false;
+      }
+      return result.success;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Write Into Flash failed');
+      return false;
+    }
+  }, []);
+
+  const handleSetInitParameters = useCallback(async (params: {
+    customer?: string;
+    country?: string;
+    district?: string;
+    ldap?: string;
+    toolType?: string;
+    toolPosition?: string;
+    toolSN?: string;
+    toolSize?: string;
+    configName?: string;
+    uniqueId?: string;
+  }): Promise<boolean> => {
+    try {
+      const result = await usbSetInitParameters(params);
+      if (!result.success) {
+        setError(result.error || 'Set Init Parameters failed');
+        return false;
+      }
+      return result.success;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Init Parameters failed');
+      return false;
+    }
+  }, []);
+
   const downloadData = useCallback(async (onProgress?: (progress: number) => void) => {
     setError(null);
     try {
@@ -290,6 +439,15 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     setDistrict: handleSetDistrict,
     setCountry: handleSetCountry,
     setDepthOut: handleSetDepthOut,
+    setLDAP: handleSetLDAP,
+    setToolType: handleSetToolType,
+    setToolPosition: handleSetToolPosition,
+    setToolSize: handleSetToolSize,
+    setConfigName: handleSetConfigName,
+    setUniqueID: handleSetUniqueID,
+    setDeviceTime: handleSetDeviceTime,
+    writeIntoFlash: handleWriteIntoFlash,
+    setInitParameters: handleSetInitParameters,
     downloadedData,
     downloadData,
     clearData,
