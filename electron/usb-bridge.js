@@ -84,12 +84,17 @@ console.log('[USB] usb_device_descriptor defined OK');
 var _opaque = koffi.opaque('_opaque');
 var opaque_ptr = koffi.pointer(_opaque);
 
-// usb_device -- define FIRST (uses opaque_ptr for bus, usb_bus not yet defined)
-var usb_device = koffi.struct('usb_device', {
-  next: koffi.pointer('usb_device'),
-  prev: koffi.pointer('usb_device'),
+// Forward declarations (incomplete types) to allow circular references
+var usb_device = koffi.struct('usb_device');
+var usb_bus = koffi.struct('usb_bus');
+console.log('[USB] Forward declarations created');
+
+// Full definition of usb_device (self-referential via koffi.pointer(usb_device))
+usb_device.def({
+  next: koffi.pointer(usb_device),
+  prev: koffi.pointer(usb_device),
   filename: koffi.array('uint8', 512),
-  bus: opaque_ptr,
+  bus: koffi.pointer(usb_bus),
   descriptor: usb_device_descriptor,
   config: opaque_ptr,
   dev: opaque_ptr,
@@ -99,10 +104,10 @@ var usb_device = koffi.struct('usb_device', {
 });
 console.log('[USB] usb_device defined OK');
 
-// usb_bus -- define SECOND (usb_device is now defined, so we can use it)
-var usb_bus = koffi.struct('usb_bus', {
-  next: koffi.pointer('usb_bus'),
-  prev: koffi.pointer('usb_bus'),
+// Full definition of usb_bus (usb_device is now fully defined)
+usb_bus.def({
+  next: koffi.pointer(usb_bus),
+  prev: koffi.pointer(usb_bus),
   dirname: koffi.array('uint8', 512),
   devices: koffi.pointer(usb_device),
   location: 'uint32',
