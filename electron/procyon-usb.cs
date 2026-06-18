@@ -333,23 +333,38 @@ class ProcyonUsb
         return BulkRead(resp, respMaxLen, timeout);
     }
 
-    static byte[] BuildCommand(byte cmdCode)
+    /// <summary>
+    /// Build command packet using verified Procyon CM protocol:
+    /// 4-byte header [cmd_low, cmd_high, length_low, length_high] + data
+    /// Padded to 64 bytes with 0xFF for USB bulk transport
+    /// </summary>
+    static byte[] BuildCommand(ushort cmdCode)
     {
         byte[] cmd = new byte[64];
         for (int i = 0; i < 64; i++) cmd[i] = 0xFF;
-        cmd[0] = cmdCode;
+        // 4-byte header: [cmd_low, cmd_high, length_low, length_high]
+        cmd[0] = (byte)(cmdCode & 0xFF);        // cmd_low
+        cmd[1] = (byte)((cmdCode >> 8) & 0xFF);  // cmd_high
+        cmd[2] = 0x00;  // length_low (0 = GET, no data)
+        cmd[3] = 0x00;  // length_high
         return cmd;
     }
 
-    static byte[] BuildCommand(byte cmdCode, byte[] data)
+    static byte[] BuildCommand(ushort cmdCode, byte[] data)
     {
         byte[] cmd = new byte[64];
         for (int i = 0; i < 64; i++) cmd[i] = 0xFF;
-        cmd[0] = cmdCode;
+        // 4-byte header
+        cmd[0] = (byte)(cmdCode & 0xFF);
+        cmd[1] = (byte)((cmdCode >> 8) & 0xFF);
+        ushort dataLen = (ushort)(data != null ? data.Length : 0);
+        cmd[2] = (byte)(dataLen & 0xFF);
+        cmd[3] = (byte)((dataLen >> 8) & 0xFF);
+        // Data after header
         if (data != null)
         {
-            for (int i = 0; i < data.Length && i + 1 < 64; i++)
-                cmd[i + 1] = data[i];
+            for (int i = 0; i < data.Length && i + 4 < 64; i++)
+                cmd[i + 4] = data[i];
         }
         return cmd;
     }
@@ -363,7 +378,7 @@ class ProcyonUsb
     {
         if (args.Length == 0)
         {
-            Console.WriteLine("Procyon USB Bridge v5 (libusb0 + WinUSB)");
+            Console.WriteLine("Procyon USB Bridge v6 (libusb0 + WinUSB) - Verified Protocol");
             Console.WriteLine("Commands: find connect disconnect send read sendread test diag drivers");
             return;
         }
@@ -596,8 +611,8 @@ class ProcyonUsb
             Console.WriteLine("  SetInterface(" + claimIface + ", alt=0) OK");
         }
 
-        // Send GET_FIRMWARE_VERSION command (0x01, 0xFF padded)
-        byte[] cmd = BuildCommand(0x01);
+        // Send GET_FIRMWARE_VERSION command (0x0005, verified protocol)
+        byte[] cmd = BuildCommand(0x0005);
         BULK_TRANSFER writeBt;
         writeBt.Timeout = 5000;
         writeBt.Endpoint = EP_OUT;
@@ -610,7 +625,7 @@ class ProcyonUsb
             handle.Dispose();
             return false;
         }
-        Console.WriteLine("  BulkWrite(0x01 GET_FW_VER) OK (64 bytes)");
+        Console.WriteLine("  BulkWrite(0x0005 GET_FIRMWARE_VERSION) OK (64 bytes)");
 
         // Read response with 5s timeout
         Thread.Sleep(100);
@@ -632,10 +647,17 @@ class ProcyonUsb
         Console.WriteLine("  BulkRead OK (" + bytesReturned + " bytes)");
         Console.WriteLine("  Data: " + BitConverter.ToString(buffer, 0, Math.Min((int)bytesReturned, 32)).Replace("-", " "));
 
-        // Check for 0xA5 response header
-        if (bytesReturned > 0 && buffer[0] == 0xA5)
+        // Check for valid protocol response (response code = request code + 1)
+        // For GET_FIRMWARE_VERSION (0x0005), expected response code = 0x0006
+        if (bytesReturned >= 4)
         {
-            Console.WriteLine("  >>> VALID RESPONSE (0xA5 header)!");
+            ushort respCode = (ushort)(buffer[0] | (buffer[1] << 8));
+            ushort dataLen = (ushort)(buffer[2] | (buffer[3] << 8));
+            Console.WriteLine("  >>> Response code: 0x" + respCode.ToString("X4") + ", data length: " + dataLen);
+            if (respCode == 0x0006)
+            {
+                Console.WriteLine("  >>> VALID PROTOCOL RESPONSE!");
+            }
         }
 
         // Release
@@ -664,7 +686,7 @@ class ProcyonUsb
         }
         Console.WriteLine("  WinUsb_Initialize OK");
 
-        byte[] cmd = BuildCommand(0x01);
+        byte[] cmd = BuildCommand(0x0005); // GET_FIRMWARE_VERSION
         int sent;
         if (!WinUsb_WritePipe(wuHandle, EP_OUT, cmd, 64, out sent, IntPtr.Zero))
         {
