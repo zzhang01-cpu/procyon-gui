@@ -5,7 +5,10 @@
  * No external procyon-usb.exe required.
  *
  * Device: VID=0x2269, PID=0xBEEF
- * Driver: WinUSB (install via Zadig, replaces libusb-win32)
+ * Driver: libusb-win32 (install via Zadig)
+ *   NOTE: Must use libusb-win32 driver, NOT WinUSB!
+ *   WinUSB has a bug with devices where bInterfaceNumber != 0.
+ *   The original Procyon.exe uses LibUsbDotNet with libusb-win32 backend.
  * Transfer: USB Bulk, EP1 OUT=0x01, EP1 IN=0x81, 64 bytes max packet
  * Interface: 1 (Interface 0 does not exist on this device)
  *
@@ -14,7 +17,7 @@
  */
 
 var usb = require('usb');
-usb.setDebugLevel(4);  // Maximum libusb debug output for troubleshooting
+// Debug: set LIBUSB_DEBUG env var before launching Electron for libusb debug output
 
 // -- Device constants --
 var PROCYON_VID = 0x2269;
@@ -301,22 +304,13 @@ ProcyonUsbBridge.prototype.connect = async function() {
         continue;
       }
 
-      // On Windows + WinUSB, detachKernelDriver is not needed/supported.
-      var isWindows = process.platform === 'win32';
-      if (!isWindows) {
-        try {
-          if (ifc1.isKernelDriverActive()) {
-            ifc1.detachKernelDriver();
-          }
-        } catch (detachErr) {
-          console.log('[USB] Interface ' + ifNum + ': could not detach kernel driver: ' + detachErr.message);
-        }
-      }
+      // Note: with libusb-win32 driver, no need to detach kernel driver
+      // With WinUSB, detachKernelDriver is not supported
 
       try {
         ifc1.claim();
         self.iface = ifc1;
-        console.log('[USB] Successfully claimed interface ' + ifNum + ' (via interfaces array)');
+        console.log('[USB] Successfully claimed interface ' + ifNum);
         claimed = true;
         break;
       } catch (claimErr) {
@@ -324,109 +318,38 @@ ProcyonUsbBridge.prototype.connect = async function() {
       }
     }
 
-    // Method 2: try device.interface(n) by bInterfaceNumber (fallback)
     if (!claimed) {
-      console.log('[USB] Method 1 failed, trying device.interface(bInterfaceNumber)...');
-      for (var bIfNum = 0; bIfNum <= 2; bIfNum++) {
-        try {
-          var ifc2 = self.device.interface(bIfNum);
-          console.log('[USB] device.interface(' + bIfNum + ') found');
-          ifc2.claim();
-          self.iface = ifc2;
-          console.log('[USB] Successfully claimed interface ' + bIfNum + ' (via device.interface())');
-          claimed = true;
-          break;
-        } catch (err2) {
-          console.log('[USB] device.interface(' + bIfNum + '): ' + err2.message);
-        }
-      }
-    }
-
-    // Method 3: WinUSB bInterfaceNumber mismatch workaround
-    // When WinUSB is installed on the WHOLE device (not per-interface),
-    // WinUsb_Initialize() returns a handle for the first interface and
-    // libusb stores it at index 0. But if the device's only interface
-    // has bInterfaceNumber=1 (not 0), libusb tries to find a handle at
-    // index 1 which is empty -> LIBUSB_ERROR_NOT_FOUND.
-    // Fix: override interfaceNumber to 0 so libusb uses the WinUSB handle
-    // that's actually stored at index 0.
-    if (!claimed) {
-      console.log('[USB] Method 2 failed. Trying WinUSB interfaceNumber=0 workaround...');
-      for (var di = 0; di < interfaces.length; di++) {
-        var ifc3 = interfaces[di];
-        var origIfNum = ifc3.interfaceNumber;
-        if (origIfNum === 0) continue; // already tried in Method 1
-        console.log('[USB] Patching interfaceNumber from ' + origIfNum + ' to 0 for WinUSB workaround');
-        ifc3.interfaceNumber = 0;
-        try {
-          ifc3.claim();
-          self.iface = ifc3;
-          console.log('[USB] Successfully claimed interface (patched to 0, original bInterfaceNumber=' + origIfNum + ')');
-          claimed = true;
-          break;
-        } catch (claimErr3) {
-          console.log('[USB] WinUSB workaround claim failed: ' + claimErr3.message);
-          ifc3.interfaceNumber = origIfNum; // restore
-        }
-      }
-    }
-
-    // Method 4: Also try patching device.interface(1).interfaceNumber to 0
-    if (!claimed) {
-      console.log('[USB] Method 3 failed. Trying device.interface() with patch...');
-      try {
-        var ifc4 = self.device.interface(1);
-        console.log('[USB] Got device.interface(1), patching interfaceNumber to 0');
-        ifc4.interfaceNumber = 0;
-        ifc4.claim();
-        self.iface = ifc4;
-        console.log('[USB] Successfully claimed interface (device.interface(1) patched to 0)');
-        claimed = true;
-      } catch (claimErr4) {
-        console.log('[USB] Method 4 claim failed: ' + claimErr4.message);
-      }
-    }
-
-    if (!claimed) {
-      // Diagnostic: check Windows device driver info
+      // Diagnostic: dump device and interface info
       console.log('[USB] DIAGNOSTIC: All claim attempts failed.');
       console.log('[USB] Device descriptor: ' + JSON.stringify(self.device.deviceDescriptor));
       for (var di = 0; di < interfaces.length; di++) {
         console.log('[USB] Interface[' + di + '] descriptor: ' + JSON.stringify(interfaces[di].descriptor));
       }
       console.log('[USB] ============================================');
-      console.log('[USB] TROUBLESHOOT for Windows composite device:');
-      console.log('[USB] This device (bDeviceClass=0) is a COMPOSITE USB device.');
-      console.log('[USB] Windows assigns drivers PER INTERFACE, not per device.');
+      console.log('[USB] DRIVER FIX REQUIRED:');
+      console.log('[USB] This device has bInterfaceNumber=1 (not 0).');
+      console.log('[USB] The WinUSB driver has a known bug with this configuration.');
+      console.log('[USB] You MUST use the libusb-win32 driver instead.');
       console.log('[USB] ');
-      console.log('[USB] Step 1: Open Zadig -> Options -> List All Devices');
-      console.log('[USB] Step 2: In dropdown, look for MULTIPLE entries for Procyon device');
-      console.log('[USB] Step 3: For EACH entry that belongs to this device:');
-      console.log('[USB]         - Select it in the dropdown');
-      console.log('[USB]         - Make sure driver is set to WinUSB');
-      console.log('[USB]         - Click "Replace Driver"');
-      console.log('[USB] Step 4: If Zadig only shows ONE entry, try this instead:');
-      console.log('[USB]         - In Zadig, Options -> List All Devices');
-      console.log('[USB]         - Look for entries like "Procyon (Interface 1)"');
-      console.log('[USB]         - Replace EACH interface driver with WinUSB');
-      console.log('[USB] Step 5: Unplug and replug the USB cable, then retry');
+      console.log('[USB] Steps to fix:');
+      console.log('[USB] 1. Open Zadig -> Options -> List All Devices');
+      console.log('[USB] 2. Select "Procyon-CM" from the dropdown');
+      console.log('[USB] 3. Change the driver from "WinUSB" to "libusb-win32"');
+      console.log('[USB] 4. Click "Replace Driver"');
+      console.log('[USB] 5. Unplug and replug the USB cable');
+      console.log('[USB] 6. Restart Electron and try again');
       console.log('[USB] ');
-      console.log('[USB] ALTERNATIVE: Use Device Manager instead of Zadig:');
-      console.log('[USB]         - Open Device Manager');
-      console.log('[USB]         - Find the Procyon device under "libusb-win32 devices" or "Ports"');
-      console.log('[USB]         - Right-click -> Update driver -> Browse my computer');
-      console.log('[USB]         - Let me pick -> Select WinUSB');
+      console.log('[USB] The original Procyon.exe uses libusb-win32 driver.');
+      console.log('[USB] WinUSB does not handle bInterfaceNumber=1 correctly.');
       console.log('[USB] ============================================');
 
       try { self.device.close(); } catch (e) {}
       self.device = null;
       return {
         success: false,
-        error: 'Cannot claim USB interface (LIBUSB_ERROR_NOT_FOUND). ' +
-          'This is a composite USB device on Windows. ' +
-          'Please use Zadig: (1) Options -> List All Devices, ' +
-          '(2) Find ALL entries for Procyon, (3) Replace EACH with WinUSB, ' +
-          '(4) Unplug/replug USB cable, (5) Retry. ' +
+        error: 'Cannot claim USB interface. ' +
+          'WinUSB driver has a bug with this device (bInterfaceNumber=1). ' +
+          'Please use Zadig to replace WinUSB with libusb-win32 driver. ' +
           'See PowerShell log for details.'
       };
     }
