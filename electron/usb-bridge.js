@@ -518,8 +518,10 @@ ProcyonUsbBridge.prototype.getBatteryVoltage = async function() {
   try {
     var resp = await this.sendGetCommand(CMD.GET_BATTERY_VOLTAGE);
     if (resp.success && resp.data && resp.data.length >= 4) {
-      var voltage = this._parseFloat(resp.data);
-      return { success: true, voltage: Math.round(voltage * 100) / 100 };
+      var rawMv = this._parseFloat(resp.data);
+      // Device returns millivolts, convert to volts for display
+      var volts = Math.round(rawMv / 10) / 100;
+      return { success: true, voltage: volts, rawMv: rawMv };
     }
     return { success: false, voltage: 0 };
   } catch (error) {
