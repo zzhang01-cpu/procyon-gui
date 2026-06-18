@@ -58,4 +58,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Logger
   initializeLogger: (config) => ipcRenderer.invoke('device:initialize-logger', config),
+
+  // Get all parameters at once
+  getAllParameters: () => ipcRenderer.invoke('device:get-all-parameters'),
 });

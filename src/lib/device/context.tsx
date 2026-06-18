@@ -34,6 +34,7 @@ import {
   listDevices,
   isElectron,
   exportToCSV,
+  getAllParameters,
   type DeviceInfo,
   type OneSecondRecord,
   type SelfTestResult,
@@ -51,6 +52,10 @@ interface DeviceContextType {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   clearError: () => void;
+
+  // Device parameters (read from device)
+  deviceParams: Record<string, string>;
+  loadDeviceParams: () => Promise<void>;
 
   // USB device scanning
   usbDevices: UsbDeviceInfo[];
@@ -123,6 +128,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   const [usbDevices, setUsbDevices] = useState<UsbDeviceInfo[]>([]);
   const [downloadedData, setDownloadedData] = useState<OneSecondRecord[]>([]);
   const [testResults, setTestResults] = useState<SelfTestResult[]>([]);
+  const [deviceParams, setDeviceParams] = useState<Record<string, string>>({});
 
   const clearError = useCallback(() => {
     setError(null);
@@ -154,6 +160,15 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         } catch {
           // Ignore info fetch errors
         }
+        // Auto-fetch device parameters
+        try {
+          const paramResult = await getAllParameters();
+          if (paramResult.success && paramResult.params) {
+            setDeviceParams(paramResult.params);
+          }
+        } catch {
+          // Ignore parameter fetch errors
+        }
       } else {
         setError(result.error || 'Connection failed');
       }
@@ -171,6 +186,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       setDeviceInfo(null);
       setDownloadedData([]);
       setTestResults([]);
+      setDeviceParams({});
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Disconnect failed');
     }
@@ -464,6 +480,18 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     return exportToCSV(downloadedData);
   }, [downloadedData]);
 
+  const loadDeviceParams = useCallback(async () => {
+    if (!isElectron()) return;
+    try {
+      const result = await getAllParameters();
+      if (result.success && result.params) {
+        setDeviceParams(result.params);
+      }
+    } catch {
+      // Ignore parameter loading errors
+    }
+  }, []);
+
   const handleRunSelfTest = useCallback(async () => {
     try {
       const result = await usbRunSelfTest();
@@ -515,6 +543,8 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     clearError,
     usbDevices,
     refreshDevices,
+    deviceParams,
+    loadDeviceParams,
     refreshDeviceInfo,
     setToolSN: handleSetToolSN,
     setRunID: handleSetRunID,

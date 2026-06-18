@@ -404,13 +404,18 @@ ProcyonUsbBridge.prototype._readDeviceInfo = async function() {
     var fw = await this.getFirmwareVersion();
     var sn = await this.getToolSN();
     var uid = await this.getUniqueID();
+    var batt = await this.getBatteryVoltage();
+    var temp = await this.getTemperature();
     this.deviceInfo = {
       firmwareVersion: fw.success ? fw.value : 'unknown',
-      serialNumber: sn.success ? sn.value : 'unknown',
-      uniqueId: uid.success ? uid.value : 'unknown',
+      toolSN: sn.success ? sn.value : '',
+      serialNumber: sn.success ? sn.value : '',
+      uniqueId: uid.success ? uid.value : '',
+      batteryVoltage: batt.success ? batt.voltage : 0,
+      temperature: temp.success ? temp.temperature : 0,
     };
   } catch (e) {
-    this.deviceInfo = { firmwareVersion: 'unknown', serialNumber: 'unknown', uniqueId: 'unknown' };
+    this.deviceInfo = { firmwareVersion: 'unknown', toolSN: '', serialNumber: '', uniqueId: '', batteryVoltage: 0, temperature: 0 };
   }
 };
 
@@ -731,8 +736,50 @@ ProcyonUsbBridge.prototype._parseU32 = function(data) {
 };
 
 ProcyonUsbBridge.prototype.listDevices = function() { return []; };
-ProcyonUsbBridge.prototype.getDeviceInfo = function() { return this.deviceInfo; };
+ProcyonUsbBridge.prototype.getDeviceInfo = function() {
+  if (!this.deviceInfo) return { success: false, error: 'No device info available' };
+  return { success: true, info: this.deviceInfo };
+};
 ProcyonUsbBridge.prototype.isConnected = function() { return this.connected; };
+
+ProcyonUsbBridge.prototype.getAllParameters = async function() {
+  try {
+    var params = {};
+    var getters = {
+      toolSN: this.getToolSN.bind(this),
+      runID: this.getRunID.bind(this),
+      runIDType: this.getRunIDType.bind(this),
+      customer: this.getCustomer.bind(this),
+      country: this.getCountry.bind(this),
+      district: this.getDistrict.bind(this),
+      depthOut: this.getDepthOut.bind(this),
+      uniqueId: this.getUniqueID.bind(this),
+      ldap: this.getLDAP.bind(this),
+      toolType: this.getToolType.bind(this),
+      toolSize: this.getToolSize.bind(this),
+      toolPosition: this.getToolPosition.bind(this),
+      configName: this.getConfigName.bind(this),
+      uhConnectionType: this.getUHConnectionType.bind(this),
+      dhConnectionType: this.getDHConnectionType.bind(this),
+      intPressureSN: this.getIntPressureSN.bind(this),
+      extPressureSN: this.getExtPressureSN.bind(this),
+      limpetSN: this.getLimpetSN.bind(this),
+    };
+    var keys = Object.keys(getters);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      try {
+        var result = await getters[key]();
+        params[key] = result.success ? (result.value || '') : '';
+      } catch (e) {
+        params[key] = '';
+      }
+    }
+    return { success: true, params: params };
+  } catch (error) {
+    return { success: false, error: error.message, params: {} };
+  }
+};
 
 ProcyonUsbBridge.prototype.diagnose = async function() {
   try {

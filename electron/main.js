@@ -204,6 +204,11 @@ function initUsbBridge() {
   ipcMain.handle('device:initialize-logger', async (_event, config) => {
     return bridge.initializeLogger(config);
   });
+
+  // Get all parameters at once
+  ipcMain.handle('device:get-all-parameters', async () => {
+    return bridge.getAllParameters();
+  });
 }
 
 app.whenReady().then(() => {

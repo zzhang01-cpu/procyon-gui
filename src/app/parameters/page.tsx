@@ -20,7 +20,7 @@ import {
 
 export default function ParametersPage() {
   const { t, language } = useI18n();
-  const { connected, deviceInfo, setToolSN, setRunID, setCustomer, setDistrict, setCountry, setDepthOut } = useDevice();
+  const { connected, deviceInfo, deviceParams, setToolSN, setRunID, setCustomer, setDistrict, setCountry, setDepthOut, writeIntoFlash } = useDevice();
   
   // Form states
   const [toolSN, setToolSNState] = useState('');
@@ -41,10 +41,20 @@ export default function ParametersPage() {
 
   // Load device info when connected
   useEffect(() => {
-    if (connected && deviceInfo) {
-      setToolSNState(deviceInfo.serialNumber || '');
+    if (connected && deviceParams) {
+      setToolSNState(deviceParams.toolSN || '');
+      setRunIDState(deviceParams.runID || '');
+      setCustomerState(deviceParams.customer || '');
+      setDistrictState(deviceParams.district || '');
+      setCountryState(deviceParams.country || '');
+      setDepthOutState(deviceParams.depthOut || '');
+      setHousingNumber(deviceParams.uhConnectionType || '');
+      setBhaSerial(deviceParams.dhConnectionType || '');
+      setSensorHeadSerial(deviceParams.intPressureSN || '');
+      setPressureSensorSerial(deviceParams.extPressureSN || '');
+      setLimpetSerial(deviceParams.limpetSN || '');
     }
-  }, [connected, deviceInfo]);
+  }, [connected, deviceParams]);
 
   const handleSave = async () => {
     if (!connected) {
@@ -63,6 +73,9 @@ export default function ParametersPage() {
       if (district) await setDistrict(district);
       if (country) await setCountry(country);
       if (depthOut) await setDepthOut(parseFloat(depthOut));
+      
+      // Write parameters to flash
+      await writeIntoFlash();
       
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);

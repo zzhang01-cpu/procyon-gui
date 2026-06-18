@@ -499,6 +499,17 @@ export async function isDeviceConnected(): Promise<boolean> {
 }
 
 /**
+ * Get all parameters from device at once
+ */
+export async function getAllParameters(): Promise<{ success: boolean; params?: Record<string, string>; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.getAllParameters() as Promise<{ success: boolean; params?: Record<string, string>; error?: string }>;
+}
+
+/**
  * Export data to CSV format
  */
 export function exportToCSV(data: OneSecondRecord[]): string {
