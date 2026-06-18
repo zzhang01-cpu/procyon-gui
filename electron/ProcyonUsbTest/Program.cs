@@ -1,433 +1,744 @@
 using System;
 using System.IO;
 using System.Text;
-using System.Collections.Generic;
 using System.Reflection.Metadata;
-using System.Reflection.PortableExecutable;
-using System.Linq;
+using System.Reflection.Metadata.Ecma335;
+using System.Collections.Generic;
 
 class Program
 {
-    const string DLL_PATH = @"C:\Users\zzhang01\Desktop\ProcyonFiles\Procyon.dll";
-    const string OUT_PATH = @"C:\Users\zzhang01\Desktop\ProcyonFiles\dll-decompile.txt";
+    static string outputPath = @"C:\Users\zzhang01\Desktop\ProcyonFiles\dll-decompile.txt";
+    static StreamWriter outWriter;
 
-    static StreamWriter _out;
-    static MetadataReader _reader;
-    static PEReader _pe;
-
-    static void Main()
+    static void Main(string[] args)
     {
-        using (_out = new StreamWriter(OUT_PATH, false, Encoding.UTF8))
+        string dllPath = @"C:\Users\zzhang01\Desktop\ProcyonFiles\Procyon.dll";
+        if (!File.Exists(dllPath))
         {
-            Log("=== Procyon.dll .NET Decompile ===");
-            Log($"Time: {DateTime.Now}");
-            Log($"DLL: {DLL_PATH}");
-            Log($"Size: {new FileInfo(DLL_PATH).Length} bytes");
+            Console.WriteLine("DLL not found: " + dllPath);
+            return;
+        }
+
+        using (outWriter = new StreamWriter(outputPath, false, Encoding.UTF8))
+        {
+            Log("=== Procyon.dll .NET Metadata Decompiler ===");
+            Log("File: " + dllPath);
+            Log("Size: " + new FileInfo(dllPath).Length + " bytes");
             Log("");
 
+            // Step 1: Raw PE check for CLR header at CORRECT x64 offset
+            byte[] pe = File.ReadAllBytes(dllPath);
+            int peOffset = BitConverter.ToInt32(pe, 0x3C);
+            ushort machine = BitConverter.ToUInt16(pe, peOffset + 4);
+            bool is64 = (machine == 0x8664);
+
+            Log("Machine: " + (is64 ? "x64" : "x86"));
+
+            // For PE32+ (x64): data directories start at offset 112 from optional header
+            // CLR directory is #14 (0-indexed), so offset = 112 + 14*8 = 224
+            // For PE32 (x86): data directories start at offset 96
+            // CLR directory is #14, so offset = 96 + 14*8 = 208
+            int clrDirOffset = is64 ? 224 : 208;
+            int clrRVA = BitConverter.ToInt32(pe, peOffset + 24 + clrDirOffset);
+            int clrSize = BitConverter.ToInt32(pe, peOffset + 24 + clrDirOffset + 4);
+
+            Log("CLR Header directory offset in opt header: " + clrDirOffset);
+            Log("CLR Header RVA: 0x" + clrRVA.ToString("X8") + " Size: " + clrSize);
+
+            if (clrRVA == 0)
+            {
+                // Try raw search for BSJB metadata signature
+                Log("\nCLR RVA is 0. Searching for BSJB metadata signature in raw bytes...");
+                bool foundBsjb = false;
+                for (int i = 0; i < pe.Length - 4; i++)
+                {
+                    if (pe[i] == 0x42 && pe[i+1] == 0x53 && pe[i+2] == 0x4A && pe[i+3] == 0x42)
+                    {
+                        Log("  Found BSJB at file offset 0x" + i.ToString("X8"));
+                        foundBsjb = true;
+                        // Try to parse metadata from here
+                        ParseRawMetadata(pe, i);
+                        break;
+                    }
+                }
+                if (!foundBsjb)
+                {
+                    Log("  No BSJB found. This appears to be a truly native/packed DLL.");
+                }
+            }
+            Log("");
+
+            // Step 2: Try System.Reflection.Metadata PEReader
+            Log("=== Attempting PEReader + MetadataReader ===");
             try
             {
-                AnalyzeWithPEReader();
+                using (var stream = File.OpenRead(dllPath))
+                using (var peReader = new PEReader(stream))
+                {
+                    var metadata = peReader.GetMetadata();
+                    var reader = metadata.GetReader();
+
+                    Log("SUCCESS! .NET metadata found via PEReader!");
+                    Log("");
+
+                    // Enumerate all type definitions
+                    Log("========== ALL TYPES ==========");
+                    var typeNames = new List<string>();
+                    foreach (var typeDefHandle in reader.TypeDefinitions)
+                    {
+                        var typeDef = reader.GetTypeDefinition(typeDefHandle);
+                        var name = reader.GetString(typeDef.Name);
+                        var ns = reader.GetString(typeDef.Namespace);
+                        string fullName = string.IsNullOrEmpty(ns) ? name : ns + "." + name;
+                        typeNames.Add(fullName);
+                    }
+                    typeNames.Sort();
+                    foreach (var t in typeNames)
+                    {
+                        Log("  " + t);
+                    }
+                    Log("\nTotal types: " + typeNames.Count);
+                    Log("");
+
+                    // Find and display all enums
+                    Log("========== ALL ENUMS ==========");
+                    foreach (var typeDefHandle in reader.TypeDefinitions)
+                    {
+                        var typeDef = reader.GetTypeDefinition(typeDefHandle);
+                        var name = reader.GetString(typeDef.Name);
+                        var ns = reader.GetString(typeDef.Namespace);
+                        string fullName = string.IsNullOrEmpty(ns) ? name : ns + "." + name;
+
+                        // Check if it's an enum (inherits from System.Enum)
+                        var baseType = typeDef.BaseType;
+                        if (baseType.Kind == HandleKind.TypeReference)
+                        {
+                            var typeRef = reader.GetTypeReference((TypeReferenceHandle)baseType);
+                            string baseName = reader.GetString(typeRef.Name);
+                            if (baseName == "Enum")
+                            {
+                                Log("\n  enum " + fullName);
+                                // Enumerate fields
+                                foreach (var fieldHandle in typeDef.GetFields())
+                                {
+                                    var field = reader.GetFieldDefinition(fieldHandle);
+                                    string fieldName = reader.GetString(field.Name);
+                                    // Skip value__ field
+                                    if (fieldName == "value__") continue;
+
+                                    // Try to read constant value
+                                    try
+                                    {
+                                        var constantHandle = field.GetDefaultValue();
+                                        if (!constantHandle.IsNil)
+                                        {
+                                            var constant = reader.GetConstant(constantHandle);
+                                            var blobReader = reader.GetBlobReader(constant.Value);
+                                            string val = ReadConstantValue(ref blobReader, constant.TypeCode);
+                                            Log("    " + fieldName + " = " + val);
+                                        }
+                                        else
+                                        {
+                                            Log("    " + fieldName + " = (no default)");
+                                        }
+                                    }
+                                    catch
+                                    {
+                                        Log("    " + fieldName + " = (error reading)");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Log("");
+
+                    // Detailed analysis of command/device related types
+                    Log("========== DETAILED TYPE ANALYSIS ==========");
+                    string[] importantKeywords = {
+                        "UsbDev", "CommandConfig", "DeviceSetting", "ByteConfig",
+                        "CommandResponse", "DataSend", "StepParameter"
+                    };
+
+                    foreach (var typeDefHandle in reader.TypeDefinitions)
+                    {
+                        var typeDef = reader.GetTypeDefinition(typeDefHandle);
+                        var name = reader.GetString(typeDef.Name);
+                        var ns = reader.GetString(typeDef.Namespace);
+                        string fullName = string.IsNullOrEmpty(ns) ? name : ns + "." + name;
+
+                        bool isImportant = false;
+                        foreach (var kw in importantKeywords)
+                        {
+                            if (fullName.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                isImportant = true;
+                                break;
+                            }
+                        }
+
+                        if (isImportant)
+                        {
+                            AnalyzeType(reader, typeDef, fullName);
+                        }
+                    }
+                    Log("");
+
+                    // Detailed method IL analysis for key methods
+                    Log("========== KEY METHOD IL ANALYSIS ==========");
+                    string[] keyMethods = {
+                        "CommandDeviceAsync", "SetDeviceParameter", "WriteIntoFlash",
+                        "WriteIntoFlashAsync", "WriteToDevice", "WriteToDeviceAsync",
+                        "ReadFromDevice", "ReadFromDeviceAsync", "SetDeviceTime",
+                        "SetDeviceTimeAsync", "SetToolSN", "SetToolSNAsync",
+                        "SetResetTestMode", "GetCommandConfigFromCommand",
+                        "GetCommandConfigFromString", "GetCommandConfigFromByteArray",
+                        "CommandResponseConfig", "GetByteConfig", "GetDeviceConfig",
+                        "SendTypedCommandAsync", "GetValueFromResponse",
+                        "GetUnknownStringResponseSize", "GetUnknownFloatResponseSize",
+                        "DelayBetweenWrites", "WriteCustomizableInfo",
+                        "CMSetInitParameters", "EMSetInitParameters"
+                    };
+
+                    foreach (var typeDefHandle in reader.TypeDefinitions)
+                    {
+                        var typeDef = reader.GetTypeDefinition(typeDefHandle);
+                        var typeName = reader.GetString(typeDef.Name);
+                        var typeNS = reader.GetString(typeDef.Namespace);
+                        string typeFullName = string.IsNullOrEmpty(typeNS) ? typeName : typeNS + "." + typeName;
+
+                        foreach (var methodHandle in typeDef.GetMethods())
+                        {
+                            var method = reader.GetMethodDefinition(methodHandle);
+                            string methodName = reader.GetString(method.Name);
+
+                            foreach (var km in keyMethods)
+                            {
+                                if (methodName == km)
+                                {
+                                    AnalyzeMethod(reader, method, methodHandle, typeFullName, typeName);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Log("");
+
+                    // Command code scan across ALL methods
+                    Log("========== COMMAND CODE SCAN ==========");
+                    ScanCommandCodes(reader);
+                }
             }
             catch (Exception ex)
             {
-                Log($"PEReader FAILED: {ex.GetType().Name}: {ex.Message}");
-                if (ex.InnerException != null)
-                    Log($"  Inner: {ex.InnerException.Message}");
-                Log("\nFalling back to raw byte analysis...");
-                RawByteAnalysis();
+                Log("PEReader failed: " + ex.Message);
+                Log("Stack: " + ex.StackTrace);
             }
+
+            Log("\n=== DONE ===");
+            Log("Output written to: " + outputPath);
         }
 
-        Console.WriteLine($"\nDone! Output: {OUT_PATH}");
+        Console.WriteLine("\nDone! Output: " + outputPath);
     }
 
     static void Log(string msg)
     {
-        _out.WriteLine(msg);
         Console.WriteLine(msg);
+        outWriter.WriteLine(msg);
     }
 
-    // ============================================================
-    // Phase 1: PEReader + MetadataReader
-    // ============================================================
-    static void AnalyzeWithPEReader()
+    static string ReadConstantValue(ref BlobReader reader, ConstantTypeCode typeCode)
     {
-        using var stream = File.OpenRead(DLL_PATH);
-        using var pe = new PEReader(stream);
-        _pe = pe;
-
-        var header = pe.PEHeaders;
-        Log($"Machine: 0x{header.CoffHeader.Machine:X4}");
-        Log($"NumberOfSections: {header.CoffHeader.NumberOfSections}");
-        Log($"PE NumberOfRvaAndSizes: {header.PEHeader?.NumberOfRvaAndSizes ?? 0}");
-
-        var corHeader = header.CorHeader;
-        if (corHeader != null)
+        switch (typeCode)
         {
-            Log($"CLR Header found!");
-            Log($"  Metadata RVA=0x{corHeader.MetadataDirectory.RelativeVirtualAddress:X8} Size={corHeader.MetadataDirectory.Size}");
-            Log($"  Flags: {corHeader.Flags}");
-            Log($"  EntryPoint: 0x{corHeader.EntryPointTokenOrRelativeVirtualAddress:X8}");
-            Log($"  Resources RVA=0x{corHeader.ResourcesDirectory.RelativeVirtualAddress:X8} Size={corHeader.ResourcesDirectory.Size}");
+            case ConstantTypeCode.Int32: return reader.ReadInt32().ToString();
+            case ConstantTypeCode.UInt32: return "0x" + reader.ReadUInt32().ToString("X8");
+            case ConstantTypeCode.Int16: return reader.ReadInt16().ToString();
+            case ConstantTypeCode.UInt16: return "0x" + reader.ReadUInt16().ToString("X4");
+            case ConstantTypeCode.Byte: return "0x" + reader.ReadByte().ToString("X2");
+            case ConstantTypeCode.SByte: return reader.ReadSByte().ToString();
+            case ConstantTypeCode.Int64: return "0x" + reader.ReadInt64().ToString("X16");
+            case ConstantTypeCode.UInt64: return "0x" + reader.ReadUInt64().ToString("X16");
+            case ConstantTypeCode.String: return "\"" + reader.ReadUTF16(reader.RemainingBytes) + "\"";
+            default: return "(" + typeCode + ")";
         }
-        else
-        {
-            Log("No CLR header in PE data directories.");
-        }
-
-        Log($"\nHasMetadata: {pe.HasMetadata}");
-
-        if (!pe.HasMetadata)
-        {
-            Log("No .NET metadata via PEReader. Trying raw scan...");
-            RawByteAnalysis();
-            return;
-        }
-
-        var reader = pe.GetMetadataReader();
-        _reader = reader;
-
-        Log($"Metadata version: {reader.MetadataVersion}");
-
-        // ---- 1) ALL type names (index for reference) ----
-        Log("\n========== ALL TYPE NAMES ==========");
-        var typeIndex = 0;
-        foreach (var tdh in reader.TypeDefinitions)
-        {
-            var td = reader.GetTypeDefinition(tdh);
-            var name = reader.GetString(td.Name);
-            var ns = reader.GetString(td.Namespace);
-            var fullName = string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}";
-            Log($"  [{typeIndex:D4}] {fullName}");
-            typeIndex++;
-        }
-        Log($"Total types: {typeIndex}");
-
-        // ---- 2) ALL enums (command codes might be here) ----
-        Log("\n========== ALL ENUMS ==========");
-        foreach (var tdh in reader.TypeDefinitions)
-        {
-            var td = reader.GetTypeDefinition(tdh);
-            var name = reader.GetString(td.Name);
-            var ns = reader.GetString(td.Namespace);
-
-            if (IsEnumType(td, reader))
-            {
-                var fullName = string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}";
-                Log($"\n--- ENUM: {fullName} ---");
-                foreach (var fh in td.GetFields())
-                {
-                    var field = reader.GetFieldDefinition(fh);
-                    var fieldName = reader.GetString(field.Name);
-                    if (fieldName == "value__") continue;
-
-                    var cvh = field.GetDefaultValue();
-                    if (!cvh.IsNil)
-                    {
-                        try
-                        {
-                            var constant = reader.GetConstant(cvh);
-                            var blobReader = reader.GetBlobReader(constant.Value);
-                            var val = FormatConstantValue(constant.TypeCode, blobReader);
-                            Log($"  {fieldName} = {val}");
-                        }
-                        catch { Log($"  {fieldName} = (error reading)"); }
-                    }
-                }
-            }
-        }
-
-        // ---- 3) RELEVANT types detail ----
-        Log("\n========== RELEVANT TYPES (DETAIL) ==========");
-        foreach (var tdh in reader.TypeDefinitions)
-        {
-            var td = reader.GetTypeDefinition(tdh);
-            var name = reader.GetString(td.Name);
-            var ns = reader.GetString(td.Namespace);
-
-            if (IsRelevantName(name) || IsRelevantName(ns))
-            {
-                var fullName = string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}";
-                Log($"\n{'='}");
-                Log($"TYPE: {fullName}");
-                Log($"{'='}");
-                DumpTypeDetails(reader, td);
-            }
-        }
-
-        // ---- 4) KEY METHOD IL DUMP ----
-        Log("\n========== KEY METHOD IL ==========");
-        foreach (var tdh in reader.TypeDefinitions)
-        {
-            var td = reader.GetTypeDefinition(tdh);
-            var typeName = reader.GetString(td.Name);
-
-            foreach (var mh in td.GetMethods())
-            {
-                var method = reader.GetMethodDefinition(mh);
-                var methodName = reader.GetString(method.Name);
-
-                if (IsKeyMethod(methodName))
-                {
-                    var rva = method.RelativeVirtualAddress;
-                    if (rva == 0) continue;
-
-                    try
-                    {
-                        var body = pe.GetMethodBody(rva);
-                        if (body == null) continue;
-                        var il = body.GetILBytes();
-                        Log($"\n--- {typeName}.{methodName} (RVA=0x{rva:X8}, IL={il.Length}B) ---");
-                        DumpILHex(il);
-                        ScanILForConstants(il, $"{typeName}.{methodName}");
-                        ScanILForCalls(il, $"{typeName}.{methodName}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"  Error: {ex.Message}");
-                    }
-                }
-            }
-        }
-
-        // ---- 5) GLOBAL COMMAND CODE SCAN ----
-        Log("\n========== COMMAND CODE SCAN (ALL METHODS) ==========");
-        ScanAllMethodsForCommandCodes(reader, pe);
     }
 
-    // ============================================================
-    // Type detail dump
-    // ============================================================
-    static void DumpTypeDetails(MetadataReader reader, TypeDefinition td)
+    static void AnalyzeType(MetadataReader reader, TypeDefinition typeDef, string fullName)
     {
-        if (!td.BaseType.IsNil)
-            Log($"  Base: {FormatHandle(reader, td.BaseType)}");
-        Log($"  Attributes: {td.Attributes}");
+        Log("\n--- Type: " + fullName + " ---");
+        Log("  Attributes: " + typeDef.Attributes);
 
-        Log($"  --- Fields ---");
-        foreach (var fh in td.GetFields())
+        // Fields
+        foreach (var fieldHandle in typeDef.GetFields())
         {
-            var field = reader.GetFieldDefinition(fh);
-            var fieldName = reader.GetString(field.Name);
-            var cvh = field.GetDefaultValue();
-            string defVal = "";
-            if (!cvh.IsNil)
+            var field = reader.GetFieldDefinition(fieldHandle);
+            string fieldName = reader.GetString(field.Name);
+            string fieldInfo = "  Field: " + fieldName;
+
+            // Try to read default value
+            try
+            {
+                var constantHandle = field.GetDefaultValue();
+                if (!constantHandle.IsNil)
+                {
+                    var constant = reader.GetConstant(constantHandle);
+                    var blobReader = reader.GetBlobReader(constant.Value);
+                    fieldInfo += " = " + ReadConstantValue(ref blobReader, constant.TypeCode);
+                }
+            }
+            catch { }
+
+            // Decode field signature for type info
+            try
+            {
+                var sigReader = reader.GetBlobReader(field.Signature);
+                // Simple field signature: FIELD (0x06) + CustomMod* + Type
+                byte sigByte = sigReader.ReadByte();
+                if (sigByte == 0x06)
+                {
+                    // Read type code
+                    fieldInfo += " [sig:" + sigByte.ToString("X2");
+                    var typeCode = sigReader.ReadCompressedInteger();
+                    fieldInfo += ",type:" + typeCode + "]";
+                }
+            }
+            catch { }
+
+            Log(fieldInfo);
+        }
+
+        // Properties
+        foreach (var propHandle in typeDef.GetProperties())
+        {
+            var prop = reader.GetPropertyDefinition(propHandle);
+            string propName = reader.GetString(prop.Name);
+            Log("  Property: " + propName);
+        }
+
+        // Methods
+        foreach (var methodHandle in typeDef.GetMethods())
+        {
+            var method = reader.GetMethodDefinition(methodHandle);
+            string methodName = reader.GetString(method.Name);
+            Log("  Method: " + methodName);
+        }
+    }
+
+    static void AnalyzeMethod(MetadataReader reader, MethodDefinition method,
+        MethodDefinitionHandle methodHandle, string typeFullName, string typeName)
+    {
+        string methodName = reader.GetString(method.Name);
+        Log("\n--- Method: " + typeFullName + "." + methodName + " ---");
+        Log("  Attributes: " + method.Attributes);
+        Log("  ImplAttributes: " + method.ImplAttributes);
+        Log("  RelativeVirtualAddress: 0x" + method.RelativeVirtualAddress.ToString("X8"));
+
+        // Decode method signature
+        try
+        {
+            var sigReader = reader.GetBlobReader(method.Signature);
+            byte sigByte = sigReader.ReadByte();
+            // Method signature header
+            bool generic = (sigByte & 0x10) != 0;
+            bool hasThis = (sigByte & 0x20) != 0;
+            int paramCount;
+
+            if (generic)
+            {
+                int genParamCount = sigReader.ReadCompressedInteger();
+                paramCount = sigReader.ReadCompressedInteger();
+                Log("  Signature: generic(" + genParamCount + ") params=" + paramCount);
+            }
+            else
+            {
+                paramCount = sigReader.ReadCompressedInteger();
+                Log("  Signature: params=" + paramCount + (hasThis ? " instance" : ""));
+            }
+
+            // Read return type
+            int retTypeCode = sigReader.ReadCompressedInteger();
+            Log("  ReturnType code: " + retTypeCode);
+
+            // Read parameter types
+            for (int i = 0; i < paramCount && i < 10; i++)
             {
                 try
                 {
-                    var constant = reader.GetConstant(cvh);
-                    var blobReader = reader.GetBlobReader(constant.Value);
-                    defVal = $" = {FormatConstantValue(constant.TypeCode, blobReader)}";
+                    int pTypeCode = sigReader.ReadCompressedInteger();
+                    Log("  Param" + i + " type code: " + pTypeCode);
                 }
-                catch { defVal = " = (error)"; }
+                catch { break; }
             }
-            Log($"  [Field] {fieldName} (attrs={field.Attributes}){defVal}");
+        }
+        catch (Exception ex)
+        {
+            Log("  Signature decode error: " + ex.Message);
         }
 
-        Log($"  --- Properties ---");
-        foreach (var ph in td.GetProperties())
+        // Read method body (IL)
+        try
         {
-            var prop = reader.GetPropertyDefinition(ph);
-            Log($"  [Prop] {reader.GetString(prop.Name)}");
-        }
-
-        Log($"  --- Methods ---");
-        foreach (var mh in td.GetMethods())
-        {
-            var method = reader.GetMethodDefinition(mh);
-            var methodName = reader.GetString(method.Name);
-            var rva = method.RelativeVirtualAddress;
-            Log($"  [Method] {methodName} (RVA=0x{rva:X8}, flags={method.Attributes})");
-        }
-
-        Log($"  --- Events ---");
-        foreach (var eh in td.GetEvents())
-        {
-            var evt = reader.GetEventDefinition(eh);
-            Log($"  [Event] {reader.GetString(evt.Name)}");
-        }
-    }
-
-    // ============================================================
-    // IL Analysis
-    // ============================================================
-    static void DumpILHex(byte[] il)
-    {
-        const int bytesPerLine = 32;
-        for (int i = 0; i < il.Length; i += bytesPerLine)
-        {
-            var sb = new StringBuilder();
-            sb.Append($"  {i:X6}: ");
-            for (int j = 0; j < bytesPerLine && i + j < il.Length; j++)
-                sb.Append($"{il[i + j]:X2} ");
-            Log(sb.ToString());
-        }
-    }
-
-    static void ScanILForConstants(byte[] il, string label)
-    {
-        var constants = new List<(int offset, int value)>();
-        for (int i = 0; i < il.Length;)
-        {
-            byte op = il[i];
-            int val = 0;
-            bool found = false;
-            int advance = 1;
-
-            // ldc.i4.0 .. ldc.i4.8
-            if (op >= 0x16 && op <= 0x1E) { val = op - 0x16; found = true; advance = 1; }
-            else if (op == 0x15) { val = -1; found = true; advance = 1; } // ldc.i4.m1
-            else if (op == 0x1F && i + 1 < il.Length) { val = (sbyte)il[i + 1]; found = true; advance = 2; } // ldc.i4.s
-            else if (op == 0x20 && i + 4 < il.Length) { val = BitConverter.ToInt32(il, i + 1); found = true; advance = 5; } // ldc.i4
-            else { advance = GetOpcodeLength(op, il, i); }
-
-            if (found && val >= 0x0001 && val <= 0xFFFF)
-                constants.Add((i, val));
-
-            i += advance;
-        }
-
-        if (constants.Count > 0)
-        {
-            Log($"  Constants (0x0001-0xFFFF):");
-            foreach (var (offset, value) in constants.OrderBy(c => c.offset))
-                Log($"    IL_{offset:D4}: 0x{value:X4} ({value})");
-        }
-    }
-
-    static void ScanILForCalls(byte[] il, string label)
-    {
-        var calls = new List<(int offset, uint token, string kind)>();
-        for (int i = 0; i < il.Length;)
-        {
-            byte op = il[i];
-            string kind = null;
-            int advance;
-
-            if (op == 0x28 && i + 4 < il.Length) { kind = "call"; advance = 5; }
-            else if (op == 0x6F && i + 4 < il.Length) { kind = "callvirt"; advance = 5; }
-            else if (op == 0x73 && i + 4 < il.Length) { kind = "newobj"; advance = 5; }
-            else if (op == 0x72 && i + 4 < il.Length) { kind = "ldstr"; advance = 5; }
-            else { advance = GetOpcodeLength(op, il, i); }
-
-            if (kind != null)
+            var methodBody = reader.GetMethodBody(methodHandle);
+            if (methodBody != null)
             {
-                uint token = BitConverter.ToUInt32(il, i + 1);
-                calls.Add((i, token, kind));
+                var ilReader = reader.GetBlobReader(methodBody);
+
+                // Extract constants, calls, strings from IL
+                var constants = new List<string>();
+                var calls = new List<string>();
+                var strings = new List<string>();
+                var localSig = "";
+
+                // Local variables
+                if (!methodBody.LocalSignature.IsNil)
+                {
+                    localSig = "LocalSig: " + MetadataTokens.GetToken(methodBody.LocalSignature).ToString("X8");
+                }
+
+                // MaxStack
+                Log("  MaxStack: " + methodBody.MaxStack);
+                if (localSig != "") Log("  " + localSig);
+
+                // Hex dump + decode
+                byte[] ilBytes = new byte[ilReader.RemainingBytes];
+                ilReader.ReadBytes(ilBytes);
+
+                // Show hex (first 256 bytes)
+                Log("  IL Hex (first 256):");
+                StringBuilder hexLine = new StringBuilder();
+                for (int i = 0; i < Math.Min(ilBytes.Length, 256); i++)
+                {
+                    hexLine.Append(ilBytes[i].ToString("X2") + " ");
+                    if ((i + 1) % 32 == 0)
+                    {
+                        Log("    " + hexLine.ToString());
+                        hexLine.Clear();
+                    }
+                }
+                if (hexLine.Length > 0) Log("    " + hexLine.ToString());
+                Log("  IL length: " + ilBytes.Length + " bytes");
+
+                // Decode IL for key patterns
+                DecodeIL(reader, ilBytes, constants, calls, strings);
+
+                if (constants.Count > 0)
+                {
+                    Log("  Constants (ldc.i4):");
+                    foreach (var c in constants) Log("    " + c);
+                }
+                if (calls.Count > 0)
+                {
+                    Log("  Calls:");
+                    foreach (var c in calls) Log("    " + c);
+                }
+                if (strings.Count > 0)
+                {
+                    Log("  Strings (ldstr):");
+                    foreach (var s in strings) Log("    " + s);
+                }
             }
-
-            i += advance;
-        }
-
-        if (calls.Count > 0)
-        {
-            Log($"  Calls/Strings:");
-            foreach (var (offset, token, kind) in calls)
+            else
             {
-                string target = ResolveToken(token);
-                Log($"    IL_{offset:D4}: {kind} {target}");
+                Log("  No method body (abstract/extern/PInvoke)");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("  Method body error: " + ex.Message);
+        }
+    }
+
+    static void DecodeIL(MetadataReader reader, byte[] il,
+        List<string> constants, List<string> calls, List<string> strings)
+    {
+        int pos = 0;
+        while (pos < il.Length)
+        {
+            byte op = il[pos];
+            switch (op)
+            {
+                // ldc.i4 (short forms)
+                case 0x16: // ldc.i4.0
+                    constants.Add("0");
+                    pos++; break;
+                case 0x17: // ldc.i4.1
+                    constants.Add("1");
+                    pos++; break;
+                case 0x18: // ldc.i4.2
+                    constants.Add("2");
+                    pos++; break;
+                case 0x19: // ldc.i4.3
+                    constants.Add("3");
+                    pos++; break;
+                case 0x1A: // ldc.i4.4
+                    constants.Add("4");
+                    pos++; break;
+                case 0x1B: // ldc.i4.5
+                    constants.Add("5");
+                    pos++; break;
+                case 0x1C: // ldc.i4.6
+                    constants.Add("6");
+                    pos++; break;
+                case 0x1D: // ldc.i4.7
+                    constants.Add("7");
+                    pos++; break;
+                case 0x1E: // ldc.i4.8
+                    constants.Add("8");
+                    pos++; break;
+                case 0x15: // ldc.i4.M1
+                    constants.Add("-1");
+                    pos++; break;
+                case 0x1F: // ldc.i4.s
+                    if (pos + 1 < il.Length)
+                    {
+                        sbyte val = (sbyte)il[pos + 1];
+                        constants.Add(val.ToString() + " (0x" + ((byte)val).ToString("X2") + ")");
+                        pos += 2;
+                    }
+                    else pos = il.Length;
+                    break;
+                case 0x20: // ldc.i4
+                    if (pos + 4 < il.Length)
+                    {
+                        int val = BitConverter.ToInt32(il, pos + 1);
+                        constants.Add(val.ToString() + " (0x" + val.ToString("X8") + ")");
+                        pos += 5;
+                    }
+                    else pos = il.Length;
+                    break;
+                case 0x21: // ldc.i8
+                    if (pos + 8 < il.Length)
+                    {
+                        long val = BitConverter.ToInt64(il, pos + 1);
+                        constants.Add("i8:" + val.ToString() + " (0x" + val.ToString("X16") + ")");
+                        pos += 9;
+                    }
+                    else pos = il.Length;
+                    break;
+                case 0x22: // ldc.r4
+                    if (pos + 4 < il.Length)
+                    {
+                        float val = BitConverter.ToSingle(il, pos + 1);
+                        constants.Add("r4:" + val.ToString());
+                        pos += 5;
+                    }
+                    else pos = il.Length;
+                    break;
+                case 0x23: // ldc.r8
+                    if (pos + 8 < il.Length)
+                    {
+                        double val = BitConverter.ToDouble(il, pos + 1);
+                        constants.Add("r8:" + val.ToString());
+                        pos += 9;
+                    }
+                    else pos = il.Length;
+                    break;
+
+                // call/callvirt/newobj
+                case 0x28: // call
+                case 0x6F: // callvirt
+                case 0x73: // newobj
+                    if (pos + 4 < il.Length)
+                    {
+                        int token = BitConverter.ToInt32(il, pos + 1);
+                        string opName = op == 0x28 ? "call" : op == 0x6F ? "callvirt" : "newobj";
+                        string resolved = ResolveToken(reader, token);
+                        calls.Add(opName + " " + resolved);
+                        pos += 5;
+                    }
+                    else pos = il.Length;
+                    break;
+
+                // ldstr
+                case 0x72: // ldstr
+                    if (pos + 4 < il.Length)
+                    {
+                        int token = BitConverter.ToInt32(il, pos + 1);
+                        try
+                        {
+                            var handle = (StringHandle)MetadataTokens.Handle(token & 0x00FFFFFF);
+                            string strVal = reader.GetString(handle);
+                            strings.Add(strVal);
+                        }
+                        catch
+                        {
+                            strings.Add("(token 0x" + token.ToString("X8") + ")");
+                        }
+                        pos += 5;
+                    }
+                    else pos = il.Length;
+                    break;
+
+                // ldfld / ldsfld / stfld / stsfld
+                case 0x7B: // ldfld
+                case 0x7C: // ldflda
+                case 0x7D: // stfld
+                case 0x7E: // ldsfld
+                case 0x7F: // ldsflda
+                case 0x80: // stsfld
+                    pos += 5; break;
+
+                // Two-byte opcodes
+                case 0xFE:
+                    if (pos + 1 < il.Length)
+                    {
+                        byte op2 = il[pos + 1];
+                        // Most FE opcodes are 2-byte + operand
+                        if (op2 == 0x09) // ldarg
+                        {
+                            pos += 4; // FE 09 + ushort
+                        }
+                        else if (op2 == 0x0E) // ldarga
+                        {
+                            pos += 4;
+                        }
+                        else if (op2 == 0x0B) // stloc
+                        {
+                            pos += 4;
+                        }
+                        else if (op2 == 0x0C) // ldloc
+                        {
+                            pos += 4;
+                        }
+                        else if (op2 == 0x04) // ceq
+                        {
+                            pos += 2;
+                        }
+                        else if (op2 == 0x01) // conv.u2
+                        {
+                            pos += 2;
+                        }
+                        else if (op2 == 0x05) // cgt
+                        {
+                            pos += 2;
+                        }
+                        else if (op2 == 0x02) // conv.u4
+                        {
+                            pos += 2;
+                        }
+                        else if (op2 == 0x06) // clt
+                        {
+                            pos += 2;
+                        }
+                        else
+                        {
+                            pos += 2; // unknown 2-byte opcode
+                        }
+                    }
+                    else pos = il.Length;
+                    break;
+
+                // Short branches (br.s, brtrue.s, brfalse.s, etc) — 2 bytes
+                case 0x0D: case 0x2B: case 0x2C: case 0x2D: case 0x2E: case 0x2F:
+                case 0x30: case 0x31: case 0x32: case 0x33: case 0x34: case 0x35:
+                case 0x36: case 0x37: case 0x38: case 0x39: case 0x3A: case 0x3B:
+                case 0x3C: case 0x3D: case 0x3E: case 0x3F:
+                    pos += 2; break;
+
+                // Long branches (br, brtrue, brfalse, etc) — 5 bytes
+                case 0x42: case 0x43: case 0x44:
+                    pos += 5; break;
+
+                // Switch
+                case 0x45: // switch
+                    if (pos + 4 < il.Length)
+                    {
+                        int count = BitConverter.ToInt32(il, pos + 1);
+                        pos += 5 + count * 4;
+                    }
+                    else pos = il.Length;
+                    break;
+
+                // Normal skip for single-byte opcodes without operands
+                default:
+                    // Most opcodes are 1 byte or have known operand sizes
+                    // Simple heuristic: skip single byte
+                    pos++;
+                    break;
             }
         }
     }
 
-    static string ResolveToken(uint token)
+    static string ResolveToken(MetadataReader reader, int token)
     {
-        if (_reader == null) return $"0x{token:X8}";
-
-        var table = (token >> 24);
-        var row = (int)(token & 0x00FFFFFF);
+        int table = token >> 24;
+        int row = token & 0x00FFFFFF;
 
         try
         {
             switch (table)
             {
-                case 0x0A: // MemberRef
-                    var mr = _reader.GetMemberReference((MemberReferenceHandle)MetadataTokens.Handle((int)token));
-                    var mrName = _reader.GetString(mr.Name);
-                    var parent = FormatHandle(_reader, mr.Parent);
-                    return $"{parent}::{mrName}";
-
                 case 0x06: // Method
-                    var mh = MetadataTokens.MethodDefinitionHandle(row);
-                    var md = _reader.GetMethodDefinition(mh);
-                    var methodName = _reader.GetString(md.Name);
+                    var methodDef = reader.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(row));
+                    string mName = reader.GetString(methodDef.Name);
                     // Try to get declaring type
-                    var declType = md.GetDeclaringType();
-                    if (!declType.IsNil)
+                    var declaringType = methodDef.GetDeclaringType();
+                    if (!declaringType.IsNil)
                     {
-                        var dt = _reader.GetTypeDefinition(declType);
-                        var dtName = _reader.GetString(dt.Name);
-                        return $"{dtName}::{methodName}";
+                        var tDef = reader.GetTypeDefinition(declaringType);
+                        string tName = reader.GetString(tDef.Name);
+                        return tName + "." + mName;
                     }
-                    return $"Method::{methodName}";
+                    return mName;
+
+                case 0x0A: // MemberRef
+                    var memberRef = reader.GetMemberReference((MemberReferenceHandle)MetadataTokens.Handle(token));
+                    string mrName = reader.GetString(memberRef.Name);
+                    try
+                    {
+                        var parent = memberRef.Parent;
+                        if (parent.Kind == HandleKind.TypeReference)
+                        {
+                            var tr = reader.GetTypeReference((TypeReferenceHandle)parent);
+                            string trName = reader.GetString(tr.Name);
+                            string trNS = reader.GetString(tr.Namespace);
+                            return (string.IsNullOrEmpty(trNS) ? "" : trNS + ".") + trName + "." + mrName;
+                        }
+                        else if (parent.Kind == HandleKind.TypeDefinition)
+                        {
+                            var td = reader.GetTypeDefinition((TypeDefinitionHandle)parent);
+                            string tdName = reader.GetString(td.Name);
+                            return tdName + "." + mrName;
+                        }
+                    }
+                    catch { }
+                    return mrName;
 
                 case 0x04: // Field
-                    return $"Field#{row}";
+                    var fieldDef = reader.GetFieldDefinition(MetadataTokens.FieldDefinitionHandle(row));
+                    string fName = reader.GetString(fieldDef.Name);
+                    var fDeclType = fieldDef.GetDeclaringType();
+                    if (!fDeclType.IsNil)
+                    {
+                        var ftDef = reader.GetTypeDefinition(fDeclType);
+                        string ftName = reader.GetString(ftDef.Name);
+                        return ftName + "." + fName;
+                    }
+                    return fName;
 
                 case 0x01: // TypeRef
-                    var tr = _reader.GetTypeReference((TypeReferenceHandle)MetadataTokens.Handle((int)token));
-                    return $"TypeRef::{_reader.GetString(tr.Namespace)}.{_reader.GetString(tr.Name)}";
+                    var typeRef = reader.GetTypeReference((TypeReferenceHandle)MetadataTokens.Handle(token));
+                    return reader.GetString(typeRef.Namespace) + "." + reader.GetString(typeRef.Name);
 
                 case 0x02: // TypeDef
-                    var tdef = _reader.GetTypeDefinition(MetadataTokens.TypeDefinitionHandle(row));
-                    return $"TypeDef::{_reader.GetString(tdef.Name)}";
-
-                case 0x70: // User string
-                    var us = _reader.GetUserString(MetadataTokens.UserStringHandle(row));
-                    return $"\"{us}\"";
+                    var typeDef = reader.GetTypeDefinition(MetadataTokens.TypeDefinitionHandle(row));
+                    return reader.GetString(typeDef.Namespace) + "." + reader.GetString(typeDef.Name);
 
                 default:
-                    return $"Table{table:X2}#{row}";
+                    return "Table" + table.ToString("X2") + "_Row" + row;
             }
         }
         catch
         {
-            return $"0x{token:X8}";
+            return "token_0x" + token.ToString("X8");
         }
     }
 
-    // Minimal opcode length table for skipping unknown opcodes
-    static int GetOpcodeLength(byte op, byte[] il, int offset)
+    static void ScanCommandCodes(MetadataReader reader)
     {
-        // Two-byte prefix
-        if (op == 0xFE && offset + 1 < il.Length)
-        {
-            byte op2 = il[offset + 1];
-            // Most FE.xx are 2-byte opcodes, some take operands
-            if (op2 == 0x09 || op2 == 0x0A || op2 == 0x0B || op2 == 0x0C || op2 == 0x0E)
-                return 4; // ldarg/ldarga/starg/ldloc/stloc (2-byte index)
-            return 2;
-        }
-
-        // Single-byte opcodes with inline operands
-        if (op == 0x20) return 5;  // ldc.i4
-        if (op == 0x21) return 9;  // ldc.i8
-        if (op == 0x22) return 1;  // ldnull
-        if (op == 0x72) return 5;  // ldstr
-        if (op == 0x28 || op == 0x6F || op == 0x73) return 5; // call/callvirt/newobj
-        if (op == 0x8C || op == 0x79) return 5; // box/unbox.any
-        if (op == 0x38 || op == 0x39 || op == 0x3A) return 5; // br/brfalse/brtrue
-        if (op == 0x3B || op == 0x3C || op == 0x3D || op == 0x3E || op == 0x3F ||
-            op == 0x40 || op == 0x41 || op == 0x42 || op == 0x43) return 5; // beq/bge/bgt/ble/blt etc.
-        if (op == 0x44 || op == 0x45) return 5; // bge.un / bgt.un
-        if (op == 0x1F) return 2;  // ldc.i4.s
-        if (op == 0x0E || op == 0x0F || op == 0x10 || op == 0x11 || op == 0x12 || op == 0x13) return 2; // ldarg.s etc
-        if (op == 0x2B || op == 0x2C || op == 0x2D || op == 0x2E || op == 0x2F ||
-            op == 0x30 || op == 0x31 || op == 0x32 || op == 0x33 || op == 0x34 ||
-            op == 0x35 || op == 0x36 || op == 0x37) return 2; // br.s etc
-        if (op == 0xDE) return 4;  // leave
-        if (op == 0xDD) return 5;  // leave (long form?)
-
-        return 1; // Default: single-byte opcode
-    }
-
-    // ============================================================
-    // Command code scan across all methods
-    // ============================================================
-    static void ScanAllMethodsForCommandCodes(MetadataReader reader, PEReader pe)
-    {
-        var knownCodes = new HashSet<int> {
+        // Known GET command codes from USB testing
+        int[] knownCodes = {
             0x0005, 0x000A, 0x000C, 0x000E, 0x001F,
             0x0030, 0x0032, 0x0034,
             0x0040, 0x0042, 0x0046,
@@ -438,338 +749,205 @@ class Program
             0x0154, 0x0156, 0x0158, 0x015A
         };
 
-        foreach (var tdh in reader.TypeDefinitions)
-        {
-            var td = reader.GetTypeDefinition(tdh);
-            var typeName = reader.GetString(td.Name);
+        var codeLocations = new Dictionary<int, List<string>>();
 
-            foreach (var mh in td.GetMethods())
+        foreach (var typeDefHandle in reader.TypeDefinitions)
+        {
+            var typeDef = reader.GetTypeDefinition(typeDefHandle);
+            string typeName = reader.GetString(typeDef.Name);
+
+            foreach (var methodHandle in typeDef.GetMethods())
             {
-                var method = reader.GetMethodDefinition(mh);
-                var methodName = reader.GetString(method.Name);
-                var rva = method.RelativeVirtualAddress;
-                if (rva == 0) continue;
+                var method = reader.GetMethodDefinition(methodHandle);
+                string methodName = reader.GetString(method.Name);
 
                 try
                 {
-                    var body = pe.GetMethodBody(rva);
-                    if (body == null) continue;
-                    var il = body.GetILBytes();
+                    var methodBody = reader.GetMethodBody(methodHandle);
+                    if (methodBody == null) continue;
 
-                    for (int i = 0; i < il.Length;)
+                    var ilReader = reader.GetBlobReader(methodBody);
+                    byte[] ilBytes = new byte[ilReader.RemainingBytes];
+                    ilReader.ReadBytes(ilBytes);
+
+                    // Scan for ldc.i4 instructions with command-code-like values
+                    int pos = 0;
+                    while (pos < ilBytes.Length)
                     {
-                        byte op = il[i];
-                        int val = -1;
-                        int advance;
+                        byte op = ilBytes[pos];
+                        int value = int.MinValue;
 
-                        if (op >= 0x16 && op <= 0x1E) { val = op - 0x16; advance = 1; }
-                        else if (op == 0x15) { val = -1; advance = 1; }
-                        else if (op == 0x1F && i + 1 < il.Length) { val = (sbyte)il[i + 1]; advance = 2; }
-                        else if (op == 0x20 && i + 4 < il.Length) { val = BitConverter.ToInt32(il, i + 1); advance = 5; }
-                        else { advance = GetOpcodeLength(op, il, i); }
-
-                        if (val >= 0 && (knownCodes.Contains(val) || (val >= 0x0100 && val <= 0x0200)))
+                        if (op == 0x20 && pos + 4 < ilBytes.Length) // ldc.i4
                         {
-                            Log($"  {typeName}.{methodName} @ IL_{i:D4}: ldc 0x{val:X4} ({val})");
+                            value = BitConverter.ToInt32(ilBytes, pos + 1);
+                            pos += 5;
+                        }
+                        else if (op == 0x1F && pos + 1 < ilBytes.Length) // ldc.i4.s
+                        {
+                            value = (sbyte)ilBytes[pos + 1];
+                            pos += 2;
+                        }
+                        else
+                        {
+                            pos++;
+                            continue;
                         }
 
-                        i += advance;
+                        // Check if value matches known command codes or is in command-code range
+                        bool isKnown = false;
+                        foreach (var kc in knownCodes)
+                        {
+                            if (value == kc) { isKnown = true; break; }
+                        }
+
+                        // Also check for potential SET codes (odd numbers near GET codes)
+                        bool isPotentialSet = false;
+                        foreach (var kc in knownCodes)
+                        {
+                            if (value == kc + 1 || value == kc - 1)
+                            {
+                                isPotentialSet = true;
+                                break;
+                            }
+                        }
+
+                        // Check 0x0100-0x0200 range (likely SET command area)
+                        bool isInRange = (value >= 0x0100 && value <= 0x0200) ||
+                                        (value >= 0x0001 && value <= 0x0097);
+
+                        if (isKnown || isPotentialSet || isInRange)
+                        {
+                            string loc = typeName + "." + methodName + " -> 0x" + value.ToString("X4");
+                            if (!codeLocations.ContainsKey(value))
+                                codeLocations[value] = new List<string>();
+                            codeLocations[value].Add(loc);
+                        }
                     }
                 }
                 catch { }
             }
         }
-    }
 
-    // ============================================================
-    // Raw byte analysis (fallback if no .NET metadata)
-    // ============================================================
-    static void RawByteAnalysis()
-    {
-        var bytes = File.ReadAllBytes(DLL_PATH);
-        Log($"\n=== RAW BYTE ANALYSIS ===");
-        Log($"File size: {bytes.Length} bytes");
+        // Sort by code value and output
+        var sortedCodes = new List<int>(codeLocations.Keys);
+        sortedCodes.Sort();
 
-        // 1. Search for BSJB signature
-        Log("\n--- BSJB (.NET metadata signature) ---");
-        int bsjbCount = 0;
-        for (int i = 0; i < bytes.Length - 4; i++)
+        Log("\nCommand codes found in method IL:");
+        foreach (var code in sortedCodes)
         {
-            if (bytes[i] == 0x42 && bytes[i + 1] == 0x53 && bytes[i + 2] == 0x4A && bytes[i + 3] == 0x42)
+            string label = "";
+            int[] knownArr = knownCodes;
+            foreach (var kc in knownArr)
             {
-                Log($"  BSJB at offset 0x{i:X8}");
-                bsjbCount++;
-                ParseMetadataHeader(bytes, i);
-                if (bsjbCount >= 3) break;
+                if (code == kc) { label = " [KNOWN GET]"; break; }
+                if (code == kc + 1) { label = " [RESPONSE for 0x" + kc.ToString("X4") + "]"; break; }
             }
-        }
-        if (bsjbCount == 0) Log("  No BSJB found!");
-
-        // 2. Command code table search
-        Log("\n--- Command code table patterns ---");
-        SearchCommandCodeTable(bytes);
-
-        // 3. Targeted string searches
-        string[] searchTerms = {
-            "DelayBetweenWrites", "SetDeviceParameter", "CommandDeviceAsync",
-            "WriteIntoFlash", "CommandResponseConfig", "GetCommandConfig",
-            "WriteToDeviceAsync", "ReadFromDeviceAsync", "SendTypedCommand"
-        };
-        foreach (var term in searchTerms)
-        {
-            Log($"\n--- \"{term}\" ---");
-            SearchNearString(bytes, term, 256);
-        }
-    }
-
-    static void ParseMetadataHeader(byte[] bytes, int bsjbOffset)
-    {
-        if (bsjbOffset + 16 >= bytes.Length) return;
-        uint metaDataLength = BitConverter.ToUInt32(bytes, bsjbOffset + 4);
-        Log($"    Metadata length: {metaDataLength}");
-        uint versionLength = BitConverter.ToUInt32(bytes, bsjbOffset + 8);
-        if (bsjbOffset + 12 + versionLength < bytes.Length)
-        {
-            var version = Encoding.ASCII.GetString(bytes, bsjbOffset + 12, (int)Math.Min(versionLength, 256)).TrimEnd('\0');
-            Log($"    Version: {version}");
-        }
-
-        int pos = bsjbOffset + 12 + (int)versionLength;
-        pos = (pos + 3) & ~3; // align
-        if (pos + 4 >= bytes.Length) return;
-
-        ushort flags = BitConverter.ToUInt16(bytes, pos);
-        ushort streams = BitConverter.ToUInt16(bytes, pos + 2);
-        Log($"    Flags: {flags}, Streams: {streams}");
-        pos += 4;
-
-        for (int s = 0; s < streams && pos + 8 < bytes.Length; s++)
-        {
-            uint offset = BitConverter.ToUInt32(bytes, pos);
-            uint size = BitConverter.ToUInt32(bytes, pos + 4);
-            int nameStart = pos + 8;
-            int nameEnd = nameStart;
-            while (nameEnd < bytes.Length && bytes[nameEnd] != 0) nameEnd++;
-            var streamName = Encoding.ASCII.GetString(bytes, nameStart, nameEnd - nameStart);
-            Log($"    Stream: \"{streamName}\" offset=0x{offset:X} size={size}");
-
-            if (streamName == "#Strings")
+            if (code >= 0x0100 && code <= 0x0200 && label == "")
             {
-                int streamStart = bsjbOffset + (int)offset;
-                DumpStringsHeap(bytes, streamStart, (int)size);
+                // Check if it could be a SET code
+                foreach (var kc in knownArr)
+                {
+                    if (code == kc - 1) { label = " [POSSIBLE SET for 0x" + kc.ToString("X4") + "]"; break; }
+                }
             }
 
-            int nameLen = nameEnd - nameStart + 1;
-            nameLen = (nameLen + 3) & ~3;
-            pos = nameStart + nameLen;
+            Log("  0x" + code.ToString("X4") + label + ":");
+            foreach (var loc in codeLocations[code])
+            {
+                Log("    " + loc);
+            }
         }
     }
 
-    static void DumpStringsHeap(byte[] bytes, int start, int size)
+    static void ParseRawMetadata(byte[] pe, int bsjbOffset)
     {
-        Log($"      --- #Strings (relevant entries) ---");
-        int end = Math.Min(start + size, start + 65536);
+        Log("\n=== Parsing raw .NET metadata from BSJB at 0x" + bsjbOffset.ToString("X8") + " ===");
+        try
+        {
+            // BSJB header: 4 sig + 4 majorVersion + 4 minorVersion + 4 reserved + 4 versionLength + version + ...
+            int verLen = BitConverter.ToInt32(pe, bsjbOffset + 12);
+            string version = Encoding.ASCII.GetString(pe, bsjbOffset + 16, verLen).TrimEnd('\0');
+            Log("  Metadata version: " + version);
+
+            // After version string, aligned to 4 bytes
+            int pos = bsjbOffset + 16 + verLen;
+            pos = (pos + 3) & ~3;
+
+            ushort flags = BitConverter.ToUInt16(pe, pos);
+            pos += 2;
+            ushort numStreams = BitConverter.ToUInt16(pe, pos);
+            pos += 2;
+            Log("  Flags: " + flags + " Streams: " + numStreams);
+
+            for (int s = 0; s < numStreams && s < 10; s++)
+            {
+                int sOffset = BitConverter.ToInt32(pe, pos);
+                int sSize = BitConverter.ToInt32(pe, pos + 4);
+                pos += 8;
+                int nameEnd = pos;
+                while (nameEnd < pe.Length && pe[nameEnd] != 0) nameEnd++;
+                string sName = Encoding.ASCII.GetString(pe, pos, nameEnd - pos);
+                Log("    Stream: \"" + sName + "\" offset=" + sOffset + " size=" + sSize);
+                nameEnd++;
+                nameEnd = (nameEnd + 3) & ~3;
+                pos = nameEnd;
+
+                // If this is #Strings, dump command-related strings
+                if (sName == "#Strings")
+                {
+                    int stringsStart = bsjbOffset + sOffset;
+                    Log("    #Strings heap at file offset 0x" + stringsStart.ToString("X8"));
+                    DumpStringsHeap(pe, stringsStart, sSize);
+                }
+
+                // If this is #~, dump type/method tables
+                if (sName == "#~")
+                {
+                    int tablesStart = bsjbOffset + sOffset;
+                    Log("    #~ (tables) heap at file offset 0x" + tablesStart.ToString("X8"));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("  Raw metadata parse error: " + ex.Message);
+        }
+    }
+
+    static void DumpStringsHeap(byte[] pe, int start, int size)
+    {
+        Log("    --- Command strings in #Strings heap ---");
+        string[] kws = { "SET_", "GET_", "WRITE", "READ", "COMMAND", "FLASH",
+                         "CUSTOMER", "COUNTRY", "TOOL_SN", "RUN_ID", "DEVICE_TIME",
+                         "BATTERY", "FIRMWARE", "DEPTH", "DISTRICT", "CONFIG",
+                         "AMPLIFIER", "SELF_TEST", "HOUSING", "LDAP", "UNIQUE" };
+
+        int end = start + size;
         int pos = start;
         while (pos < end)
         {
-            int strStart = pos;
-            while (pos < end && bytes[pos] != 0) pos++;
-            if (pos > strStart)
+            if (pe[pos] >= 0x20 && pe[pos] < 0x7F)
             {
-                var str = Encoding.UTF8.GetString(bytes, strStart, pos - strStart);
-                if (IsRelevantName(str))
+                int len = 0;
+                while (pos + len < end && pe[pos + len] >= 0x20 && pe[pos + len] < 0x7F) len++;
+                if (len >= 5)
                 {
-                    Log($"        [{strStart - start:D5}] {str}");
-                }
-            }
-            pos++;
-        }
-    }
-
-    static void SearchCommandCodeTable(byte[] bytes)
-    {
-        for (int i = 0; i < bytes.Length - 64; i++)
-        {
-            int matchCount = 0;
-            for (int j = 0; j < 32; j += 2)
-            {
-                if (i + j + 1 >= bytes.Length) break;
-                ushort val = BitConverter.ToUInt16(bytes, i + j);
-                if (val >= 0x0001 && val <= 0x0200)
-                    matchCount++;
-                else
-                    break;
-            }
-
-            if (matchCount >= 6)
-            {
-                bool hasKnown = false;
-                for (int j = 0; j < matchCount * 2; j += 2)
-                {
-                    ushort val = BitConverter.ToUInt16(bytes, i + j);
-                    if (val == 0x0005 || val == 0x0040 || val == 0x0042 || val == 0x0046 ||
-                        val == 0x0102 || val == 0x0106 || val == 0x014C || val == 0x0096)
-                    { hasKnown = true; break; }
-                }
-
-                if (hasKnown)
-                {
-                    var sb = new StringBuilder();
-                    sb.Append($"  Table at 0x{i:X8}: ");
-                    for (int j = 0; j < matchCount * 2 && j < 64; j += 2)
+                    string s = Encoding.ASCII.GetString(pe, pos, len);
+                    foreach (var kw in kws)
                     {
-                        ushort val = BitConverter.ToUInt16(bytes, i + j);
-                        sb.Append($"0x{val:X4} ");
+                        if (s.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            Log("      [" + (pos - start) + "] " + s);
+                            break;
+                        }
                     }
-                    Log(sb.ToString());
                 }
+                pos += len;
             }
-        }
-    }
-
-    static void SearchNearString(byte[] bytes, string target, int range)
-    {
-        var targetBytes = Encoding.ASCII.GetBytes(target);
-        for (int i = 0; i < bytes.Length - targetBytes.Length; i++)
-        {
-            bool match = true;
-            for (int j = 0; j < targetBytes.Length; j++)
+            else
             {
-                if (bytes[i + j] != targetBytes[j]) { match = false; break; }
-            }
-            if (!match) continue;
-
-            Log($"  Found at 0x{i:X8}");
-
-            // After the string, look for nearby data
-            int afterEnd = Math.Min(bytes.Length, i + targetBytes.Length + range);
-            Log($"  After (0x{i:X8}, next {range}B):");
-            for (int row = i + targetBytes.Length; row < afterEnd; row += 16)
-            {
-                var hex = new StringBuilder();
-                var ascii = new StringBuilder();
-                hex.Append($"    {row:X8}: ");
-                for (int col = 0; col < 16 && row + col < afterEnd; col++)
-                {
-                    hex.Append($"{bytes[row + col]:X2} ");
-                    char c = (char)bytes[row + col];
-                    ascii.Append(char.IsControl(c) ? '.' : c);
-                }
-                hex.Append($" | {ascii}");
-                Log(hex.ToString());
-            }
-            break;
-        }
-    }
-
-    // ============================================================
-    // Helpers
-    // ============================================================
-    static bool IsRelevantName(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return false;
-        var lower = name.ToLowerInvariant();
-        return lower.Contains("command") || lower.Contains("device") ||
-               lower.Contains("write") || lower.Contains("flash") ||
-               lower.Contains("delay") || lower.Contains("config") ||
-               lower.Contains("parameter") || lower.Contains("usb") ||
-               lower.Contains("endpoint") || lower.Contains("bulk") ||
-               lower.Contains("procyon") || lower.Contains("customer") ||
-               lower.Contains("country") || lower.Contains("district") ||
-               lower.Contains("tool") || lower.Contains("serial") ||
-               lower.Contains("battery") || lower.Contains("temperature") ||
-               lower.Contains("pressure") || lower.Contains("depth") ||
-               lower.Contains("ldap") || lower.Contains("unique") ||
-               lower.Contains("housing") || lower.Contains("drill") ||
-               lower.Contains("amplifier") || lower.Contains("shock") ||
-               lower.Contains("gyro") || lower.Contains("accel") ||
-               lower.Contains("limpet") || lower.Contains("firmware") ||
-               lower.Contains("selftest") || lower.Contains("self_test") ||
-               lower.Contains("position") || lower.Contains("axial") ||
-               lower.Contains("dac") || lower.Contains("gain") ||
-               lower.Contains("offset") || lower.Contains("mode") ||
-               lower.Contains("memory") || lower.Contains("dump") ||
-               lower.Contains("erase") || lower.Contains("partition") ||
-               lower.Contains("verification") || lower.Contains("abort") ||
-               lower.Contains("reader") || lower.Contains("writer") ||
-               lower.Contains("logger") || lower.Contains("run_id") ||
-               lower.Contains("connection") || lower.Contains("size");
-    }
-
-    static bool IsKeyMethod(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return false;
-        var lower = name.ToLowerInvariant();
-        return lower.Contains("commanddevice") || lower.Contains("setdevice") ||
-               lower.Contains("writeintoflash") || lower.Contains("writetodevice") ||
-               lower.Contains("readfromdevice") || lower.Contains("delaybetween") ||
-               lower.Contains("getcommandconfig") || lower.Contains("sendtyped") ||
-               lower.Contains("settool") || lower.Contains("setreset") ||
-               lower.Contains("dumpdata") || lower.Contains("commandresponse") ||
-               lower.Contains("iscommand") || lower.Contains("setrun") ||
-               lower.Contains("setcustomer") || lower.Contains("setcountry") ||
-               lower.Contains("setdistrict") || lower.Contains("setdepth") ||
-               lower.Contains("setdevice") || lower.Contains("setunique") ||
-               lower.Contains("setldap") || lower.Contains("setconfig") ||
-               lower.Contains("setparameters") || lower.Contains("memorydump") ||
-               lower.Contains("memoryerase") || lower.Contains("startverification");
-    }
-
-    static bool IsEnumType(TypeDefinition td, MetadataReader reader)
-    {
-        if (!td.Attributes.HasFlag(System.Reflection.TypeAttributes.Sealed))
-            return false;
-
-        bool hasValueField = false;
-        foreach (var fh in td.GetFields())
-        {
-            var field = reader.GetFieldDefinition(fh);
-            if (reader.GetString(field.Name) == "value__")
-            { hasValueField = true; break; }
-        }
-        return hasValueField;
-    }
-
-    static string FormatConstantValue(ConstantTypeCode typeCode, BlobReader reader)
-    {
-        return typeCode switch
-        {
-            ConstantTypeCode.Boolean => reader.ReadBoolean().ToString(),
-            ConstantTypeCode.Byte => $"0x{reader.ReadByte():X2}",
-            ConstantTypeCode.SByte => reader.ReadSByte().ToString(),
-            ConstantTypeCode.Int16 => reader.ReadInt16().ToString(),
-            ConstantTypeCode.UInt16 => $"0x{reader.ReadUInt16():X4}",
-            ConstantTypeCode.Int32 => reader.ReadInt32().ToString(),
-            ConstantTypeCode.UInt32 => $"0x{reader.ReadUInt32():X8}",
-            ConstantTypeCode.Int64 => reader.ReadInt64().ToString(),
-            ConstantTypeCode.UInt64 => $"0x{reader.ReadUInt64():X16}",
-            ConstantTypeCode.Single => reader.ReadSingle().ToString("F6"),
-            ConstantTypeCode.Double => reader.ReadDouble().ToString("F10"),
-            _ => $"({typeCode})"
-        };
-    }
-
-    static string FormatHandle(MetadataReader reader, EntityHandle handle)
-    {
-        if (handle.IsNil) return "<nil>";
-        try
-        {
-            switch (handle.Kind)
-            {
-                case HandleKind.TypeReference:
-                    var tr = reader.GetTypeReference((TypeReferenceHandle)handle);
-                    var trNs = reader.GetString(tr.Namespace);
-                    var trName = reader.GetString(tr.Name);
-                    return string.IsNullOrEmpty(trNs) ? trName : $"{trNs}.{trName}";
-                case HandleKind.TypeDefinition:
-                    var td = reader.GetTypeDefinition((TypeDefinitionHandle)handle);
-                    var tdNs = reader.GetString(td.Namespace);
-                    var tdName = reader.GetString(td.Name);
-                    return string.IsNullOrEmpty(tdNs) ? tdName : $"{tdNs}.{tdName}";
-                default:
-                    return $"{handle.Kind}:{handle}";
+                pos++;
             }
         }
-        catch { return $"{handle.Kind}:{handle}"; }
     }
 }
