@@ -282,6 +282,38 @@ ProcyonUsbBridge.prototype.connect = async function() {
         ': class=' + ifcDesc.bInterfaceClass + ', eps=[' + epParts.join(', ') + ']');
     }
 
+    // Diagnostic: dump Interface object internals
+    for (var diagi = 0; diagi < interfaces.length; diagi++) {
+      var diagIfc = interfaces[diagi];
+      console.log('[USB] DIAG Interface[' + diagi + ']: id=' + diagIfc.id +
+        ', interfaceNumber=' + diagIfc.interfaceNumber +
+        ', altSetting=' + diagIfc.altSetting);
+    }
+
+    // Diagnostic: check configDescriptor.interfaces structure
+    var configDesc = self.device.configDescriptor;
+    console.log('[USB] DIAG configDescriptor.interfaces.length=' + configDesc.interfaces.length);
+    for (var cdi = 0; cdi < configDesc.interfaces.length; cdi++) {
+      console.log('[USB] DIAG configDescriptor.interfaces[' + cdi + '].length=' + configDesc.interfaces[cdi].length);
+      if (configDesc.interfaces[cdi][0]) {
+        console.log('[USB] DIAG configDescriptor.interfaces[' + cdi + '][0].bInterfaceNumber=' +
+          configDesc.interfaces[cdi][0].bInterfaceNumber);
+      }
+    }
+
+    // Diagnostic: try __claimInterface with different values directly
+    var claimAttempts = [0, 1];
+    for (var cai = 0; cai < claimAttempts.length; cai++) {
+      try {
+        self.device.__claimInterface(claimAttempts[cai]);
+        console.log('[USB] DIAG __claimInterface(' + claimAttempts[cai] + ') SUCCEEDED!');
+        // If we get here, try to release it so we can claim properly later
+        try { self.device.__releaseInterface(claimAttempts[cai], function() {}); } catch (re) {}
+      } catch (ce) {
+        console.log('[USB] DIAG __claimInterface(' + claimAttempts[cai] + ') failed: ' + ce.message);
+      }
+    }
+
     // Try to claim an interface that has EP1 OUT (0x01) and EP1 IN (0x81)
     var claimed = false;
 
