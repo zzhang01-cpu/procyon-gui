@@ -19,6 +19,12 @@ import {
   setToolSize as usbSetToolSize,
   setConfigName as usbSetConfigName,
   setUniqueID as usbSetUniqueID,
+  setRunIDType as usbSetRunIDType,
+  setUHConnectionType as usbSetUHConnectionType,
+  setDHConnectionType as usbSetDHConnectionType,
+  setIntPressureSN as usbSetIntPressureSN,
+  setExtPressureSN as usbSetExtPressureSN,
+  setLimpetSN as usbSetLimpetSN,
   setDeviceTime as usbSetDeviceTime,
   writeIntoFlash as usbWriteIntoFlash,
   setInitParameters as usbSetInitParameters,
@@ -66,6 +72,12 @@ interface DeviceContextType {
   setToolSize: (size: string) => Promise<void>;
   setConfigName: (configName: string) => Promise<void>;
   setUniqueID: (uniqueId: string) => Promise<void>;
+  setRunIDType: (runIdType: string) => Promise<void>;
+  setUHConnectionType: (connType: string) => Promise<void>;
+  setDHConnectionType: (connType: string) => Promise<void>;
+  setIntPressureSN: (sn: string) => Promise<void>;
+  setExtPressureSN: (sn: string) => Promise<void>;
+  setLimpetSN: (sn: string) => Promise<void>;
   setDeviceTime: () => Promise<void>;
 
   // Flash write
@@ -81,6 +93,11 @@ interface DeviceContextType {
     toolPosition?: string;
     toolSN?: string;
     toolSize?: string;
+    uhConnectionType?: string;
+    dhConnectionType?: string;
+    intPressureSN?: string;
+    extPressureSN?: string;
+    limpetSN?: string;
     configName?: string;
     uniqueId?: string;
   }) => Promise<boolean>;
@@ -302,6 +319,72 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const handleSetRunIDType = useCallback(async (runIdType: string) => {
+    try {
+      const result = await usbSetRunIDType(runIdType);
+      if (!result.success) {
+        setError(result.error || 'Set Run ID Type failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Run ID Type failed');
+    }
+  }, []);
+
+  const handleSetUHConnectionType = useCallback(async (connType: string) => {
+    try {
+      const result = await usbSetUHConnectionType(connType);
+      if (!result.success) {
+        setError(result.error || 'Set UH Connection Type failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set UH Connection Type failed');
+    }
+  }, []);
+
+  const handleSetDHConnectionType = useCallback(async (connType: string) => {
+    try {
+      const result = await usbSetDHConnectionType(connType);
+      if (!result.success) {
+        setError(result.error || 'Set DH Connection Type failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set DH Connection Type failed');
+    }
+  }, []);
+
+  const handleSetIntPressureSN = useCallback(async (sn: string) => {
+    try {
+      const result = await usbSetIntPressureSN(sn);
+      if (!result.success) {
+        setError(result.error || 'Set Int Pressure SN failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Int Pressure SN failed');
+    }
+  }, []);
+
+  const handleSetExtPressureSN = useCallback(async (sn: string) => {
+    try {
+      const result = await usbSetExtPressureSN(sn);
+      if (!result.success) {
+        setError(result.error || 'Set Ext Pressure SN failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Ext Pressure SN failed');
+    }
+  }, []);
+
+  const handleSetLimpetSN = useCallback(async (sn: string) => {
+    try {
+      const result = await usbSetLimpetSN(sn);
+      if (!result.success) {
+        setError(result.error || 'Set Limpet SN failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Set Limpet SN failed');
+    }
+  }, []);
+
   const handleSetDeviceTime = useCallback(async () => {
     try {
       const result = await usbSetDeviceTime();
@@ -445,6 +528,12 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     setToolSize: handleSetToolSize,
     setConfigName: handleSetConfigName,
     setUniqueID: handleSetUniqueID,
+    setRunIDType: handleSetRunIDType,
+    setUHConnectionType: handleSetUHConnectionType,
+    setDHConnectionType: handleSetDHConnectionType,
+    setIntPressureSN: handleSetIntPressureSN,
+    setExtPressureSN: handleSetExtPressureSN,
+    setLimpetSN: handleSetLimpetSN,
     setDeviceTime: handleSetDeviceTime,
     writeIntoFlash: handleWriteIntoFlash,
     setInitParameters: handleSetInitParameters,

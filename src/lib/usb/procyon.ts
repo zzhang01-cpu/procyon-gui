@@ -221,6 +221,11 @@ export async function setInitParameters(params: {
   toolPosition?: string;
   toolSN?: string;
   toolSize?: string;
+  uhConnectionType?: string;
+  dhConnectionType?: string;
+  intPressureSN?: string;
+  extPressureSN?: string;
+  limpetSN?: string;
   configName?: string;
   uniqueId?: string;
 }): Promise<{ success: boolean; error?: string }> {
@@ -298,14 +303,93 @@ export async function setUniqueID(id: string): Promise<{ success: boolean; error
 }
 
 /**
- * Set device time
+ * Set run ID type
  */
-export async function setDeviceTime(): Promise<{ success: boolean; error?: string }> {
+export async function setRunIDType(runIdType: string): Promise<{ success: boolean; error?: string }> {
   const api = getAPI();
   if (!api) {
     throw new Error('Not running in Electron environment');
   }
-  return api.setDeviceTime() as Promise<{ success: boolean; error?: string }>;
+  return api.setRunIDType(runIdType) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set UH connection type
+ */
+export async function setUHConnectionType(connType: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setUHConnectionType(connType) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set DH connection type
+ */
+export async function setDHConnectionType(connType: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setDHConnectionType(connType) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set internal pressure sensor serial number
+ */
+export async function setIntPressureSN(sn: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setIntPressureSN(sn) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set external pressure sensor serial number
+ */
+export async function setExtPressureSN(sn: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setExtPressureSN(sn) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set limpet sensor serial number
+ */
+export async function setLimpetSN(sn: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setLimpetSN(sn) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set tool axial position (Polaris only)
+ */
+export async function setToolAxialPosition(axial: string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.setToolAxialPosition(axial) as Promise<{ success: boolean; error?: string }>;
+}
+
+/**
+ * Set device time
+ * @param date - Date object or ISO string. If not provided, uses current time.
+ */
+export async function setDeviceTime(date?: Date | string): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  const dateStr = date ? (date instanceof Date ? date.toISOString() : String(date)) : new Date().toISOString();
+  return api.setDeviceTime(dateStr) as Promise<{ success: boolean; error?: string }>;
 }
 
 /**

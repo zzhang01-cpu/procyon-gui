@@ -585,13 +585,21 @@ class ProcyonUsbBridge {
     const dataBytes = asciiToBytes(value);
     const resp = await this.sendCommand(cmdCode, dataBytes);
     if (resp.success) {
-      // DLL: GetValueFromResponse returns non-"0" string on success
-      // Response data after 4-byte header contains the ack value
-      const ackValue = resp.data.length > 0 ? String(resp.data[0]) : null;
-      if (ackValue === '0') {
-        return { success: false, error: 'Device returned 0 (rejected)', response: ackValue };
+      // DLL: GetValueFromResponse reads response data after 4-byte header,
+      // formats via CommandResponseConfig, and checks last ByteConfig field.
+      // For SET commands, the response is an ASCII string value.
+      // "0" means failure, non-"0" non-null means success.
+      // Read all data after header as ASCII string for proper comparison.
+      const ackString = resp.data.length > 0
+        ? resp.data.map(b => String.fromCharCode(b)).join('')
+        : null;
+      if (ackString === '0') {
+        return { success: false, error: 'Device returned 0 (rejected)', response: ackString };
       }
-      return { success: true, response: ackValue };
+      if (ackString === null) {
+        return { success: false, error: 'No response data' };
+      }
+      return { success: true, response: ackString };
     }
     return { success: false, error: resp.error || 'No response' };
   }
@@ -613,11 +621,17 @@ class ProcyonUsbBridge {
     }
     const resp = await this.sendCommand(cmdCode, dataBytes);
     if (resp.success) {
-      const ackValue = resp.data.length > 0 ? String(resp.data[0]) : null;
-      if (ackValue === '0') {
-        return { success: false, error: 'Device returned 0 (rejected)', response: ackValue };
+      // Same ACK logic as _setStringParam: read data after header as ASCII string
+      const ackString = resp.data.length > 0
+        ? resp.data.map(b => String.fromCharCode(b)).join('')
+        : null;
+      if (ackString === '0') {
+        return { success: false, error: 'Device returned 0 (rejected)', response: ackString };
       }
-      return { success: true, response: ackValue };
+      if (ackString === null) {
+        return { success: false, error: 'No response data' };
+      }
+      return { success: true, response: ackString };
     }
     return { success: false, error: resp.error || 'No response' };
   }
@@ -701,19 +715,45 @@ class ProcyonUsbBridge {
   }
 
   async setDeviceTime(date) {
-    // date: { year, month, day, hour, minute, second }
+    // date: ISO date string (e.g. "2025-01-15T10:30:00.000Z") or { year, month, day, hour, minute, second }
     // From DLL: SET_DEVICE_TIME = 0x0044, data = [YY, MM, DD, HH, MM, SS]
-    const dataBytes = [
-      (date.year || 2025) - 2000,
-      date.month || 1,
-      date.day || 1,
-      date.hour || 0,
-      date.minute || 0,
-      date.second || 0,
-    ];
+    let dataBytes;
+    if (typeof date === 'string') {
+      // Parse ISO string
+      const d = new Date(date);
+      dataBytes = [
+        d.getFullYear() - 2000,
+        d.getMonth() + 1,
+        d.getDate(),
+        d.getHours(),
+        d.getMinutes(),
+        d.getSeconds(),
+      ];
+    } else if (date && typeof date === 'object') {
+      dataBytes = [
+        (date.year || 2025) - 2000,
+        date.month || 1,
+        date.day || 1,
+        date.hour || 0,
+        date.minute || 0,
+        date.second || 0,
+      ];
+    } else {
+      // Default: current time
+      const now = new Date();
+      dataBytes = [
+        now.getFullYear() - 2000,
+        now.getMonth() + 1,
+        now.getDate(),
+        now.getHours(),
+        now.getMinutes(),
+        now.getSeconds(),
+      ];
+    }
     if (!this.connected) {
       return { success: false, error: 'Device not connected' };
     }
+    console.log('[USB] Setting device time:', dataBytes);
     const resp = await this.sendCommand(CMD.SET_DEVICE_TIME, dataBytes);
     if (resp.success) {
       return { success: true };
@@ -739,6 +779,40 @@ class ProcyonUsbBridge {
     }
     console.log('[USB] Flash write failed:', resp.error);
     return { success: false, error: resp.error || 'Flash write failed' };
+  }
+
+  /**
+   * Erase used memory partitions
+   * From DLL: AckResponseAsync(Command.MEMORY_ERASE_USED)
+   */
+  async eraseUsedMemory() {
+    if (!this.connected) {
+      return { success: false, error: 'Device not connected' };
+    }
+    console.log('[USB] Erasing used memory...');
+    const resp = await this.sendCommand(CMD.MEMORY_ERASE_USED);
+    if (resp.success) {
+      console.log('[USB] Erase used memory initiated');
+      return { success: true };
+    }
+    return { success: false, error: resp.error || 'Erase failed' };
+  }
+
+  /**
+   * Erase all memory partitions
+   * From DLL: AckResponseAsync(Command.MEMORY_ERASE_ALL)
+   */
+  async eraseAllMemory() {
+    if (!this.connected) {
+      return { success: false, error: 'Device not connected' };
+    }
+    console.log('[USB] Erasing all memory...');
+    const resp = await this.sendCommand(CMD.MEMORY_ERASE_ALL);
+    if (resp.success) {
+      console.log('[USB] Erase all memory initiated');
+      return { success: true };
+    }
+    return { success: false, error: resp.error || 'Erase failed' };
   }
 
   /**
@@ -995,4 +1069,4 @@ class ProcyonUsbBridge {
 }
 
 const bridge = new ProcyonUsbBridge();
-module.exports = { bridge, PROCYON_VID, PROCYON_PID, CMD, buildCommandHeader, buildCommandPacket, parseResponse };
+module.exports = { bridge, PROCYON_VID, PROCYON_PID, CMD, buildCommandPacket, parseResponse };

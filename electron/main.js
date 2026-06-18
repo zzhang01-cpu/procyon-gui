@@ -160,6 +160,19 @@ function initUsbBridge() {
     return bridge.setInitParameters(params);
   });
 
+  ipcMain.handle('device:set-tool-axial-position', async (_event, axial) => {
+    return bridge.setToolAxialPosition(axial);
+  });
+
+  // Memory operations
+  ipcMain.handle('device:erase-used-memory', async () => {
+    return bridge.eraseUsedMemory();
+  });
+
+  ipcMain.handle('device:erase-all-memory', async () => {
+    return bridge.eraseAllMemory();
+  });
+
   // Data operations
   ipcMain.handle('device:get-memory-partitions', async () => {
     return bridge.getMemoryPartitions();
