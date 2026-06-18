@@ -511,25 +511,25 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     const interval = setInterval(async () => {
       try {
         const battResult = await getBatteryVoltage();
-        if (battResult.success && deviceInfo) {
+        if (battResult.success) {
           setDeviceInfo((prev) => prev ? { ...prev, batteryVoltage: battResult.voltage } : prev);
         }
         const tempResult = await getTemperature();
-        if (tempResult.success && deviceInfo) {
+        if (tempResult.success) {
           setDeviceInfo((prev) => prev ? { ...prev, temperature: tempResult.temperature } : prev);
         }
       } catch {
         // Ignore polling errors
       }
-    }, 5000);
+    }, 10000);
     return () => clearInterval(interval);
-  }, [connected, deviceInfo]);
+  }, [connected]);
 
   // Auto-scan for USB devices when in Electron
   useEffect(() => {
     if (!isElectron()) return;
     refreshDevices();
-    const interval = setInterval(refreshDevices, 3000);
+    const interval = setInterval(refreshDevices, 10000);
     return () => clearInterval(interval);
   }, [refreshDevices]);
 
