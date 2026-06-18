@@ -247,12 +247,17 @@ class ProcyonUsbBridge {
           continue;
         }
 
-        try {
-          if (ifc.isKernelDriverActive()) {
-            ifc.detachKernelDriver();
+        // On Windows + WinUSB, detachKernelDriver is not needed/supported.
+        // Only try it on non-Windows platforms.
+        const isWindows = process.platform === 'win32';
+        if (!isWindows) {
+          try {
+            if (ifc.isKernelDriverActive()) {
+              ifc.detachKernelDriver();
+            }
+          } catch (detachErr) {
+            console.log(`[USB] Interface ${ifNum}: could not detach kernel driver: ${detachErr.message}`);
           }
-        } catch (detachErr) {
-          console.log(`[USB] Interface ${ifNum}: could not detach kernel driver: ${detachErr.message}`);
         }
 
         try {
