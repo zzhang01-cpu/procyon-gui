@@ -510,8 +510,13 @@ ProcyonUsbBridge.prototype.sendAckCommand = async function(commandCode, dataByte
 ProcyonUsbBridge.prototype.getFirmwareVersion = async function() {
   try {
     var resp = await this.sendGetCommand(CMD.GET_FIRMWARE_VERSION);
-    if (resp.success && resp.data && resp.data.length >= 6) {
-      return { success: true, value: resp.data[0] + '.' + resp.data[1] + '.' + resp.data[2] };
+    if (resp.success && resp.data && resp.data.length >= 3) {
+      // Firmware version: each byte is a version segment (major.minor.patch)
+      // e.g. data=[02,00,06,02] => v2.0.6 (ignore trailing byte)
+      var major = resp.data[0];
+      var minor = resp.data[1];
+      var patch = resp.data[2];
+      return { success: true, value: 'v' + major + '.' + minor + '.' + patch };
     }
     return { success: false, value: null };
   } catch (error) {
@@ -735,7 +740,20 @@ ProcyonUsbBridge.prototype._parseU32 = function(data) {
   return buf.readUInt32LE(0);
 };
 
-ProcyonUsbBridge.prototype.listDevices = function() { return []; };
+ProcyonUsbBridge.prototype.listDevices = function() {
+  if (this.connected && this.deviceInfo) {
+    return [{
+      vendorId: '0x' + VID.toString(16).toUpperCase(),
+      productId: '0x' + PID.toString(16).toUpperCase(),
+      serialNumber: this.deviceInfo.serialNumber || '',
+      deviceName: 'Procyon-CM',
+      manufacturer: 'Procyon',
+      isProcyon: true,
+      deviceAddress: 0
+    }];
+  }
+  return [];
+};
 ProcyonUsbBridge.prototype.getDeviceInfo = function() {
   if (!this.deviceInfo) return { success: false, error: 'No device info available' };
   return { success: true, info: this.deviceInfo };
