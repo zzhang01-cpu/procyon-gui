@@ -480,7 +480,7 @@ class ProcyonUsbBridge {
 
   /**
    * Send a SET string command
-   * From DLL: ASCIIconversion → IssueResponseInternal → CommandDeviceAsync
+   * From DLL: ASCIIconversion -> IssueResponseInternal -> CommandDeviceAsync
    * Response: value != "0" and value != null means success
    */
   async sendSetCommand(commandCode, stringValue) {
@@ -652,7 +652,7 @@ class ProcyonUsbBridge {
 
   /**
    * Write all SET parameters into Flash memory
-   * From DLL: WriteIntoFlashAsync → AckResponseAsync(Command.SET_PARAMETERS_INTO_FLASH)
+   * From DLL: WriteIntoFlashAsync -> AckResponseAsync(Command.SET_PARAMETERS_INTO_FLASH)
    * SET_PARAMETERS_INTO_FLASH = 0x0100, no data payload, just check for non-null response
    */
   async writeIntoFlash() {
