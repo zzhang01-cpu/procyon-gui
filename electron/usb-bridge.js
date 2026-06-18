@@ -217,96 +217,64 @@ class ProcyonUsbBridge {
         return { success: false, error: `Cannot open device: ${openErr.message}. May need WinUSB driver (use Zadig).` };
       }
 
-      // Find the correct interface — try each one
-      // With WinUSB the interface numbering may differ from libusb-win32
-      const configDesc = this.device.configDescriptor;
-      const numInterfaces = configDesc ? configDesc.bNumInterfaces : 0;
-      console.log(`[USB] Device has ${numInterfaces} interface(s)`);
+      // Use device.interfaces array directly (node-usb v2)
+      // device.interface(n) looks up by bInterfaceNumber, NOT by index
+      // For Procyon, bInterfaceNumber=1 is the only usable interface
+      const interfaces = this.device.interfaces || [];
+      console.log(`[USB] Device has ${interfaces.length} interface(s)`);
 
       // Log all interfaces for debugging
-      for (let i = 0; i < numInterfaces; i++) {
-        try {
-          const ifc = this.device.interface(i);
-          const ifcDesc = ifc.descriptor;
-          const eps = ifcDesc.endpoints.map(e =>
-            `EP 0x${e.bEndpointAddress.toString(16)} (${e.bEndpointAddress & 0x80 ? 'IN' : 'OUT'})`
-          ).join(', ');
-          console.log(`[USB] Interface ${i}: class=${ifcDesc.bInterfaceClass}, eps=[${eps}]`);
-        } catch (e) {
-          console.log(`[USB] Interface ${i}: error reading - ${e.message}`);
-        }
+      for (const ifc of interfaces) {
+        const ifcDesc = ifc.descriptor;
+        const eps = ifcDesc.endpoints.map(e =>
+          `EP 0x${e.bEndpointAddress.toString(16)} (${e.bEndpointAddress & 0x80 ? 'IN' : 'OUT'})`
+        ).join(', ');
+        console.log(`[USB] Interface bInterfaceNumber=${ifcDesc.bInterfaceNumber}: class=${ifcDesc.bInterfaceClass}, eps=[${eps}]`);
       }
 
       // Try to claim an interface that has EP1 OUT (0x01) and EP1 IN (0x81)
       let claimed = false;
-      for (let i = 0; i < numInterfaces; i++) {
+      for (const ifc of interfaces) {
+        const ifcDesc = ifc.descriptor;
+        const ifNum = ifcDesc.bInterfaceNumber;
+        const hasEpOut = ifcDesc.endpoints.some(e => e.bEndpointAddress === EP_OUT_ADDR);
+        const hasEpIn = ifcDesc.endpoints.some(e => e.bEndpointAddress === EP_IN_ADDR);
+
+        console.log(`[USB] Interface ${ifNum}: hasEpOut=${hasEpOut}, hasEpIn=${hasEpIn}`);
+
+        if (!hasEpOut || !hasEpIn) {
+          console.log(`[USB] Interface ${ifNum}: missing required endpoints, skipping`);
+          continue;
+        }
+
         try {
-          const ifc = this.device.interface(i);
-          const ifcDesc = ifc.descriptor;
-          const hasEpOut = ifcDesc.endpoints.some(e => e.bEndpointAddress === EP_OUT_ADDR);
-          const hasEpIn = ifcDesc.endpoints.some(e => e.bEndpointAddress === EP_IN_ADDR);
-
-          if (!hasEpOut || !hasEpIn) {
-            console.log(`[USB] Interface ${i}: missing required endpoints, skipping`);
-            continue;
+          if (ifc.isKernelDriverActive()) {
+            ifc.detachKernelDriver();
           }
+        } catch (detachErr) {
+          console.log(`[USB] Interface ${ifNum}: could not detach kernel driver: ${detachErr.message}`);
+        }
 
-          // Found the right interface — detach kernel driver if needed and claim
-          try {
-            if (ifc.isKernelDriverActive()) {
-              ifc.detachKernelDriver();
-            }
-          } catch (detachErr) {
-            console.log(`[USB] Interface ${i}: could not detach kernel driver: ${detachErr.message}`);
-          }
-
+        try {
           ifc.claim();
           this.iface = ifc;
-          console.log(`[USB] Successfully claimed interface ${i}`);
+          console.log(`[USB] Successfully claimed interface ${ifNum}`);
           claimed = true;
           break;
         } catch (claimErr) {
-          console.log(`[USB] Interface ${i}: claim failed: ${claimErr.message}`);
+          console.log(`[USB] Interface ${ifNum}: claim failed: ${claimErr.message}`);
         }
       }
 
       if (!claimed) {
-        // Fallback: try interface 1 directly (the original DLL interface)
-        try {
-          const ifc = this.device.interface(1);
-          try {
-            if (ifc.isKernelDriverActive()) {
-              ifc.detachKernelDriver();
-            }
-          } catch (e) { /* ignore */ }
-          ifc.claim();
-          this.iface = ifc;
-          claimed = true;
-          console.log('[USB] Claimed interface 1 (fallback)');
-        } catch (fallbackErr) {
-          // Last resort: try interface 0
-          try {
-            const ifc = this.device.interface(0);
-            try {
-              if (ifc.isKernelDriverActive()) {
-                ifc.detachKernelDriver();
-              }
-            } catch (e) { /* ignore */ }
-            ifc.claim();
-            this.iface = ifc;
-            claimed = true;
-            console.log('[USB] Claimed interface 0 (last resort)');
-          } catch (lastErr) {
-            this.device.close();
-            this.device = null;
-            return {
-              success: false,
-              error: `Cannot claim any USB interface. Tried all ${numInterfaces} interface(s). ` +
-                `Make sure WinUSB driver is installed via Zadig for the correct interface. ` +
-                `Last error: ${lastErr.message}`
-            };
-          }
-        }
+        this.device.close();
+        this.device = null;
+        return {
+          success: false,
+          error: `Cannot claim any USB interface with EP1 OUT/IN. ` +
+            `Device has ${interfaces.length} interface(s). ` +
+            `Make sure WinUSB driver is installed via Zadig.`
+        };
       }
 
       // Get endpoints
