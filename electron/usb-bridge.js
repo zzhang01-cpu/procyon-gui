@@ -234,6 +234,8 @@ class ProcyonUsbBridge {
 
       // Try to claim an interface that has EP1 OUT (0x01) and EP1 IN (0x81)
       let claimed = false;
+
+      // Method 1: iterate device.interfaces array
       for (const ifc of interfaces) {
         const ifcDesc = ifc.descriptor;
         const ifNum = ifcDesc.bInterfaceNumber;
@@ -248,7 +250,6 @@ class ProcyonUsbBridge {
         }
 
         // On Windows + WinUSB, detachKernelDriver is not needed/supported.
-        // Only try it on non-Windows platforms.
         const isWindows = process.platform === 'win32';
         if (!isWindows) {
           try {
@@ -263,7 +264,7 @@ class ProcyonUsbBridge {
         try {
           ifc.claim();
           this.iface = ifc;
-          console.log(`[USB] Successfully claimed interface ${ifNum}`);
+          console.log(`[USB] Successfully claimed interface ${ifNum} (via interfaces array)`);
           claimed = true;
           break;
         } catch (claimErr) {
@@ -271,14 +272,76 @@ class ProcyonUsbBridge {
         }
       }
 
+      // Method 2: try device.interface(n) by bInterfaceNumber (fallback)
       if (!claimed) {
+        console.log(`[USB] Method 1 failed, trying device.interface(bInterfaceNumber)...`);
+        for (let bIfNum = 0; bIfNum <= 2; bIfNum++) {
+          try {
+            const ifc2 = this.device.interface(bIfNum);
+            console.log(`[USB] device.interface(${bIfNum}) found`);
+            ifc2.claim();
+            this.iface = ifc2;
+            console.log(`[USB] Successfully claimed interface ${bIfNum} (via device.interface())`);
+            claimed = true;
+            break;
+          } catch (err2) {
+            console.log(`[USB] device.interface(${bIfNum}): ${err2.message}`);
+          }
+        }
+      }
+
+      // Method 3: On Windows, try resetting the device and retrying
+      if (!claimed && process.platform === 'win32') {
+        console.log(`[USB] Method 2 failed, trying device reset + retry...`);
+        try {
+          this.device.reset();
+          console.log(`[USB] Device reset successful, retrying claim...');
+          // Small delay after reset
+          await new Promise(r => setTimeout(r, 500));
+          // Re-open after reset
+          try {
+            this.device.open();
+          } catch (openErr) {
+            console.log(`[USB] Re-open after reset: ${openErr.message}`);
+          }
+
+          for (const ifc of interfaces) {
+            const ifNum = ifc.descriptor.bInterfaceNumber;
+            try {
+              ifc.claim();
+              this.iface = ifc;
+              console.log(`[USB] Successfully claimed interface ${ifNum} after reset`);
+              claimed = true;
+              break;
+            } catch (claimErr3) {
+              console.log(`[USB] Interface ${ifNum}: claim after reset failed: ${claimErr3.message}`);
+            }
+          }
+        } catch (resetErr) {
+          console.log(`[USB] Device reset failed: ${resetErr.message}`);
+        }
+      }
+
+      if (!claimed) {
+        // Diagnostic: check Windows device driver info
+        console.log(`[USB] DIAGNOSTIC: All claim attempts failed.`);
+        console.log(`[USB] Device descriptor:`, JSON.stringify(this.device.deviceDescriptor));
+        for (let i = 0; i < interfaces.length; i++) {
+          console.log(`[USB] Interface[${i}] descriptor:`, JSON.stringify(interfaces[i].descriptor));
+        }
+        console.log(`[USB] TROUBLESHOOT: Open Zadig -> Options -> List All Devices`);
+        console.log(`[USB] Check if the Procyon device appears with WinUSB driver.`);
+        console.log(`[USB] If it shows as 'libusb-win32' or 'CDC', replace it with WinUSB.`);
+        console.log(`[USB] For composite devices, you may need to replace the driver for EACH interface.`);
+
         this.device.close();
         this.device = null;
         return {
           success: false,
-          error: `Cannot claim any USB interface with EP1 OUT/IN. ` +
-            `Device has ${interfaces.length} interface(s). ` +
-            `Make sure WinUSB driver is installed via Zadig.`
+          error: `Cannot claim USB interface. ` +
+            `Please check: (1) Open Zadig, (2) Options -> List All Devices, ` +
+            `(3) Find ALL entries for the Procyon device, (4) Replace ALL drivers to WinUSB. ` +
+            `See PowerShell log for details.`
         };
       }
 

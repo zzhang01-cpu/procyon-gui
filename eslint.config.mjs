@@ -47,6 +47,8 @@ const eslintConfig = defineConfig([
     'dist/**',
     // Script files (CommonJS):
     'scripts/**/*.js',
+    // Electron main process (CommonJS):
+    'electron/**/*.js',
   ]),
 ]);
 
