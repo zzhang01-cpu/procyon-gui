@@ -14,6 +14,7 @@
  */
 
 var usb = require('usb');
+usb.setDebugLevel(4);  // Maximum libusb debug output for troubleshooting
 
 // -- Device constants --
 var PROCYON_VID = 0x2269;
