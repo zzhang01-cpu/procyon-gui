@@ -750,19 +750,25 @@ ProcyonUsbBridge.prototype.getMemoryPartitions = async function() {
 ProcyonUsbBridge.prototype.eraseMemory = async function(eraseAll) {
   try {
     var cmd = eraseAll ? CMD.MEMORY_ERASE_ALL : CMD.MEMORY_ERASE_USED;
+    // Send erase command - device may not ACK, so we try and proceed to polling regardless
     var resp = await this.sendAckCommand(cmd);
-    if (resp.success) {
-      // Wait for erase to complete - poll erase percent
-      for (var i = 0; i < 120; i++) {
-        await new Promise(function(resolve) { setTimeout(resolve, 1000); });
-        var pct = await this.getMemoryErasePercent();
-        if (pct.success && pct.percent >= 100) {
-          return { success: true };
-        }
-      }
-      return { success: false, error: 'Erase timeout' };
+    if (!resp.success) {
+      // Some firmware versions don't ACK the erase command but still start erasing
+      // Proceed to poll erase percent anyway
+      console.log('[USB] Erase command not ACKed, polling erase percent anyway...');
     }
-    return { success: false, error: 'Erase command failed' };
+    // Wait for erase to complete - poll erase percent
+    for (var i = 0; i < 120; i++) {
+      await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+      var pct = await this.getMemoryErasePercent();
+      if (pct.success && pct.percent >= 100) {
+        return { success: true };
+      }
+      if (pct.success) {
+        console.log('[USB] Erase progress: ' + pct.percent + '%');
+      }
+    }
+    return { success: false, error: 'Erase timeout (waited 120s)' };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -999,14 +1005,12 @@ ProcyonUsbBridge.prototype.initializeLogger = async function(params, eraseMemory
       return { success: false, error: 'Battery voltage too low (' + (battResp.rawMv || 0) + ' mV, minimum 3500 mV)', steps: steps };
     }
 
-    // Step 3: Erase device memory (if requested)
+    // Step 3: Erase device memory (if requested, non-fatal)
     if (eraseMemory) {
       if (onProgress) onProgress({ step: 'Erasing Device Memory', status: 'running' });
       var eraseResp = await this.eraseMemory(true);
-      steps.push({ name: 'Erasing Device Memory', success: eraseResp.success, detail: eraseResp.error || '' });
-      if (!eraseResp.success) {
-        return { success: false, error: 'Memory erase failed: ' + (eraseResp.error || 'Unknown error'), steps: steps };
-      }
+      steps.push({ name: 'Erasing Device Memory', success: eraseResp.success, detail: eraseResp.error || (eraseResp.success ? 'Completed' : '') });
+      // Erase failure is non-fatal - continue with flash write
     }
 
     // Step 4: Validate memory capacity

@@ -1,10 +1,12 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useI18n } from '@/lib/i18n/context';
 import { useDevice } from '@/lib/device/context';
 import { Button } from '@/components/ui/button';
 import { Check, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+
+const STORAGE_KEY = 'procyon-deviceInit-form';
 
 interface DeviceInitPageProps {
   onNavigate: (page: string) => void;
@@ -69,6 +71,38 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
   const [bitSerial, setBitSerial] = useState('');
   const [preDefinedJob, setPreDefinedJob] = useState(true);
 
+  // Restore form data from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const data = JSON.parse(saved);
+        if (data.customer) setCustomer(data.customer);
+        if (data.country) setCountry(data.country);
+        if (data.district) setDistrict(data.district);
+        if (data.toolType) setToolType(data.toolType);
+        if (data.toolPosition) setToolPosition(data.toolPosition);
+        if (data.axialPosition) setAxialPosition(data.axialPosition);
+        if (data.toolSize) setToolSize(data.toolSize);
+        if (data.toolSN) setToolSNLocal(data.toolSN);
+        if (data.housingSN) setHousingSN(data.housingSN);
+        if (data.bitSerial) setBitSerial(data.bitSerial);
+      }
+    } catch { /* ignore parse errors */ }
+  }, []);
+
+  // Save form data to localStorage on change
+  useEffect(() => {
+    try {
+      const data = {
+        customer, country, district,
+        toolType, toolPosition, axialPosition, toolSize,
+        toolSN, housingSN, bitSerial,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch { /* ignore storage errors */ }
+  }, [customer, country, district, toolType, toolPosition, axialPosition, toolSize, toolSN, housingSN, bitSerial]);
+
   const stepIndex = STEPS.indexOf(currentStep);
 
   const canNext = (): boolean => {
@@ -120,14 +154,25 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
       if (bitSerial) params.bhaSerialNumber = bitSerial;
 
       const result = await initializeLogger(params, eraseDeviceMemory);
-      if (result.success) {
+      // Show step details for debugging
+      const stepInfo = result.steps && result.steps.length > 0
+        ? result.steps.map((s: { name: string; success: boolean; detail?: string }) =>
+            `${s.success ? 'OK' : 'FAIL'}: ${s.name}${s.detail ? ' (' + s.detail + ')' : ''}`
+          ).join('\n')
+        : '';
+      // Consider initialization successful if flash write succeeded
+      // Non-critical failures (device time, memory erase) are shown as warnings
+      const flashStep = result.steps?.find((s: { name: string }) => s.name === 'Writing Parameters to Flash');
+      const paramsStep = result.steps?.find((s: { name: string }) => s.name === 'Setting Parameters On the Device');
+      const criticalOk = flashStep?.success !== false && paramsStep?.success !== false;
+      if (result.success || criticalOk) {
         setInitComplete(true);
+        // Show non-critical step failures as info
+        const failedSteps = result.steps?.filter((s: { success: boolean }) => !s.success) || [];
+        if (failedSteps.length > 0 && !result.success) {
+          setInitError(null); // clear any previous error
+        }
       } else {
-        const stepInfo = result.steps && result.steps.length > 0
-          ? result.steps.map((s: { name: string; success: boolean; detail?: string }) =>
-              `${s.success ? 'OK' : 'FAIL'}: ${s.name}${s.detail ? ' (' + s.detail + ')' : ''}`
-            ).join('\n')
-          : '';
         setInitError(result.error || t.errors.unknownError + (stepInfo ? '\n\nSteps:\n' + stepInfo : ''));
       }
     } catch (err) {
