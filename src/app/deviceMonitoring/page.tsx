@@ -57,13 +57,18 @@ export default function DeviceMonitoringPage() {
     setLaunching(true);
     try {
       const totalSec = launchHours * 3600 + launchMinutes * 60 + launchSeconds;
+      console.log('[DeviceMonitoring] Launching device with delay:', totalSec, 'seconds');
       const result = await launchDevice(totalSec);
+      console.log('[DeviceMonitoring] Launch result:', JSON.stringify(result));
       if (!result.success) {
-        alert(dm.launchFailed + (result.error || t.errors.unknownError));
+        const errDetail = result.error || result.detail || t.errors.unknownError;
+        alert(dm.launchFailed + errDetail);
       } else {
-        alert(dm.launchSuccess.replace('{0}', String(totalSec)));
+        const detail = result.detail || String(totalSec) + 's';
+        alert(dm.launchSuccess.replace('{0}', detail));
       }
     } catch (err: unknown) {
+      console.error('[DeviceMonitoring] Launch error:', err);
       alert(dm.launchError + (err instanceof Error ? err.message : String(err)));
     } finally {
       setLaunching(false);
