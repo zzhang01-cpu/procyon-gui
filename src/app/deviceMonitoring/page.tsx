@@ -57,7 +57,7 @@ export default function DeviceMonitoringPage() {
     setLaunching(true);
     try {
       const totalSec = launchHours * 3600 + launchMinutes * 60 + launchSeconds;
-      const result = await launchDevice();
+      const result = await launchDevice(totalSec);
       if (!result.success) {
         alert(dm.launchFailed + (result.error || t.errors.unknownError));
       } else {
