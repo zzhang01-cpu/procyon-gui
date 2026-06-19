@@ -155,7 +155,7 @@ function AppLayoutContent() {
           {currentPage === 'downloadUpload' && <DownloadPage onNavigate={setCurrentPage} />}
           {currentPage === 'workHistory' && <WorkHistoryPage onNavigate={setCurrentPage} />}
           {currentPage === 'configStatus' && <ConfigStatusPage onNavigate={setCurrentPage} />}
-          {currentPage === 'deviceMonitoring' && <DeviceMonitoringPage onNavigate={setCurrentPage} />}
+          {currentPage === 'deviceMonitoring' && <DeviceMonitoringPage />}
           {currentPage === 'settings' && <SettingsPage />}
         </main>
       </div>

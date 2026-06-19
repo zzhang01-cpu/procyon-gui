@@ -270,6 +270,9 @@ export interface TranslationType {
     temperature: string;
     deviceState: string;
     eraseMemoryData: string;
+    confirmErase: string;
+    eraseProgress: string;
+    eraseComplete: string;
     notInitiated: string;
     running: string;
     successViewDetails: string;

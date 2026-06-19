@@ -200,8 +200,8 @@ function initUsbBridge() {
   });
 
   // Launch device (delayed start)
-  ipcMain.handle('device:launch-device', async () => {
-    return bridge.launchDevice();
+  ipcMain.handle('device:launch-device', async (_event, delaySeconds) => {
+    return bridge.launchDevice(delaySeconds);
   });
 
   // Erase memory with progress
@@ -230,6 +230,11 @@ function initUsbBridge() {
   // Get all parameters at once
   ipcMain.handle('device:get-all-parameters', async () => {
     return bridge.getAllParameters();
+  });
+
+  // Get real-time sensor data
+  ipcMain.handle('device:get-sensor-data', async () => {
+    return bridge.getSensorData();
   });
 }
 

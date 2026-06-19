@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useDevice } from '@/lib/device/context';
-import { useTranslation } from '@/lib/i18n/context';
+import { useI18n } from '@/lib/i18n/context';
 
 export default function DeviceMonitoringPage() {
   const { connected, deviceInfo, testResults, selfTestProgress, runSelfTest, launchDevice, eraseMemory, getSensorData } = useDevice();
-  const { t } = useTranslation();
+  const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<'realtime' | 'system'>('realtime');
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
   const [eraseBeforeTest, setEraseBeforeTest] = useState(true);
@@ -323,13 +323,13 @@ export default function DeviceMonitoringPage() {
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">Test Progress</h3>
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">{selfTestProgress.currentTest}</span>
-                    <span className="text-gray-400">{selfTestProgress.completedTests}/{selfTestProgress.totalTests}</span>
+                    <span className="text-gray-600">{selfTestProgress.testName}</span>
+                    <span className="text-gray-400">{selfTestProgress.current}/{selfTestProgress.total}</span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2">
                     <div
                       className="bg-blue-600 rounded-full h-2 transition-all"
-                      style={{ width: `${(selfTestProgress.completedTests / selfTestProgress.totalTests) * 100}%` }}
+                      style={{ width: `${(selfTestProgress.current / selfTestProgress.total) * 100}%` }}
                     />
                   </div>
                 </div>

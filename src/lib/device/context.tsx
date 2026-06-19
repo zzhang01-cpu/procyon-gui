@@ -39,6 +39,7 @@ import {
   isElectron,
   exportToCSV,
   getAllParameters,
+  getSensorData as usbGetSensorData,
   type DeviceInfo,
   type OneSecondRecord,
   type SelfTestResult,
@@ -120,10 +121,13 @@ interface DeviceContextType {
   runSelfTest: (tests?: string[]) => Promise<void>;
 
   // Launch device (delayed start)
-  launchDevice: () => Promise<{ success: boolean; detail?: string; error?: string }>;
+  launchDevice: (delaySeconds?: number) => Promise<{ success: boolean; detail?: string; error?: string }>;
 
   // Erase memory
   eraseMemory: (eraseAll: boolean) => Promise<{ success: boolean; error?: string }>;
+
+  // Real-time sensor data
+  getSensorData: () => Promise<Record<string, string>>;
 }
 
 const DeviceContext = createContext<DeviceContextType | null>(null);
@@ -377,9 +381,9 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const handleLaunchDevice = useCallback(async () => {
+  const handleLaunchDevice = useCallback(async (delaySeconds?: number) => {
     try {
-      return await usbLaunchDevice();
+      return await usbLaunchDevice(delaySeconds);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Launch device failed';
       setError(errMsg);
@@ -472,6 +476,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     runSelfTest: handleRunSelfTest,
     launchDevice: handleLaunchDevice,
     eraseMemory: handleEraseMemory,
+    getSensorData: usbGetSensorData,
   };
 
   return (

@@ -988,9 +988,16 @@ ProcyonUsbBridge.prototype.initializeLogger = async function(params, eraseMemory
   }
 };
 
-ProcyonUsbBridge.prototype.launchDevice = async function() {
+ProcyonUsbBridge.prototype.launchDevice = async function(delaySeconds) {
   try {
-    var resp = await this.sendGetCommand(CMD.LAUNCH_DEVICE);
+    var delay = delaySeconds || 0;
+    var data = [];
+    // Send delay as 4-byte little-endian uint32
+    data.push(delay & 0xFF);
+    data.push((delay >> 8) & 0xFF);
+    data.push((delay >> 16) & 0xFF);
+    data.push((delay >> 24) & 0xFF);
+    var resp = await this.sendSetCommand(CMD.LAUNCH_DEVICE, data);
     return { success: resp.success, detail: resp.success ? 'Device launched successfully' : 'Launch failed' };
   } catch (error) {
     return { success: false, error: error.message };
@@ -1053,6 +1060,52 @@ ProcyonUsbBridge.prototype.getAllParameters = async function() {
     return { success: true, params: params };
   } catch (error) {
     return { success: false, error: error.message, params: {} };
+  }
+};
+
+ProcyonUsbBridge.prototype.getSensorData = async function() {
+  try {
+    var sensorData = {};
+    var sensorGetters = {
+      temperatureCM: { fn: this.getTemperature.bind(this), unit: 'C' },
+      batteryVoltage: { fn: this.getBatteryVoltage.bind(this), unit: 'mV' },
+      highShockCM: { fn: this.sendGetCommand.bind(this, CMD.GET_HIGHSHOCK_DATA_CM), unit: 'g' },
+      lowShockCM: { fn: this.sendGetCommand.bind(this, CMD.GET_LOWSHOCK_DATA_CM), unit: 'g' },
+      lowShockEM: { fn: this.sendGetCommand.bind(this, CMD.GET_LOWSHOCK_DATA_EM), unit: 'g' },
+      pressureCM: { fn: this.sendGetCommand.bind(this, CMD.GET_PRESSURE_DATA_CM), unit: 'psi' },
+      pressureEM: { fn: this.sendGetCommand.bind(this, CMD.GET_PRESSURE_DATA_EM), unit: 'psi' },
+      pressureSelfTest: { fn: this.sendGetCommand.bind(this, CMD.GET_PRESSURRE_SELF_TEST_DATA), unit: '' },
+      rotationalCM: { fn: this.sendGetCommand.bind(this, CMD.GET_ROTATIONAL_DATA_CM), unit: 'rpm' },
+      rotationalEM: { fn: this.sendGetCommand.bind(this, CMD.GET_ROTATIONAL_DATA_EM), unit: 'rpm' },
+      temperatureEM: { fn: this.sendGetCommand.bind(this, CMD.GET_TEMPERATURE_DATA_EM), unit: 'C' },
+      limpetEM: { fn: this.sendGetCommand.bind(this, CMD.GET_LIMPET_DATA_EM), unit: '' },
+      flashTest: { fn: this.sendGetCommand.bind(this, CMD.GET_FLASH_TEST_DATA), unit: '' },
+    };
+    var keys = Object.keys(sensorGetters);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var getter = sensorGetters[key];
+      try {
+        var result = await getter.fn();
+        if (result && result.success) {
+          var val = result.value !== undefined ? result.value : '';
+          if (typeof val === 'number') {
+            val = val.toFixed(3);
+          }
+          sensorData[key] = String(val);
+          sensorData[key + '_unit'] = getter.unit;
+        } else {
+          sensorData[key] = 'N/A';
+          sensorData[key + '_unit'] = getter.unit;
+        }
+      } catch (e) {
+        sensorData[key] = 'N/A';
+        sensorData[key + '_unit'] = getter.unit;
+      }
+    }
+    return sensorData;
+  } catch (error) {
+    return { error: error.message };
   }
 };
 

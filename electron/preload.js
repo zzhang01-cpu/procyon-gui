@@ -54,7 +54,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   runSelfTest: (tests) => ipcRenderer.invoke('device:run-self-test', tests),
 
   // Launch device (delayed start)
-  launchDevice: () => ipcRenderer.invoke('device:launch-device'),
+  launchDevice: (delaySeconds) => ipcRenderer.invoke('device:launch-device', delaySeconds),
 
   // Sensor readings
   getBatteryVoltage: () => ipcRenderer.invoke('device:get-battery-voltage'),
@@ -65,6 +65,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Get all parameters at once
   getAllParameters: () => ipcRenderer.invoke('device:get-all-parameters'),
+
+  // Get real-time sensor data
+  getSensorData: () => ipcRenderer.invoke('device:get-sensor-data'),
 
   // Progress event listeners
   onDownloadProgress: (callback) => {

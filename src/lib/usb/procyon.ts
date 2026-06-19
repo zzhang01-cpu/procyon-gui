@@ -592,12 +592,12 @@ export function onInitProgress(callback: (progress: InitProgress) => void): () =
 /**
  * Launch device (delayed start)
  */
-export async function launchDevice(): Promise<{ success: boolean; detail?: string; error?: string }> {
+export async function launchDevice(delaySeconds?: number): Promise<{ success: boolean; detail?: string; error?: string }> {
   const api = getAPI();
   if (!api) {
     throw new Error('Not running in Electron environment');
   }
-  return api.launchDevice() as Promise<{ success: boolean; detail?: string; error?: string }>;
+  return api.launchDevice(delaySeconds) as Promise<{ success: boolean; detail?: string; error?: string }>;
 }
 
 /**
@@ -631,6 +631,17 @@ export async function getAllParameters(): Promise<{ success: boolean; params?: R
     throw new Error('Not running in Electron environment');
   }
   return api.getAllParameters() as Promise<{ success: boolean; params?: Record<string, string>; error?: string }>;
+}
+
+/**
+ * Get real-time sensor data from device
+ */
+export async function getSensorData(): Promise<Record<string, string>> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.getSensorData() as Promise<Record<string, string>>;
 }
 
 /**
