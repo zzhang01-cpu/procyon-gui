@@ -125,7 +125,7 @@ export default function SettingsPage() {
               </TabsTrigger>
               <TabsTrigger value="usb">
                 <Usb className="w-4 h-4 mr-2" />
-                USB
+                {t.settings.usb}
               </TabsTrigger>
             </TabsList>
 
@@ -258,9 +258,7 @@ export default function SettingsPage() {
 
               <div className="p-4 bg-blue-50 rounded-lg">
                 <p className="text-sm text-blue-700">
-                  {language === 'zh'
-                    ? '提示：USB 配置修改后需要重新连接设备才能生效。'
-                    : 'Note: USB configuration changes require device reconnection to take effect.'}
+                  {t.settings.usbConfigNote}
                 </p>
               </div>
             </TabsContent>

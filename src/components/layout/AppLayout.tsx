@@ -62,7 +62,7 @@ function AppLayoutContent() {
             </div>
             <div>
               <h1 className="text-sm font-semibold">Procyon CM</h1>
-              <p className="text-xs text-slate-400">Unified Data Logger</p>
+              <p className="text-xs text-slate-400">{t.leftPanel.unifiedDataLogger}</p>
             </div>
           </div>
         </div>
@@ -99,15 +99,15 @@ function AppLayoutContent() {
           <div className="px-4 py-3 border-b border-slate-700 space-y-1.5 text-xs">
             <div className="flex items-center gap-2 text-slate-300">
               <Cpu className="w-3.5 h-3.5 text-slate-500" />
-              <span>Firmware: {deviceInfo.firmwareVersion || 'N/A'}</span>
+              <span>{t.leftPanel.firmwareVersion}: {deviceInfo.firmwareVersion || 'N/A'}</span>
             </div>
             <div className="flex items-center gap-2 text-slate-300">
               <HardDrive className="w-3.5 h-3.5 text-slate-500" />
-              <span>Tool SN: {deviceInfo.toolSN || 'N/A'}</span>
+              <span>{t.leftPanel.toolSN}: {deviceInfo.toolSN || 'N/A'}</span>
             </div>
             <div className="flex items-center gap-2 text-slate-300">
               <Battery className="w-3.5 h-3.5 text-slate-500" />
-              <span>Battery: {batteryVoltage} mV</span>
+              <span>{t.leftPanel.battery}: {batteryVoltage} mV</span>
             </div>
           </div>
         )}
@@ -152,7 +152,7 @@ function AppLayoutContent() {
         <main className="flex-1 overflow-auto">
           {currentPage === 'home' && <HomePage onNavigate={setCurrentPage} />}
           {currentPage === 'deviceInit' && <DeviceInitPage onNavigate={setCurrentPage} />}
-          {currentPage === 'downloadUpload' && <DownloadPage onNavigate={setCurrentPage} />}
+          {currentPage === 'downloadUpload' && <DownloadPage />}
           {currentPage === 'workHistory' && <WorkHistoryPage onNavigate={setCurrentPage} />}
           {currentPage === 'configStatus' && <ConfigStatusPage />}
           {currentPage === 'deviceMonitoring' && <DeviceMonitoringPage />}

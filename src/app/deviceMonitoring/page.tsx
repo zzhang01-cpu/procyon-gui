@@ -22,6 +22,8 @@ export default function DeviceMonitoringPage() {
   const [sensorPolling, setSensorPolling] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
 
+  const dm = t.deviceMonitoring;
+
   // Poll sensor data for real-time monitoring
   useEffect(() => {
     if (activeTab !== 'realtime' || !connected || !sensorPolling) return;
@@ -54,15 +56,15 @@ export default function DeviceMonitoringPage() {
     if (!connected) return;
     setLaunching(true);
     try {
-      const totalSeconds = launchHours * 3600 + launchMinutes * 60 + launchSeconds;
+      const totalSec = launchHours * 3600 + launchMinutes * 60 + launchSeconds;
       const result = await launchDevice();
       if (!result.success) {
-        alert('Launch failed: ' + (result.error || 'Unknown error'));
+        alert(dm.launchFailed + (result.error || t.errors.unknownError));
       } else {
-        alert('Device launched! Will start in ' + totalSeconds + ' seconds.');
+        alert(dm.launchSuccess.replace('{0}', String(totalSec)));
       }
     } catch (err: unknown) {
-      alert('Launch error: ' + (err instanceof Error ? err.message : String(err)));
+      alert(dm.launchError + (err instanceof Error ? err.message : String(err)));
     } finally {
       setLaunching(false);
     }
@@ -70,40 +72,40 @@ export default function DeviceMonitoringPage() {
 
   const handleErase = async () => {
     if (!connected) return;
-    if (!confirm(t.deviceMonitoring?.confirmErase || 'Are you sure you want to erase all device memory?')) return;
+    if (!confirm(dm.confirmErase)) return;
     setErasing(true);
     try {
       const result = await eraseMemory(true);
       if (!result.success) {
-        alert('Erase failed: ' + (result.error || 'Unknown error'));
+        alert(dm.eraseFailed + (result.error || t.errors.unknownError));
       } else {
-        alert('Memory erased successfully.');
+        alert(dm.eraseSuccess);
       }
     } catch (err: unknown) {
-      alert('Erase error: ' + (err instanceof Error ? err.message : String(err)));
+      alert(dm.eraseError + (err instanceof Error ? err.message : String(err)));
     } finally {
       setErasing(false);
     }
   };
 
   const selfTestItems = [
-    { id: 'tool_sn_set', name: 'Tool SN Set' },
-    { id: 'rtc', name: 'RTC' },
-    { id: 'battery_voltage', name: 'Battery Voltage' },
-    { id: 'ambient_temp', name: 'Ambient Temperature' },
-    { id: 'set_reset_test_mode', name: 'Set Reset Test Mode' },
-    { id: 'gyro', name: 'Gyro' },
-    { id: 'accel_gyro', name: 'Accel + Gyro' },
-    { id: 'accel', name: 'Accel' },
-    { id: 'rotation', name: 'Rotation' },
-    { id: 'high_shock', name: 'High Shock' },
-    { id: 'erasing_memory', name: 'Erasing Memory' },
-    { id: 'set_reset_test_mode_2', name: 'Set Reset Test Mode (End)' },
+    { id: 'tool_sn_set', name: dm.testItemToolSN },
+    { id: 'rtc', name: dm.testItemRTC },
+    { id: 'battery_voltage', name: dm.testItemBattery },
+    { id: 'ambient_temp', name: dm.testItemAmbientTemp },
+    { id: 'set_reset_test_mode', name: dm.testItemSetResetMode },
+    { id: 'gyro', name: dm.testItemGyro },
+    { id: 'accel_gyro', name: dm.testItemAccelGyro },
+    { id: 'accel', name: dm.testItemAccel },
+    { id: 'rotation', name: dm.testItemRotation },
+    { id: 'high_shock', name: dm.testItemHighShock },
+    { id: 'erasing_memory', name: dm.testItemErasingMemory },
+    { id: 'set_reset_test_mode_2', name: dm.testItemSetResetMode2 },
   ];
 
   const toggleTest = (id: string) => {
     setSelectedTests(prev =>
-      prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
     );
   };
 
@@ -118,14 +120,14 @@ export default function DeviceMonitoringPage() {
   const handleSelfTest = async () => {
     if (!connected) return;
     if (selectedTests.length === 0) {
-      alert('Please select at least one test item.');
+      alert(dm.selectAtLeastOne);
       return;
     }
     setShowTestResults(true);
     try {
       await runSelfTest(selectedTests);
     } catch (err: unknown) {
-      alert('Self-test error: ' + (err instanceof Error ? err.message : String(err)));
+      alert(dm.selfTestError + (err instanceof Error ? err.message : String(err)));
     }
   };
 
@@ -134,17 +136,17 @@ export default function DeviceMonitoringPage() {
 
   // Sensor display cards for real-time tab
   const sensorCards = [
-    { key: 'temperatureCM', label: 'Temperature (CM)', unit: '\u00B0C', icon: '\uD83C\uDF21\uFE0F' },
-    { key: 'batteryVoltage', label: 'Battery Voltage', unit: 'mV', icon: '\uD83D\uDD0B' },
-    { key: 'highShockCM', label: 'High Shock', unit: 'g', icon: '\u26A1' },
-    { key: 'lowShockCM', label: 'Low Shock (CM)', unit: 'g', icon: '\uD83D\uDCA8' },
-    { key: 'lowShockEM', label: 'Low Shock (EM)', unit: 'g', icon: '\uD83D\uDCA8' },
-    { key: 'pressureCM', label: 'Pressure (CM)', unit: 'psi', icon: '\uD83D\uDCCA' },
-    { key: 'pressureEM', label: 'Pressure (EM)', unit: 'psi', icon: '\uD83D\uDCCA' },
-    { key: 'rotationalCM', label: 'Rotation (CM)', unit: 'rpm', icon: '\uD83D\uDD04' },
-    { key: 'rotationalEM', label: 'Rotation (EM)', unit: 'rpm', icon: '\uD83D\uDD04' },
-    { key: 'temperatureEM', label: 'Temperature (EM)', unit: '\u00B0C', icon: '\uD83C\uDF21\uFE0F' },
-    { key: 'limpetEM', label: 'Limpet (EM)', unit: '', icon: '\uD83D\uDCE1' },
+    { key: 'temperatureCM', label: dm.temperatureCM, unit: '\u00B0C', icon: '\uD83C\uDF21\uFE0F' },
+    { key: 'batteryVoltage', label: dm.batteryVoltage, unit: 'mV', icon: '\uD83D\uDD0B' },
+    { key: 'highShockCM', label: dm.highShock, unit: 'g', icon: '\u26A1' },
+    { key: 'lowShockCM', label: dm.lowShockCM, unit: 'g', icon: '\uD83D\uDCA8' },
+    { key: 'lowShockEM', label: dm.lowShockEM, unit: 'g', icon: '\uD83D\uDCA8' },
+    { key: 'pressureCM', label: dm.pressureCM, unit: 'psi', icon: '\uD83D\uDCCA' },
+    { key: 'pressureEM', label: dm.pressureEM, unit: 'psi', icon: '\uD83D\uDCCA' },
+    { key: 'rotationalCM', label: dm.rotationCM, unit: 'rpm', icon: '\uD83D\uDD04' },
+    { key: 'rotationalEM', label: dm.rotationEM, unit: 'rpm', icon: '\uD83D\uDD04' },
+    { key: 'temperatureEM', label: dm.temperatureEM, unit: '\u00B0C', icon: '\uD83C\uDF21\uFE0F' },
+    { key: 'limpetEM', label: dm.limpetEM, unit: '', icon: '\uD83D\uDCE1' },
   ];
 
   return (
@@ -159,7 +161,7 @@ export default function DeviceMonitoringPage() {
           }`}
           onClick={() => setActiveTab('realtime')}
         >
-          Real-Time
+          {dm.realtime}
         </button>
         <button
           className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
@@ -169,7 +171,7 @@ export default function DeviceMonitoringPage() {
           }`}
           onClick={() => setActiveTab('system')}
         >
-          System
+          {dm.system}
         </button>
       </div>
 
@@ -214,27 +216,27 @@ export default function DeviceMonitoringPage() {
                     : 'bg-blue-500 text-white hover:bg-blue-600'
                 } ${!connected ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
-                {sensorPolling ? 'Stop Monitoring' : 'Start Monitoring'}
+                {sensorPolling ? dm.stopMonitoring : dm.startMonitoring}
               </button>
               <span className="text-sm text-gray-500">
-                {!connected ? 'Device not connected' : sensorPolling ? 'Polling every 3 seconds...' : 'Click to start real-time monitoring'}
+                {!connected ? dm.deviceNotConnected : sensorPolling ? dm.pollingEvery : dm.clickToStart}
               </span>
               {pollError && (
                 <span className="text-sm text-red-500">
-                  Error: {pollError}
+                  {t.common.error}: {pollError}
                 </span>
               )}
             </div>
 
             {/* Launch Device Section */}
             <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">Launch Device (Delayed Start)</h3>
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">{dm.launchDevice}</h3>
               <p className="text-xs text-gray-500 mb-4">
-                Configure the device to start recording after a specified delay. The device will automatically begin logging data when the timer expires.
+                {dm.launchDeviceDesc}
               </p>
               <div className="flex items-center gap-3 mb-4">
                 <div className="flex items-center gap-2">
-                  <label className="text-sm text-gray-600">Hours:</label>
+                  <label className="text-sm text-gray-600">{dm.hours}:</label>
                   <input
                     type="number"
                     min={0}
@@ -245,7 +247,7 @@ export default function DeviceMonitoringPage() {
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <label className="text-sm text-gray-600">Minutes:</label>
+                  <label className="text-sm text-gray-600">{dm.minutes}:</label>
                   <input
                     type="number"
                     min={0}
@@ -256,7 +258,7 @@ export default function DeviceMonitoringPage() {
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <label className="text-sm text-gray-600">Seconds:</label>
+                  <label className="text-sm text-gray-600">{dm.seconds}:</label>
                   <input
                     type="number"
                     min={0}
@@ -267,7 +269,7 @@ export default function DeviceMonitoringPage() {
                   />
                 </div>
                 <div className="ml-4 text-sm text-gray-500">
-                  Total: {launchHours * 3600 + launchMinutes * 60 + launchSeconds} seconds
+                  {dm.totalSeconds}: {launchHours * 3600 + launchMinutes * 60 + launchSeconds} {dm.seconds.toLowerCase()}
                 </div>
               </div>
               <button
@@ -275,22 +277,22 @@ export default function DeviceMonitoringPage() {
                 disabled={!connected || launching || (launchHours === 0 && launchMinutes === 0 && launchSeconds === 0)}
                 className="px-6 py-2 bg-green-600 text-white rounded-md text-sm font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {launching ? 'Launching...' : 'Launch Device'}
+                {launching ? dm.launching : dm.launchDevice}
               </button>
             </div>
 
             {/* Erase Memory */}
             <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">Erase Memory</h3>
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">{dm.eraseMemory}</h3>
               <p className="text-xs text-gray-500 mb-4">
-                Erase all data stored on the device memory. This action cannot be undone.
+                {dm.eraseMemoryDesc}
               </p>
               <button
                 onClick={handleErase}
                 disabled={!connected || erasing}
                 className="px-6 py-2 bg-red-600 text-white rounded-md text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {erasing ? 'Erasing...' : 'Erase All Memory'}
+                {erasing ? dm.erasing : dm.eraseAllMemory}
               </button>
             </div>
           </div>
@@ -301,11 +303,11 @@ export default function DeviceMonitoringPage() {
             {/* Test Selection */}
             <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Self-Test Items</h3>
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">{dm.selfTestItems}</h3>
                 <div className="flex gap-2">
-                  <button onClick={selectAllTests} className="text-xs text-blue-600 hover:text-blue-800">Select All</button>
+                  <button onClick={selectAllTests} className="text-xs text-blue-600 hover:text-blue-800">{dm.selectAll}</button>
                   <span className="text-gray-300">|</span>
-                  <button onClick={deselectAllTests} className="text-xs text-gray-500 hover:text-gray-700">Deselect All</button>
+                  <button onClick={deselectAllTests} className="text-xs text-gray-500 hover:text-gray-700">{dm.deselectAll}</button>
                 </div>
               </div>
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
@@ -329,14 +331,14 @@ export default function DeviceMonitoringPage() {
                     onChange={e => setEraseBeforeTest(e.target.checked)}
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   />
-                  <span className="text-sm text-gray-600">Erase Memory Before Test</span>
+                  <span className="text-sm text-gray-600">{dm.eraseMemoryBeforeTest}</span>
                 </label>
                 <button
                   onClick={handleSelfTest}
                   disabled={!connected || selectedTests.length === 0}
                   className="ml-auto px-6 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  Single Start
+                  {dm.singleStart}
                 </button>
               </div>
             </div>
@@ -344,7 +346,7 @@ export default function DeviceMonitoringPage() {
             {/* Self-Test Progress */}
             {selfTestProgress && (
               <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">Test Progress</h3>
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">{dm.testProgress}</h3>
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600">{selfTestProgress.testName}</span>
@@ -364,10 +366,10 @@ export default function DeviceMonitoringPage() {
             {showTestResults && testResults.length > 0 && (
               <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Test Results</h3>
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">{dm.testResults}</h3>
                   <div className="flex items-center gap-3 text-sm">
-                    <span className="text-green-600">{passedCount} Passed</span>
-                    <span className="text-red-600">{failedCount} Failed</span>
+                    <span className="text-green-600">{passedCount} {dm.passed}</span>
+                    <span className="text-red-600">{failedCount} {dm.failed}</span>
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -400,12 +402,12 @@ export default function DeviceMonitoringPage() {
       {showToolSNDialog && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-96 shadow-xl">
-            <h3 className="text-lg font-semibold mb-4">Set Tool SN</h3>
+            <h3 className="text-lg font-semibold mb-4">{dm.setToolSN}</h3>
             <input
               type="text"
               value={toolSN}
               onChange={e => setToolSN(e.target.value)}
-              placeholder="Enter Tool Serial Number"
+              placeholder={dm.enterToolSN}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm mb-4"
             />
             <div className="flex justify-end gap-2">
@@ -413,13 +415,13 @@ export default function DeviceMonitoringPage() {
                 onClick={() => setShowToolSNDialog(false)}
                 className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
               >
-                Cancel
+                {t.common.cancel}
               </button>
               <button
                 onClick={() => setShowToolSNDialog(false)}
                 className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700"
               >
-                Confirm
+                {t.common.confirm}
               </button>
             </div>
           </div>

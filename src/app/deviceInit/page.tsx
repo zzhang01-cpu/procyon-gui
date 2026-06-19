@@ -45,6 +45,7 @@ const TOOL_SIZE_OPTIONS = ['3.5', '4.5', '6.625', '7.625', '8.5', '9.5', '12.25'
 export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
   const { t } = useI18n();
   const { connected, deviceInfo, initializeLogger, initProgress } = useDevice();
+  const di = t.deviceInit;
   const [currentStep, setCurrentStep] = useState<Step>('jobInformation');
   const [initializing, setInitializing] = useState(false);
   const [initComplete, setInitComplete] = useState(false);
@@ -99,7 +100,7 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
 
   const handleInitialize = useCallback(async () => {
     if (!connected) {
-      setInitError('Device not connected. Please connect the device first using the left panel.');
+      setInitError(di.deviceNotConnected);
       return;
     }
     setInitializing(true);
@@ -127,14 +128,14 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
               `${s.success ? 'OK' : 'FAIL'}: ${s.name}${s.detail ? ' (' + s.detail + ')' : ''}`
             ).join('\n')
           : '';
-        setInitError(result.error || 'Initialization failed' + (stepInfo ? '\n\nSteps:\n' + stepInfo : ''));
+        setInitError(result.error || t.errors.unknownError + (stepInfo ? '\n\nSteps:\n' + stepInfo : ''));
       }
     } catch (err) {
-      setInitError(err instanceof Error ? err.message : 'Initialization failed');
+      setInitError(err instanceof Error ? err.message : t.errors.unknownError);
     } finally {
       setInitializing(false);
     }
-  }, [connected, customer, country, district, toolType, toolPosition, axialPosition, toolSize, toolSN, housingSN, bitSerial, eraseDeviceMemory, initializeLogger]);
+  }, [connected, customer, country, district, toolType, toolPosition, axialPosition, toolSize, toolSN, housingSN, bitSerial, eraseDeviceMemory, initializeLogger, di, t]);
 
   if (initComplete) {
     return (
@@ -144,13 +145,13 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
             <Check className="w-8 h-8 text-green-600" />
           </div>
           <h2 className="text-xl font-semibold text-slate-800 mb-2">
-            {t.deviceInit.initializationComplete}
+            {di.initializationComplete}
           </h2>
           <p className="text-sm text-slate-500 mb-6">
-            {t.deviceInit.initSuccessMessage}
+            {di.initSuccessMessage}
           </p>
           <Button onClick={() => onNavigate('home')} className="bg-blue-600 hover:bg-blue-700">
-            {t.deviceInit.returnHome}
+            {di.returnHome}
           </Button>
         </div>
       </div>
@@ -161,10 +162,10 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
     <div className="max-w-4xl mx-auto">
       {/* Pre-Defined Job Toggle */}
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-slate-800">{t.deviceInit.title}</h2>
+        <h2 className="text-lg font-semibold text-slate-800">{di.title}</h2>
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-500">
-            {preDefinedJob ? t.deviceInit.preDefinedJobOn : t.deviceInit.preDefinedJobOff}
+            {preDefinedJob ? di.preDefinedJobOn : di.preDefinedJobOff}
           </span>
           <button
             onClick={() => setPreDefinedJob(!preDefinedJob)}
@@ -205,7 +206,7 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
                     isActive ? 'text-blue-600 font-semibold' : isCompleted ? 'text-green-600' : 'text-slate-400'
                   }`}
                 >
-                  {t.deviceInit[step]}
+                  {di[step]}
                 </span>
               </div>
               {idx < STEPS.length - 1 && (
@@ -224,42 +225,42 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
       <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-6 mb-4">
         {currentStep === 'jobInformation' && (
           <div>
-            <h3 className="text-sm font-semibold text-slate-700 mb-4">{t.deviceInit.jobInformation}</h3>
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">{di.jobInformation}</h3>
             <div className="grid grid-cols-3 gap-4">
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Customer</label>
+                <label className="block text-xs text-slate-500 mb-1">{di.customer}</label>
                 <select
                   value={customer}
                   onChange={(e) => setCustomer(e.target.value)}
                   className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="">Select...</option>
+                  <option value="">{di.selectPlaceholder}</option>
                   {CUSTOMER_OPTIONS.map((c) => (
                     <option key={c} value={c}>{c}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Country</label>
+                <label className="block text-xs text-slate-500 mb-1">{di.country}</label>
                 <select
                   value={country}
                   onChange={(e) => setCountry(e.target.value)}
                   className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="">Select...</option>
+                  <option value="">{di.selectPlaceholder}</option>
                   {COUNTRY_OPTIONS.map((c) => (
                     <option key={c} value={c}>{c}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">District</label>
+                <label className="block text-xs text-slate-500 mb-1">{di.district}</label>
                 <select
                   value={district}
                   onChange={(e) => setDistrict(e.target.value)}
                   className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="">Select...</option>
+                  <option value="">{di.selectPlaceholder}</option>
                   {DISTRICT_OPTIONS.map((d) => (
                     <option key={d} value={d}>{d}</option>
                   ))}
@@ -271,10 +272,10 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
 
         {currentStep === 'toolInformation' && (
           <div>
-            <h3 className="text-sm font-semibold text-slate-700 mb-4">{t.deviceInit.toolInformation}</h3>
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">{di.toolInformation}</h3>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Tool Type</label>
+                <label className="block text-xs text-slate-500 mb-1">{di.toolType}</label>
                 <select
                   value={toolType}
                   onChange={(e) => setToolType(e.target.value)}
@@ -286,7 +287,7 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Tool Position</label>
+                <label className="block text-xs text-slate-500 mb-1">{di.toolPosition}</label>
                 <select
                   value={toolPosition}
                   onChange={(e) => setToolPosition(e.target.value)}
@@ -298,7 +299,7 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Axial Position</label>
+                <label className="block text-xs text-slate-500 mb-1">{di.axialPosition}</label>
                 <select
                   value={axialPosition}
                   onChange={(e) => setAxialPosition(e.target.value)}
@@ -310,7 +311,7 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Tool Size</label>
+                <label className="block text-xs text-slate-500 mb-1">{di.toolSize}</label>
                 <select
                   value={toolSize}
                   onChange={(e) => setToolSize(e.target.value)}
@@ -327,51 +328,51 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
 
         {currentStep === 'deviceInformation' && (
           <div>
-            <h3 className="text-sm font-semibold text-slate-700 mb-4">{t.deviceInit.deviceInformation}</h3>
+            <h3 className="text-sm font-semibold text-slate-700 mb-4">{di.deviceInformation}</h3>
             <div className="space-y-4">
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs text-slate-500 mb-1">Bit Serial</label>
+                  <label className="block text-xs text-slate-500 mb-1">{di.bitSerial}</label>
                   <input
                     type="text"
                     value={bitSerial}
                     onChange={(e) => setBitSerial(e.target.value)}
                     className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Enter bit serial"
+                    placeholder={di.enterBitSerial}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-500 mb-1">{t.deviceInit.housingSN}</label>
+                  <label className="block text-xs text-slate-500 mb-1">{di.housingSN}</label>
                   <input
                     type="text"
                     value={housingSN}
                     onChange={(e) => setHousingSN(e.target.value)}
                     className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Enter housing SN"
+                    placeholder={di.enterHousingSN}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-500 mb-1">{t.deviceInit.toolSN}</label>
+                  <label className="block text-xs text-slate-500 mb-1">{di.toolSN}</label>
                   <input
                     type="text"
                     value={toolSN}
                     onChange={(e) => setToolSNLocal(e.target.value)}
                     className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Enter tool SN"
+                    placeholder={di.enterToolSN}
                   />
                 </div>
               </div>
 
               {/* Summary of all steps */}
               <div className="mt-4 p-3 bg-slate-50 rounded border border-slate-200">
-                <h4 className="text-xs font-semibold text-slate-600 mb-2">{t.deviceInit.summary}</h4>
+                <h4 className="text-xs font-semibold text-slate-600 mb-2">{di.summary}</h4>
                 <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-xs text-slate-500">
-                  <span>Customer: <strong className="text-slate-700">{customer}</strong></span>
-                  <span>Country: <strong className="text-slate-700">{country}</strong></span>
-                  <span>District: <strong className="text-slate-700">{district}</strong></span>
-                  <span>Tool Type: <strong className="text-slate-700">{toolType}</strong></span>
-                  <span>Tool Size: <strong className="text-slate-700">{toolSize}</strong></span>
-                  <span>Position: <strong className="text-slate-700">{toolPosition}</strong></span>
+                  <span>{di.customer}: <strong className="text-slate-700">{customer}</strong></span>
+                  <span>{di.country}: <strong className="text-slate-700">{country}</strong></span>
+                  <span>{di.district}: <strong className="text-slate-700">{district}</strong></span>
+                  <span>{di.toolType}: <strong className="text-slate-700">{toolType}</strong></span>
+                  <span>{di.toolSize}: <strong className="text-slate-700">{toolSize}</strong></span>
+                  <span>{di.toolPosition}: <strong className="text-slate-700">{toolPosition}</strong></span>
                 </div>
               </div>
 
@@ -385,7 +386,7 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
                   className="rounded border-slate-300"
                 />
                 <label htmlFor="eraseMemory" className="text-xs text-slate-600">
-                  Erase Device Memory
+                  {di.eraseDeviceMemory}
                 </label>
               </div>
             </div>
@@ -419,7 +420,7 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
           className="flex items-center gap-1"
         >
           <ChevronLeft className="w-4 h-4" />
-          {t.deviceInit.back}
+          {di.back}
         </Button>
 
         <div className="flex gap-2">
@@ -429,7 +430,7 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
               disabled={!canNext()}
               className="bg-blue-600 hover:bg-blue-700 flex items-center gap-1"
             >
-              {t.deviceInit.next}
+              {di.next}
               <ChevronRight className="w-4 h-4" />
             </Button>
           ) : (
@@ -441,10 +442,10 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
               {initializing ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  {t.deviceInit.initializing}
+                  {di.initializing}
                 </>
               ) : (
-                t.deviceInit.initializeLogger
+                di.initializeLogger
               )}
             </Button>
           )}

@@ -8,30 +8,32 @@ import { Battery, Wifi, WifiOff, Clock } from 'lucide-react';
 export function LeftPanel() {
   const { t, language, setLanguage } = useI18n();
   const { connected, connecting, deviceInfo, connect, disconnect } = useDevice();
+  const lp = t.leftPanel;
   const [currentTime, setCurrentTime] = useState('');
 
   useEffect(() => {
     const update = () => {
       const now = new Date();
+      const locale = language === 'zh' ? 'zh-CN' : 'en-US';
       setCurrentTime(
-        now.toLocaleDateString('en-US', {
+        now.toLocaleDateString(locale, {
           month: 'numeric',
           day: 'numeric',
           year: 'numeric',
         }) +
           '  ' +
-          now.toLocaleTimeString('en-US', {
+          now.toLocaleTimeString(locale, {
             hour: 'numeric',
             minute: '2-digit',
             second: '2-digit',
-            hour12: true,
+            hour12: language === 'en',
           })
       );
     };
     update();
     const interval = setInterval(update, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [language]);
 
   const batteryVoltage = deviceInfo?.batteryVoltage || 0;
   const batteryLevel = batteryVoltage > 3600 ? 'high' : batteryVoltage > 3200 ? 'medium' : 'low';
@@ -50,16 +52,16 @@ export function LeftPanel() {
       {/* LDAP Login Information */}
       <div className="px-4 py-3 border-t border-slate-600">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-          {t.leftPanel.ldapLoginInfo}
+          {lp.ldapLoginInfo}
         </h3>
         <div className="space-y-1.5">
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-400">UserID</span>
+            <span className="text-xs text-slate-400">{lp.userId}</span>
             <span className="text-xs text-slate-200 truncate ml-2">N/A</span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-400">Access</span>
-            <span className="text-xs text-slate-200">Admin</span>
+            <span className="text-xs text-slate-400">{lp.access}</span>
+            <span className="text-xs text-slate-200">{lp.admin}</span>
           </div>
         </div>
       </div>
@@ -67,15 +69,15 @@ export function LeftPanel() {
       {/* General Connection Status */}
       <div className="px-4 py-3 border-t border-slate-600">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-          {t.leftPanel.connectionStatus}
+          {lp.connectionStatus}
         </h3>
         <div className="space-y-1.5">
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-300">{t.leftPanel.internetConnection}</span>
+            <span className="text-xs text-slate-300">{lp.internetConnection}</span>
             <span className="w-2.5 h-2.5 rounded-full bg-green-400" />
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-300">{t.leftPanel.deviceConnection}</span>
+            <span className="text-xs text-slate-300">{lp.deviceConnection}</span>
             <span
               className={`w-2.5 h-2.5 rounded-full ${
                 connected ? 'bg-green-400' : 'bg-slate-500'
@@ -91,7 +93,7 @@ export function LeftPanel() {
                 : 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
             } ${connecting ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
-            {connecting ? (t.leftPanel.connecting || 'Connecting...') : connected ? (t.leftPanel.disconnect || 'Disconnect') : (t.leftPanel.connect || 'Connect Device')}
+            {connecting ? lp.connecting : connected ? lp.disconnect : lp.connect}
           </button>
         </div>
       </div>
@@ -99,31 +101,31 @@ export function LeftPanel() {
       {/* Connected Device */}
       <div className="px-4 py-3 border-t border-slate-600">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-          {t.leftPanel.connectedDevice}
+          {lp.connectedDevice}
         </h3>
         <div className="space-y-1.5">
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-400">Device Name</span>
+            <span className="text-xs text-slate-400">{lp.deviceName}</span>
             <span className="text-xs text-slate-200">
               {connected && deviceInfo ? 'Procyon-CM' : 'N/A'}
             </span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-400">{t.leftPanel.firmwareVersion}</span>
+            <span className="text-xs text-slate-400">{lp.firmwareVersion}</span>
             <span className="text-xs text-slate-200">
               {connected && deviceInfo?.firmwareVersion ? deviceInfo.firmwareVersion : 'N/A'}
             </span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-400">Tool S/N</span>
+            <span className="text-xs text-slate-400">{lp.toolSN}</span>
             <span className="text-xs text-slate-200">
               {connected && deviceInfo?.serialNumber ? deviceInfo.serialNumber : 'N/A'}
             </span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-xs text-slate-400">{t.leftPanel.deviceState}</span>
+            <span className="text-xs text-slate-400">{lp.deviceState}</span>
             <span className="text-xs text-slate-200">
-              {connected ? t.leftPanel.idle : 'N/A'}
+              {connected ? lp.idle : 'N/A'}
             </span>
           </div>
         </div>
@@ -132,7 +134,7 @@ export function LeftPanel() {
       {/* Battery Voltage */}
       <div className="px-4 py-3 border-t border-slate-600">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-          {t.leftPanel.batteryVoltage}
+          {lp.batteryVoltage}
         </h3>
         <div className="flex items-center gap-2">
           <Battery className={`w-5 h-5 ${connected ? batteryColor : 'text-slate-500'}`} />
