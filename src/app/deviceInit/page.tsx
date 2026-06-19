@@ -14,33 +14,26 @@ const STEPS = ['jobInformation', 'toolInformation', 'deviceInformation'] as cons
 type Step = (typeof STEPS)[number];
 
 const CUSTOMER_OPTIONS = [
-  'EOG RES',
-  'CHEVRON',
-  'EXXONMOBIL',
-  'CONOCOPHILLIPS',
-  'OCCIDENTAL',
-  'BP',
-  'SHELL',
-  'TOTAL',
+  'CNOOC',
+  'CNPC',
+  'COSL',
   'OTHER',
 ];
 
 const COUNTRY_OPTIONS = [
-  'TRINIDAD AND TOBAGO',
-  'UNITED STATES',
-  'CANADA',
-  'MEXICO',
-  'COLOMBIA',
-  'ARGENTINA',
-  'BRAZIL',
+  'China',
   'OTHER',
 ];
 
 const DISTRICT_OPTIONS = [
-  'TRINIDAD DISTRICT',
-  'HOUSTON DISTRICT',
-  'PERMIAN DISTRICT',
-  'GULF COAST DISTRICT',
+  'Tianjin',
+  'Shanghai',
+  'Huizhou',
+  'Hainan',
+  'Zhanjiang',
+  'Xinjiang',
+  'Chengdu',
+  'Daqing',
   'OTHER',
 ];
 
