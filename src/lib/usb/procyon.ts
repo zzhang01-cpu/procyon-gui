@@ -49,6 +49,19 @@ export interface OneSecondRecord {
   shockLowRmsZ: number;
   shockMinX: number;
   shockMaxX: number;
+  shockAvgX: number;
+  shockRmsX: number;
+  shockMinY: number;
+  shockMaxY: number;
+  shockAvgY: number;
+  shockRmsY: number;
+  shockMinZ: number;
+  shockMaxZ: number;
+  shockAvgZ: number;
+  shockRmsZ: number;
+  shockLateralMax: number;
+  shockLateralRms: number;
+  pressure: number;
 }
 
 export interface SelfTestResult {
@@ -653,27 +666,35 @@ export function exportToCSV(data: OneSecondRecord[]): string {
   }
 
   const headers = [
-    'Timestamp', 'Temperature(C)', 'BatteryV(V)',
+    'Timestamp', 'Temperature(C)', 'BatteryV(mV)',
     'RpmMinX', 'RpmMaxX', 'RpmAvgX', 'RpmRmsX',
     'RpmMinY', 'RpmMaxY', 'RpmAvgY', 'RpmRmsY',
     'RpmMinZ', 'RpmMaxZ', 'RpmAvgZ', 'RpmRmsZ',
     'ShockLowMinX(g)', 'ShockLowMaxX(g)', 'ShockLowAvgX(g)', 'ShockLowRmsX(g)',
     'ShockLowMinY(g)', 'ShockLowMaxY(g)', 'ShockLowAvgY(g)', 'ShockLowRmsY(g)',
     'ShockLowMinZ(g)', 'ShockLowMaxZ(g)', 'ShockLowAvgZ(g)', 'ShockLowRmsZ(g)',
-    'ShockMinX(g)', 'ShockMaxX(g)',
+    'ShockMinX(g)', 'ShockMaxX(g)', 'ShockAvgX(g)', 'ShockRmsX(g)',
+    'ShockMinY(g)', 'ShockMaxY(g)', 'ShockAvgY(g)', 'ShockRmsY(g)',
+    'ShockMinZ(g)', 'ShockMaxZ(g)', 'ShockAvgZ(g)', 'ShockRmsZ(g)',
+    'ShockLateralMax(g)', 'ShockLateralRms(g)',
+    'Pressure(psi)',
   ];
 
   const rows = data.map((r) => [
     r.timestamp,
     r.temperature.toFixed(2),
-    r.batteryVoltage.toFixed(3),
+    r.batteryVoltage.toFixed(0),
     r.rpmMinX.toFixed(2), r.rpmMaxX.toFixed(2), r.rpmAvgX.toFixed(2), r.rpmRmsX.toFixed(2),
     r.rpmMinY.toFixed(2), r.rpmMaxY.toFixed(2), r.rpmAvgY.toFixed(2), r.rpmRmsY.toFixed(2),
     r.rpmMinZ.toFixed(2), r.rpmMaxZ.toFixed(2), r.rpmAvgZ.toFixed(2), r.rpmRmsZ.toFixed(2),
     r.shockLowMinX.toFixed(4), r.shockLowMaxX.toFixed(4), r.shockLowAvgX.toFixed(4), r.shockLowRmsX.toFixed(4),
     r.shockLowMinY.toFixed(4), r.shockLowMaxY.toFixed(4), r.shockLowAvgY.toFixed(4), r.shockLowRmsY.toFixed(4),
     r.shockLowMinZ.toFixed(4), r.shockLowMaxZ.toFixed(4), r.shockLowAvgZ.toFixed(4), r.shockLowRmsZ.toFixed(4),
-    r.shockMinX.toFixed(3), r.shockMaxX.toFixed(3),
+    r.shockMinX.toFixed(3), r.shockMaxX.toFixed(3), r.shockAvgX.toFixed(3), r.shockRmsX.toFixed(3),
+    r.shockMinY.toFixed(3), r.shockMaxY.toFixed(3), r.shockAvgY.toFixed(3), r.shockRmsY.toFixed(3),
+    r.shockMinZ.toFixed(3), r.shockMaxZ.toFixed(3), r.shockAvgZ.toFixed(3), r.shockRmsZ.toFixed(3),
+    r.shockLateralMax.toFixed(3), r.shockLateralRms.toFixed(3),
+    r.pressure.toFixed(2),
   ].join(','));
 
   return [headers.join(','), ...rows].join('\n');

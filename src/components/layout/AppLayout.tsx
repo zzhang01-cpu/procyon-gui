@@ -153,7 +153,7 @@ function AppLayoutContent() {
           {currentPage === 'home' && <HomePage onNavigate={setCurrentPage} />}
           {currentPage === 'deviceInit' && <DeviceInitPage onNavigate={setCurrentPage} />}
           {currentPage === 'downloadUpload' && <DownloadPage />}
-          {currentPage === 'workHistory' && <WorkHistoryPage onNavigate={setCurrentPage} />}
+          {currentPage === 'workHistory' && <WorkHistoryPage />}
           {currentPage === 'configStatus' && <ConfigStatusPage />}
           {currentPage === 'deviceMonitoring' && <DeviceMonitoringPage />}
           {currentPage === 'settings' && <SettingsPage />}

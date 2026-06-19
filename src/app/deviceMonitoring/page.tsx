@@ -1,434 +1,523 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useDevice } from '@/lib/device/context';
 import { useI18n } from '@/lib/i18n/context';
 
-export default function DeviceMonitoringPage() {
-  const { connected, deviceInfo, testResults, selfTestProgress, runSelfTest, launchDevice, eraseMemory, getSensorData } = useDevice();
-  const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<'realtime' | 'system'>('realtime');
-  const [selectedTests, setSelectedTests] = useState<string[]>([]);
-  const [eraseBeforeTest, setEraseBeforeTest] = useState(true);
-  const [toolSN, setToolSN] = useState('');
-  const [showToolSNDialog, setShowToolSNDialog] = useState(false);
-  const [showTestResults, setShowTestResults] = useState(false);
-  const [launchHours, setLaunchHours] = useState(0);
-  const [launchMinutes, setLaunchMinutes] = useState(30);
-  const [launchSeconds, setLaunchSeconds] = useState(0);
-  const [launching, setLaunching] = useState(false);
-  const [erasing, setErasing] = useState(false);
-  const [sensorData, setSensorData] = useState<Record<string, string>>({});
-  const [sensorPolling, setSensorPolling] = useState(false);
-  const [pollError, setPollError] = useState<string | null>(null);
+interface SensorRecord {
+  timestamp: string;
+  temperature: string;
+  batteryVoltage: string;
+  highShock: string;
+  lowShock: string;
+  pressure: string;
+  rotational: string;
+}
 
+export default function DeviceMonitoringPage() {
+  const {
+    connected,
+    getSensorData,
+    launchDevice,
+    eraseMemory,
+    runSelfTest,
+    deviceInfo,
+    testResults,
+    testSummary,
+    selfTestProgress,
+  } = useDevice();
+  const { t } = useI18n();
   const dm = t.deviceMonitoring;
 
-  // Poll sensor data for real-time monitoring
+  const [activeTab, setActiveTab] = useState<'realtime' | 'system'>('realtime');
+  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [sensorRecords, setSensorRecords] = useState<SensorRecord[]>([]);
+  const [pollError, setPollError] = useState<string | null>(null);
+  const [visibleSensors, setVisibleSensors] = useState({
+    temperature: true,
+    battery: true,
+    highShock: true,
+    lowShock: true,
+    pressure: true,
+    rotational: true,
+  });
+
+  // Launch device
+  const [launchHours, setLaunchHours] = useState(0);
+  const [launchMinutes, setLaunchMinutes] = useState(30);
+  const [isLaunching, setIsLaunching] = useState(false);
+
+  // Erase memory
+  const [eraseAll, setEraseAll] = useState(true);
+  const [isErasing, setIsErasing] = useState(false);
+  const [erasePercent, setErasePercent] = useState(0);
+
+  // Self test
+  const [isTesting, setIsTesting] = useState(false);
+  const [selectedTests, setSelectedTests] = useState<string[]>([]);
+  const pollingRef = useRef(false);
+
+  // Self test items
+  const selfTestItems = [
+    'Temperature', 'Battery', 'HighShock', 'LowShock',
+    'Pressure', 'Rotational', 'Limpet', 'Flash',
+  ];
+
+  // Real-time polling
   useEffect(() => {
-    if (activeTab !== 'realtime' || !connected || !sensorPolling) return;
-    let cancelled = false;
+    if (!isMonitoring || !connected) {
+      pollingRef.current = false;
+      return;
+    }
+    pollingRef.current = true;
+
     const poll = async () => {
-      while (!cancelled && sensorPolling) {
-        try {
-          const data = await getSensorData();
-          if (!cancelled) {
-            if (data && data.error) {
-              setPollError(data.error);
-            } else {
-              setPollError(null);
-              setSensorData(data || {});
-            }
-          }
-        } catch (err) {
-          if (!cancelled) {
-            setPollError(err instanceof Error ? err.message : 'Polling failed');
-          }
+      if (!pollingRef.current) return;
+      try {
+        const data = await getSensorData();
+        if (!pollingRef.current) return;
+        if (data && !data.error) {
+          const now = new Date();
+          const ts = now.getFullYear() + '-' +
+            String(now.getMonth() + 1).padStart(2, '0') + '-' +
+            String(now.getDate()).padStart(2, '0') + ' ' +
+            String(now.getHours()).padStart(2, '0') + ':' +
+            String(now.getMinutes()).padStart(2, '0') + ':' +
+            String(now.getSeconds()).padStart(2, '0');
+          setSensorRecords(prev => {
+            const newRecord: SensorRecord = {
+              timestamp: ts,
+              temperature: data.temperatureCM || '--',
+              batteryVoltage: data.batteryVoltage || '--',
+              highShock: data.highShockCM || '--',
+              lowShock: data.lowShockCM || '--',
+              pressure: data.pressureCM || '--',
+              rotational: data.rotationalCM || '--',
+            };
+            const updated = [newRecord, ...prev];
+            return updated.slice(0, 200);
+          });
+          setPollError(null);
+        } else {
+          const errMsg = (data as Record<string, string>).error || String(dm.pollFailed || '轮询失败');
+          setPollError(errMsg);
         }
-        await new Promise(r => setTimeout(r, 3000));
+      } catch {
+        setPollError(String(dm.pollFailed || '轮询失败'));
+      }
+      if (pollingRef.current) {
+        setTimeout(poll, 2000);
       }
     };
+
     poll();
-    return () => { cancelled = true; };
-  }, [activeTab, connected, sensorPolling, getSensorData]);
+    return () => { pollingRef.current = false; };
+  }, [isMonitoring, connected, getSensorData, dm.pollFailed]);
 
   const handleLaunch = async () => {
-    if (!connected) return;
-    setLaunching(true);
+    if (!connected) {
+      alert(String(t.errors?.deviceNotFound || '设备未连接'));
+      return;
+    }
+    setIsLaunching(true);
     try {
-      const totalSec = launchHours * 3600 + launchMinutes * 60 + launchSeconds;
-      console.log('[DeviceMonitoring] Launching device with delay:', totalSec, 'seconds');
+      const totalSec = launchHours * 3600 + launchMinutes * 60;
       const result = await launchDevice(totalSec);
-      console.log('[DeviceMonitoring] Launch result:', JSON.stringify(result));
-      if (!result.success) {
-        const errDetail = result.error || result.detail || t.errors.unknownError;
-        alert(dm.launchFailed + errDetail);
+      if (result?.success) {
+        alert(String(dm.launchSuccess || '启动命令已发送') + (result.detail ? ': ' + result.detail : ''));
       } else {
-        const detail = result.detail || String(totalSec) + 's';
-        alert(dm.launchSuccess.replace('{0}', detail));
+        alert(String(dm.launchFailed || '启动失败') + ': ' + (result?.error || result?.detail || String(t.errors?.unknownError || '未知错误')));
       }
-    } catch (err: unknown) {
-      console.error('[DeviceMonitoring] Launch error:', err);
-      alert(dm.launchError + (err instanceof Error ? err.message : String(err)));
+    } catch (err) {
+      alert(String(dm.launchFailed || '启动失败') + ': ' + (err instanceof Error ? err.message : String(t.errors?.unknownError || '未知错误')));
     } finally {
-      setLaunching(false);
+      setIsLaunching(false);
     }
   };
 
   const handleErase = async () => {
     if (!connected) return;
-    if (!confirm(dm.confirmErase)) return;
-    setErasing(true);
+    setIsErasing(true);
+    setErasePercent(0);
     try {
-      const result = await eraseMemory(true);
-      if (!result.success) {
-        alert(dm.eraseFailed + (result.error || t.errors.unknownError));
+      const result = await eraseMemory(eraseAll);
+      if (result?.success) {
+        setErasePercent(100);
       } else {
-        alert(dm.eraseSuccess);
+        alert(String(dm.eraseFailed || '擦除失败') + ': ' + (result?.error || ''));
       }
-    } catch (err: unknown) {
-      alert(dm.eraseError + (err instanceof Error ? err.message : String(err)));
+    } catch (err) {
+      alert(String(dm.eraseFailed || '擦除失败') + ': ' + (err instanceof Error ? err.message : ''));
     } finally {
-      setErasing(false);
+      setIsErasing(false);
     }
   };
 
-  const selfTestItems = [
-    { id: 'tool_sn_set', name: dm.testItemToolSN },
-    { id: 'rtc', name: dm.testItemRTC },
-    { id: 'battery_voltage', name: dm.testItemBattery },
-    { id: 'ambient_temp', name: dm.testItemAmbientTemp },
-    { id: 'set_reset_test_mode', name: dm.testItemSetResetMode },
-    { id: 'gyro', name: dm.testItemGyro },
-    { id: 'accel_gyro', name: dm.testItemAccelGyro },
-    { id: 'accel', name: dm.testItemAccel },
-    { id: 'rotation', name: dm.testItemRotation },
-    { id: 'high_shock', name: dm.testItemHighShock },
-    { id: 'erasing_memory', name: dm.testItemErasingMemory },
-    { id: 'set_reset_test_mode_2', name: dm.testItemSetResetMode2 },
-  ];
-
-  const toggleTest = (id: string) => {
+  const toggleTest = (test: string) => {
     setSelectedTests(prev =>
-      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+      prev.includes(test) ? prev.filter(t => t !== test) : [...prev, test]
     );
-  };
-
-  const selectAllTests = () => {
-    setSelectedTests(selfTestItems.map(item => item.id));
-  };
-
-  const deselectAllTests = () => {
-    setSelectedTests([]);
   };
 
   const handleSelfTest = async () => {
     if (!connected) return;
-    if (selectedTests.length === 0) {
-      alert(dm.selectAtLeastOne);
-      return;
-    }
-    setShowTestResults(true);
+    setIsTesting(true);
     try {
-      await runSelfTest(selectedTests);
-    } catch (err: unknown) {
-      alert(dm.selfTestError + (err instanceof Error ? err.message : String(err)));
+      await runSelfTest(selectedTests.length > 0 ? selectedTests : undefined);
+    } catch {
+      // handled by context
+    } finally {
+      setIsTesting(false);
     }
   };
 
-  const passedCount = testResults.filter(r => r.pass).length;
-  const failedCount = testResults.filter(r => !r.pass).length;
+  const toggleSensor = (key: keyof typeof visibleSensors) => {
+    setVisibleSensors(prev => ({ ...prev, [key]: !prev[key] }));
+  };
 
-  // Sensor display cards for real-time tab
-  const sensorCards = [
-    { key: 'temperatureCM', label: dm.temperatureCM, unit: '\u00B0C', icon: '\uD83C\uDF21\uFE0F' },
-    { key: 'batteryVoltage', label: dm.batteryVoltage, unit: 'mV', icon: '\uD83D\uDD0B' },
-    { key: 'highShockCM', label: dm.highShock, unit: 'g', icon: '\u26A1' },
-    { key: 'lowShockCM', label: dm.lowShockCM, unit: 'g', icon: '\uD83D\uDCA8' },
-    { key: 'lowShockEM', label: dm.lowShockEM, unit: 'g', icon: '\uD83D\uDCA8' },
-    { key: 'pressureCM', label: dm.pressureCM, unit: 'psi', icon: '\uD83D\uDCCA' },
-    { key: 'pressureEM', label: dm.pressureEM, unit: 'psi', icon: '\uD83D\uDCCA' },
-    { key: 'rotationalCM', label: dm.rotationCM, unit: 'rpm', icon: '\uD83D\uDD04' },
-    { key: 'rotationalEM', label: dm.rotationEM, unit: 'rpm', icon: '\uD83D\uDD04' },
-    { key: 'temperatureEM', label: dm.temperatureEM, unit: '\u00B0C', icon: '\uD83C\uDF21\uFE0F' },
-    { key: 'limpetEM', label: dm.limpetEM, unit: '', icon: '\uD83D\uDCE1' },
-  ];
+  const exportCSV = () => {
+    if (sensorRecords.length === 0) return;
+    const headers = ['Timestamp', 'Temperature (C)', 'Battery (mV)', 'HighShock (g)', 'LowShock (g)', 'Pressure (psi)', 'Rotational (rpm)'];
+    const rows = sensorRecords.map(r =>
+      [r.timestamp, r.temperature, r.batteryVoltage, r.highShock, r.lowShock, r.pressure, r.rotational].join(',')
+    );
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'monitoring_data.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Get battery from deviceInfo
+  const batteryMv = deviceInfo?.batteryVoltage;
 
   return (
     <div className="h-full flex flex-col">
       {/* Tab Header */}
-      <div className="flex border-b border-gray-200 bg-white px-4">
+      <div className="flex border-b border-gray-200 mb-4">
         <button
-          className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+          className={`px-6 py-2 text-sm font-medium border-b-2 transition-colors ${
             activeTab === 'realtime'
               ? 'border-blue-500 text-blue-600'
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
           onClick={() => setActiveTab('realtime')}
         >
-          {dm.realtime}
+          {dm.realtimeTitle || '实时监控'}
         </button>
         <button
-          className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+          className={`px-6 py-2 text-sm font-medium border-b-2 transition-colors ${
             activeTab === 'system'
               ? 'border-blue-500 text-blue-600'
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
           onClick={() => setActiveTab('system')}
         >
-          {dm.system}
+          {dm.systemTitle || '系统测试'}
         </button>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-auto p-6">
-        {activeTab === 'realtime' && (
-          <div className="space-y-6">
-            {/* Sensor Data Grid */}
-            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-              {sensorCards.map(card => (
-                <div key={card.key} className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-lg">{card.icon}</span>
-                    <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">{card.label}</span>
-                  </div>
-                  <div className="text-2xl font-bold text-gray-900">
-                    {sensorData[card.key] || '--'}
-                  </div>
-                  {card.unit && (
-                    <div className="text-xs text-gray-400 mt-1">{card.unit}</div>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            {/* Polling Control */}
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => {
-                  if (sensorPolling) {
-                    setSensorPolling(false);
-                    setSensorData({});
-                    setPollError(null);
-                  } else {
-                    setSensorPolling(true);
-                  }
-                }}
-                disabled={!connected}
-                className={`px-6 py-2 rounded-md text-sm font-medium transition-colors ${
-                  sensorPolling
-                    ? 'bg-red-500 text-white hover:bg-red-600'
-                    : 'bg-blue-500 text-white hover:bg-blue-600'
-                } ${!connected ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                {sensorPolling ? dm.stopMonitoring : dm.startMonitoring}
-              </button>
-              <span className="text-sm text-gray-500">
-                {!connected ? dm.deviceNotConnected : sensorPolling ? dm.pollingEvery : dm.clickToStart}
+      {/* Real-Time Tab */}
+      {activeTab === 'realtime' && (
+        <div className="flex-1 flex gap-4 overflow-hidden">
+          {/* Left: Sensor Data Table */}
+          <div className="flex-1 flex flex-col min-w-0">
+            {/* Monitoring Controls */}
+            <div className="flex items-center gap-3 mb-3">
+              {!isMonitoring ? (
+                <button
+                  onClick={() => { setIsMonitoring(true); setPollError(null); }}
+                  disabled={!connected}
+                  className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {dm.startMonitoring || '开始监控'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => { setIsMonitoring(false); setPollError(null); }}
+                  className="px-4 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700"
+                >
+                  {dm.stopMonitoring || '停止监控'}
+                </button>
+              )}
+              <span className="text-xs text-gray-500">
+                {isMonitoring ? (dm.pollingEvery || '每2秒轮询...') : ''}
               </span>
+              {sensorRecords.length > 0 && (
+                <button
+                  onClick={exportCSV}
+                  className="ml-auto px-3 py-1.5 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                >
+                  {dm.exportCSV || '导出CSV'}
+                </button>
+              )}
               {pollError && (
-                <span className="text-sm text-red-500">
-                  {t.common.error}: {pollError}
-                </span>
+                <span className="text-xs text-red-500 ml-2">{pollError}</span>
               )}
             </div>
 
-            {/* Launch Device Section */}
-            <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">{dm.launchDevice}</h3>
-              <p className="text-xs text-gray-500 mb-4">
-                {dm.launchDeviceDesc}
-              </p>
-              <div className="flex items-center gap-3 mb-4">
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-gray-600">{dm.hours}:</label>
+            {/* Data Table */}
+            <div className="flex-1 overflow-auto border border-gray-200 rounded-lg">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 sticky top-0">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{dm.timestamp || '时间'}</th>
+                    {visibleSensors.temperature && (
+                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.temperature || '温度'} (°C)</th>
+                    )}
+                    {visibleSensors.battery && (
+                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.batteryVoltage || '电池'} (mV)</th>
+                    )}
+                    {visibleSensors.highShock && (
+                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.highShock || '高冲击'} (g)</th>
+                    )}
+                    {visibleSensors.lowShock && (
+                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.lowShockCM || '低冲击'} (g)</th>
+                    )}
+                    {visibleSensors.pressure && (
+                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.pressureCM || '压力'} (psi)</th>
+                    )}
+                    {visibleSensors.rotational && (
+                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.rotational || '旋转'} (rpm)</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {sensorRecords.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-8 text-center text-gray-400">
+                        {isMonitoring
+                          ? (dm.waitingData || '等待数据...')
+                          : (dm.clickStart || '点击"开始监控"获取实时数据')}
+                      </td>
+                    </tr>
+                  ) : (
+                    sensorRecords.map((record, idx) => (
+                      <tr key={idx} className={idx === 0 ? 'bg-blue-50' : ''}>
+                        <td className="px-3 py-1.5 text-gray-700 whitespace-nowrap font-mono">{record.timestamp}</td>
+                        {visibleSensors.temperature && (
+                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.temperature}</td>
+                        )}
+                        {visibleSensors.battery && (
+                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.batteryVoltage}</td>
+                        )}
+                        {visibleSensors.highShock && (
+                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.highShock}</td>
+                        )}
+                        {visibleSensors.lowShock && (
+                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.lowShock}</td>
+                        )}
+                        {visibleSensors.pressure && (
+                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.pressure}</td>
+                        )}
+                        {visibleSensors.rotational && (
+                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.rotational}</td>
+                        )}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Sensor Visibility Toggles */}
+            <div className="flex flex-wrap gap-3 mt-3 pt-3 border-t border-gray-100">
+              {(Object.keys(visibleSensors) as Array<keyof typeof visibleSensors>).map(key => {
+                const labelMap: Record<string, string> = {
+                  temperature: dm.temperature || '温度',
+                  battery: dm.batteryVoltage || '电池',
+                  highShock: dm.highShockLabel || '高冲击',
+                  lowShock: dm.lowShockLabel || '低冲击',
+                  pressure: dm.pressureLabel || '压力',
+                  rotational: dm.rotational || '旋转',
+                };
+                return (
+                  <label key={key} className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={visibleSensors[key]}
+                      onChange={() => toggleSensor(key)}
+                      className="rounded border-gray-300"
+                    />
+                    {labelMap[key] || key}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Right: Quick Actions */}
+          <div className="w-72 flex flex-col gap-4 flex-shrink-0">
+            {/* Current Device Info Card */}
+            <div className="bg-white border border-gray-200 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">{dm.deviceStatus || '设备状态'}</h3>
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">{dm.batteryVoltage || '电池电压'}</span>
+                  <span className="font-mono font-medium">{batteryMv ? batteryMv + ' mV' : '--'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">{dm.temperature || '温度'}</span>
+                  <span className="font-mono font-medium">{deviceInfo?.temperature ? deviceInfo.temperature + ' °C' : '--'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">{dm.firmware || '固件版本'}</span>
+                  <span className="font-mono font-medium">{deviceInfo?.firmwareVersion || '--'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">{dm.toolSN || '工具SN'}</span>
+                  <span className="font-mono font-medium">{deviceInfo?.toolSN || '--'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Launch Device Card */}
+            <div className="bg-white border border-gray-200 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">{dm.launchDevice || '延时启动设备'}</h3>
+              <div className="flex gap-2 mb-3">
+                <div className="flex-1">
+                  <label className="text-xs text-gray-500">{dm.hours || '小时'}</label>
                   <input
                     type="number"
                     min={0}
                     max={23}
                     value={launchHours}
-                    onChange={e => setLaunchHours(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="w-16 px-2 py-1 border border-gray-300 rounded text-sm text-center"
+                    onChange={e => setLaunchHours(Number(e.target.value))}
+                    className="w-full mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
                   />
                 </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-gray-600">{dm.minutes}:</label>
+                <div className="flex-1">
+                  <label className="text-xs text-gray-500">{dm.minutes || '分钟'}</label>
                   <input
                     type="number"
                     min={0}
                     max={59}
                     value={launchMinutes}
-                    onChange={e => setLaunchMinutes(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="w-16 px-2 py-1 border border-gray-300 rounded text-sm text-center"
+                    onChange={e => setLaunchMinutes(Number(e.target.value))}
+                    className="w-full mt-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
                   />
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-gray-600">{dm.seconds}:</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={59}
-                    value={launchSeconds}
-                    onChange={e => setLaunchSeconds(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="w-16 px-2 py-1 border border-gray-300 rounded text-sm text-center"
-                  />
-                </div>
-                <div className="ml-4 text-sm text-gray-500">
-                  {dm.totalSeconds}: {launchHours * 3600 + launchMinutes * 60 + launchSeconds} {dm.seconds.toLowerCase()}
                 </div>
               </div>
               <button
                 onClick={handleLaunch}
-                disabled={!connected || launching || (launchHours === 0 && launchMinutes === 0 && launchSeconds === 0)}
-                className="px-6 py-2 bg-green-600 text-white rounded-md text-sm font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                disabled={isLaunching || !connected}
+                className="w-full px-3 py-2 bg-orange-500 text-white rounded text-sm font-medium hover:bg-orange-600 disabled:opacity-50"
               >
-                {launching ? dm.launching : dm.launchDevice}
+                {isLaunching ? (dm.launching || '正在启动...') : (dm.launchDevice || '启动设备')}
               </button>
             </div>
 
-            {/* Erase Memory */}
-            <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">{dm.eraseMemory}</h3>
-              <p className="text-xs text-gray-500 mb-4">
-                {dm.eraseMemoryDesc}
-              </p>
-              <button
-                onClick={handleErase}
-                disabled={!connected || erasing}
-                className="px-6 py-2 bg-red-600 text-white rounded-md text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {erasing ? dm.erasing : dm.eraseAllMemory}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'system' && (
-          <div className="space-y-6">
-            {/* Test Selection */}
-            <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">{dm.selfTestItems}</h3>
-                <div className="flex gap-2">
-                  <button onClick={selectAllTests} className="text-xs text-blue-600 hover:text-blue-800">{dm.selectAll}</button>
-                  <span className="text-gray-300">|</span>
-                  <button onClick={deselectAllTests} className="text-xs text-gray-500 hover:text-gray-700">{dm.deselectAll}</button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-                {selfTestItems.map(item => (
-                  <label key={item.id} className="flex items-center gap-2 p-2 rounded hover:bg-gray-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={selectedTests.includes(item.id)}
-                      onChange={() => toggleTest(item.id)}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-sm text-gray-700">{item.name}</span>
-                  </label>
-                ))}
-              </div>
-              <div className="mt-4 flex items-center gap-4">
-                <label className="flex items-center gap-2">
+            {/* Erase Memory Card */}
+            <div className="bg-white border border-gray-200 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">{dm.eraseMemory || '擦除内存'}</h3>
+              <div className="flex gap-3 mb-3 text-xs">
+                <label className="flex items-center gap-1 cursor-pointer">
                   <input
-                    type="checkbox"
-                    checked={eraseBeforeTest}
-                    onChange={e => setEraseBeforeTest(e.target.checked)}
-                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    type="radio"
+                    checked={eraseAll}
+                    onChange={() => setEraseAll(true)}
                   />
-                  <span className="text-sm text-gray-600">{dm.eraseMemoryBeforeTest}</span>
+                  {dm.eraseAll || '全部擦除'}
                 </label>
-                <button
-                  onClick={handleSelfTest}
-                  disabled={!connected || selectedTests.length === 0}
-                  className="ml-auto px-6 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {dm.singleStart}
-                </button>
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={!eraseAll}
+                    onChange={() => setEraseAll(false)}
+                  />
+                  {dm.eraseUsed || '擦除已用'}
+                </label>
               </div>
-            </div>
-
-            {/* Self-Test Progress */}
-            {selfTestProgress && (
-              <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">{dm.testProgress}</h3>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">{selfTestProgress.testName}</span>
-                    <span className="text-gray-400">{selfTestProgress.current}/{selfTestProgress.total}</span>
-                  </div>
+              {isErasing && (
+                <div className="mb-2">
                   <div className="w-full bg-gray-200 rounded-full h-2">
                     <div
-                      className="bg-blue-600 rounded-full h-2 transition-all"
-                      style={{ width: `${(selfTestProgress.current / selfTestProgress.total) * 100}%` }}
+                      className="bg-blue-600 h-2 rounded-full transition-all"
+                      style={{ width: erasePercent + '%' }}
                     />
                   </div>
+                  <span className="text-xs text-gray-500 mt-1">{dm.eraseProgress || '擦除进度'}: {erasePercent}%</span>
                 </div>
-              </div>
-            )}
-
-            {/* Test Results */}
-            {showTestResults && testResults.length > 0 && (
-              <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">{dm.testResults}</h3>
-                  <div className="flex items-center gap-3 text-sm">
-                    <span className="text-green-600">{passedCount} {dm.passed}</span>
-                    <span className="text-red-600">{failedCount} {dm.failed}</span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  {testResults.map(result => (
-                    <div
-                      key={result.id}
-                      className={`flex items-center justify-between p-3 rounded ${
-                        result.pass ? 'bg-green-50' : 'bg-red-50'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <span className={`text-lg ${result.pass ? 'text-green-500' : 'text-red-500'}`}>
-                          {result.pass ? '\u2713' : '\u2717'}
-                        </span>
-                        <span className="text-sm font-medium text-gray-700">{result.name}</span>
-                      </div>
-                      {result.detail && (
-                        <span className="text-xs text-gray-500">{result.detail}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Tool SN Dialog */}
-      {showToolSNDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-96 shadow-xl">
-            <h3 className="text-lg font-semibold mb-4">{dm.setToolSN}</h3>
-            <input
-              type="text"
-              value={toolSN}
-              onChange={e => setToolSN(e.target.value)}
-              placeholder={dm.enterToolSN}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm mb-4"
-            />
-            <div className="flex justify-end gap-2">
+              )}
               <button
-                onClick={() => setShowToolSNDialog(false)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+                onClick={handleErase}
+                disabled={isErasing || !connected}
+                className="w-full px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700 disabled:opacity-50"
               >
-                {t.common.cancel}
-              </button>
-              <button
-                onClick={() => setShowToolSNDialog(false)}
-                className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700"
-              >
-                {t.common.confirm}
+                {isErasing ? (dm.erasing || '正在擦除...') : (dm.eraseMemory || '擦除内存')}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* System Test Tab */}
+      {activeTab === 'system' && (
+        <div className="max-w-2xl">
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <h3 className="text-sm font-semibold text-gray-700 mb-4">{dm.selectTests || '选择测试项'}</h3>
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              {selfTestItems.map(item => (
+                <label key={item} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedTests.includes(item)}
+                    onChange={() => toggleTest(item)}
+                    className="rounded border-gray-300"
+                  />
+                  {item}
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleSelfTest}
+                disabled={isTesting || !connected}
+                className="px-6 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {isTesting ? (dm.testing || '测试中...') : (dm.singleStart || '开始测试')}
+              </button>
+              {selfTestProgress && (
+                <span className="text-xs text-blue-600">
+                  {dm.currentTest || '当前测试'}: {selfTestProgress.testName || ''} ({selfTestProgress.current}/{selfTestProgress.total})
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Test Results */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-gray-700 mb-3">{dm.testResults || '测试结果'}</h3>
+            {testSummary && (
+              <div className="flex gap-4 mb-3 text-xs">
+                <span className="text-gray-600">{dm.total || '总计'}: {testSummary.total}</span>
+                <span className="text-green-600">{dm.passedCount || '通过'}: {testSummary.passed}</span>
+                <span className="text-red-600">{dm.failedCount || '失败'}: {testSummary.failed}</span>
+                <span className="text-blue-600">{dm.passRate || '通过率'}: {testSummary.passRate}</span>
+              </div>
+            )}
+            {testResults.length > 0 ? (
+              <div className="space-y-2">
+                {testResults.map((result, idx) => (
+                  <div key={idx} className="flex items-center gap-3 text-xs p-2 rounded bg-gray-50">
+                    <span className={`w-2 h-2 rounded-full ${result.pass ? 'bg-green-500' : 'bg-red-500'}`} />
+                    <span className="font-medium text-gray-700 w-24">{result.name}</span>
+                    <span className={result.pass ? 'text-green-600' : 'text-red-600'}>
+                      {result.pass ? (dm.passResult || '通过') : (dm.failResult || '失败')}
+                    </span>
+                    <span className="text-gray-500">{result.detail}</span>
+                    {result.value !== undefined && (
+                      <span className="font-mono text-gray-700">{result.value}{result.unit ? ' ' + result.unit : ''}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-400">{dm.noTestResults || '暂无测试结果'}</p>
+            )}
           </div>
         </div>
       )}

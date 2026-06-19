@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useI18n } from '@/lib/i18n/context';
 import { useDevice } from '@/lib/device/context';
 
@@ -10,6 +10,14 @@ export default function ConfigStatusPage() {
   const [loading, setLoading] = useState(false);
 
   const cs = t.configStatus;
+
+  // Auto-load params when page mounts and device is connected
+  useEffect(() => {
+    if (connected) {
+      setLoading(true);
+      loadDeviceParams().finally(() => setLoading(false));
+    }
+  }, [connected, loadDeviceParams]);
 
   const handleRefresh = useCallback(async () => {
     setLoading(true);
