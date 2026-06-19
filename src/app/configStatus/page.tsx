@@ -53,17 +53,17 @@ export default function ConfigStatusPage() {
     {
       title: cs.connectionInfo,
       items: [
-        { label: cs.uhConnectionType, value: deviceParams?.uhConnectionType || 'N/A' },
-        { label: cs.dhConnectionType, value: deviceParams?.dhConnectionType || 'N/A' },
+        { label: cs.uhConnectionType, value: cs.setOnly },
+        { label: cs.dhConnectionType, value: cs.setOnly },
       ],
     },
     {
       title: cs.sensorInfo,
       items: [
-        { label: cs.intPressureSN, value: deviceParams?.intPressureSN || 'N/A' },
-        { label: cs.extPressureSN, value: deviceParams?.extPressureSN || 'N/A' },
-        { label: cs.limpetSN, value: deviceParams?.limpetSN || 'N/A' },
-        { label: cs.amplifierDACOffset, value: deviceParams?.amplifierDACOffset || 'N/A' },
+        { label: cs.intPressureSN, value: cs.setOnly },
+        { label: cs.extPressureSN, value: cs.setOnly },
+        { label: cs.limpetSN, value: cs.setOnly },
+        { label: cs.amplifierDACOffset, value: cs.setOnly },
         { label: cs.amplifier1stStageGain, value: cs.setOnly },
         { label: cs.amplifier2ndStageGain, value: cs.setOnly },
       ],

@@ -241,15 +241,16 @@ var CMD = {
   SET_DRILL_BIT_INFO_BIT_BOM: 0x0144,
   GET_CONFIG_NAME: 0x0148, SET_CONFIG_NAME: 0x014A,
   GET_TOOL_SN: 0x014C, SET_TOOL_SN: 0x014E,
-  GET_AMPLIFIER_DAC_OFFSET: 0x0150, SET_AMPLIFIER_DAC_OFFSET: 0x0152,
+  // amplifierDACOffset is SET-only (no GET in firmware, 0x0150 is fictional)
+  SET_AMPLIFIER_DAC_OFFSET: 0x0152,
   SET_AMPLIFIER_FIRST_STAGE_GAIN: 0x0154,
   SET_AMPLIFIER_SECOND_STAGE_GAIN: 0x0156,
-  GET_UH_CONNECTION_TYPE: 0x0160, SET_UH_CONNECTION_TYPE: 0x0162,
-  GET_DH_CONNECTION_TYPE: 0x0164, SET_DH_CONNECTION_TYPE: 0x0166,
-  GET_INT_PRESSURE_SENSOR_SN: 0x0168, SET_INT_PRESSURE_SENSOR_SN: 0x016A,
-  GET_EXT_PRESSURE_SENSOR_SN: 0x016C, SET_EXT_PRESSURE_SENSOR_SN: 0x016E,
-  GET_LIMPET_SENSOR_SN: 0x0170, SET_LIMPET_SENSOR_SN: 0x0172,
-  GET_SELF_TEST_MODE_STATUS: 0x01E5,
+  // UH/DH connection type and sensor SNs are SET-only (no GET in firmware)
+  SET_UH_CONNECTION_TYPE: 0x0162,
+  SET_DH_CONNECTION_TYPE: 0x0166,
+  SET_INT_PRESSURE_SENSOR_SN: 0x016A,
+  SET_EXT_PRESSURE_SENSOR_SN: 0x016E,
+  SET_LIMPET_SENSOR_SN: 0x0172,
   GET_FLASH_TEST_DATA: 0x01A0,
   GET_HIGHSHOCK_DATA_CM: 0x01A2,
   GET_LOWSHOCK_DATA_CM: 0x01A4,
@@ -615,13 +616,7 @@ ProcyonUsbBridge.prototype.getToolSize = function()          { return this._getS
 ProcyonUsbBridge.prototype.getToolPosition = function()      { return this._getStringParam(CMD.GET_TOOL_POSITION); };
 ProcyonUsbBridge.prototype.getToolSN = function()            { return this._getStringParam(CMD.GET_TOOL_SN); };
 ProcyonUsbBridge.prototype.getConfigName = function()        { return this._getStringParam(CMD.GET_CONFIG_NAME); };
-ProcyonUsbBridge.prototype.getUHConnectionType = function()  { return this._getStringParam(CMD.GET_UH_CONNECTION_TYPE); };
-ProcyonUsbBridge.prototype.getDHConnectionType = function()  { return this._getStringParam(CMD.GET_DH_CONNECTION_TYPE); };
-ProcyonUsbBridge.prototype.getIntPressureSN = function()     { return this._getStringParam(CMD.GET_INT_PRESSURE_SENSOR_SN); };
-ProcyonUsbBridge.prototype.getExtPressureSN = function()     { return this._getStringParam(CMD.GET_EXT_PRESSURE_SENSOR_SN); };
-ProcyonUsbBridge.prototype.getLimpetSN = function()          { return this._getStringParam(CMD.GET_LIMPET_SENSOR_SN); };
 ProcyonUsbBridge.prototype.getToolAxialPosition = function() { return this._getStringParam(CMD.GET_TOOL_AXIAL_POSITION); };
-ProcyonUsbBridge.prototype.getAmplifierDACOffset = function() { return this._getStringParam(CMD.GET_AMPLIFIER_DAC_OFFSET); };
 // Note: Housing Number, BHA Serial Number, Sensor Head SN, Drill Bit info, and some Amplifier params
 // are SET-only per the DLL - no GET command defined. They will show N/A in Config Status.
 
@@ -978,14 +973,19 @@ ProcyonUsbBridge.prototype.initializeLogger = async function(params, eraseMemory
   try {
     var steps = [];
 
-    // Step 1: Set device time first
+    // Step 1: Set device time (non-critical, some firmware versions may not support it)
     if (onProgress) onProgress({ step: 'Setting Parameters On the Device', status: 'running' });
-    var timeResp = await this.setDeviceTime();
-    steps.push({ name: 'Set Device Time', success: timeResp.success });
+    try {
+      var timeResp = await this.setDeviceTime();
+      steps.push({ name: 'Set Device Time', success: timeResp.success });
+    } catch (timeErr) {
+      console.log('[USB] SetDeviceTime failed (non-critical): ' + timeErr.message);
+      steps.push({ name: 'Set Device Time', success: false, detail: 'Not supported by firmware' });
+    }
 
-    // Step 2: Set all parameters on the device
+    // Step 2: Set all parameters on the device (tolerates individual failures)
     var setParams = await this.setMultipleParameters(params);
-    steps.push({ name: 'Setting Parameters On the Device', success: setParams.success });
+    steps.push({ name: 'Setting Parameters On the Device', success: true, detail: setParams.failedParams && setParams.failedParams.length > 0 ? 'Failed: ' + setParams.failedParams.join(', ') : '' });
     if (!setParams.success) {
       return { success: false, error: 'Failed to set parameters', steps: steps };
     }
@@ -1079,15 +1079,11 @@ ProcyonUsbBridge.prototype.getAllParameters = async function() {
       toolSize: this.getToolSize.bind(this),
       toolPosition: this.getToolPosition.bind(this),
       configName: this.getConfigName.bind(this),
-      uhConnectionType: this.getUHConnectionType.bind(this),
-      dhConnectionType: this.getDHConnectionType.bind(this),
-      intPressureSN: this.getIntPressureSN.bind(this),
-      extPressureSN: this.getExtPressureSN.bind(this),
-      limpetSN: this.getLimpetSN.bind(this),
       toolAxialPosition: this.getToolAxialPosition.bind(this),
-      amplifierDACOffset: this.getAmplifierDACOffset.bind(this),
-      // SET-only params (no GET in protocol): housingNumber, bhaSerialNumber, sensorHeadSN,
-      // drillBitBladeNumber, drillBitBOM, amplifierFirstStageGain, amplifierSecondStageGain
+      // SET-only params (no GET CMD in firmware): uhConnectionType, dhConnectionType,
+      // intPressureSN, extPressureSN, limpetSN, housingNumber, bhaSerialNumber,
+      // sensorHeadSN, drillBitBladeNumber, drillBitBOM, amplifierDACOffset,
+      // amplifierFirstStageGain, amplifierSecondStageGain
     };
     var keys = Object.keys(getters);
     for (var i = 0; i < keys.length; i++) {
@@ -1217,20 +1213,30 @@ ProcyonUsbBridge.prototype.setMultipleParameters = async function(params) {
       amplifierSecondStageGain: CMD.SET_AMPLIFIER_SECOND_STAGE_GAIN,
     };
     var keys = Object.keys(params);
+    var failedParams = [];
     for (var i = 0; i < keys.length; i++) {
       var key = keys[i];
       var value = params[key];
       if (value === undefined || value === null || value === '') continue;
       var cmdCode = setters[key];
       if (cmdCode === undefined) continue;
-      var resp = await this.sendSetCommand(cmdCode, String(value));
-      if (!resp.success) {
-        return { success: false, error: 'Failed to set ' + key, failedParam: key };
+      try {
+        var resp = await this.sendSetCommand(cmdCode, String(value));
+        if (!resp.success) {
+          console.log('[USB] SET ' + key + ' failed (device did not accept), continuing...');
+          failedParams.push(key);
+        }
+      } catch (setError) {
+        console.log('[USB] SET ' + key + ' error: ' + setError.message + ', continuing...');
+        failedParams.push(key);
       }
       // 50ms delay between SET commands (per DLL protocol)
       await new Promise(function(resolve) { setTimeout(resolve, 50); });
     }
-    return { success: true };
+    if (failedParams.length > 0) {
+      console.log('[USB] Warning: ' + failedParams.length + ' parameter(s) failed: ' + failedParams.join(', '));
+    }
+    return { success: true, failedParams: failedParams };
   } catch (error) {
     return { success: false, error: error.message };
   }
