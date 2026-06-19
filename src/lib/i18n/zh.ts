@@ -407,6 +407,18 @@ export const zh: TranslationType = {
     noTestResults: '暂无测试结果',
     selectTests: '选择测试项',
     testing: '测试中...',
+    noData: '暂无数据',
+    downloadFirst: '请先从设备下载数据',
+    startDownload: '下载数据',
+    downloading: '下载中...',
+    downloadFailed: '下载失败',
+    downloadedData: '下载数据',
+    instantPolling: '实时轮询',
+    chunkProgress: '进度',
+    records: '条记录',
+    exportFullCSV: '导出全量CSV',
+    clearData: '清除数据',
+    shockLateral: '横向冲击',
   },
 
   // Work History

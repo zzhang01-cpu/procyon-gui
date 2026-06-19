@@ -1,31 +1,9 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useDevice } from '@/lib/device/context';
 import { useI18n } from '@/lib/i18n/context';
-
-interface SensorRecord {
-  timestamp: string;
-  // Temperature & Battery (from custom GET)
-  temperature: string;
-  batteryVoltage: string;
-  // High Shock (g)
-  highShockCM: string;
-  // Low Shock (g)
-  lowShockCM: string;
-  lowShockEM: string;
-  // Pressure (psi)
-  pressureCM: string;
-  pressureEM: string;
-  // Rotational (rpm)
-  rotationalCM: string;
-  rotationalEM: string;
-  // Additional sensors
-  temperatureEM: string;
-  limpetEM: string;
-  flashTest: string;
-  pressureSelfTest: string;
-}
+import type { OneSecondRecord } from '@/lib/usb/procyon';
 
 export default function DeviceMonitoringPage() {
   const {
@@ -38,25 +16,34 @@ export default function DeviceMonitoringPage() {
     testResults,
     testSummary,
     selfTestProgress,
+    downloadedData,
+    downloadData,
+    downloadProgress,
+    clearData,
+    exportData,
   } = useDevice();
   const { t } = useI18n();
   const dm = t.deviceMonitoring;
 
   const [activeTab, setActiveTab] = useState<'realtime' | 'system'>('realtime');
+  const [dataSource, setDataSource] = useState<'downloaded' | 'polling'>('downloaded');
   const [isMonitoring, setIsMonitoring] = useState(false);
-  const [sensorRecords, setSensorRecords] = useState<SensorRecord[]>([]);
+  const [pollRecords, setPollRecords] = useState<Record<string, string>[]>([]);
   const [pollError, setPollError] = useState<string | null>(null);
-  const [visibleSensors, setVisibleSensors] = useState({
+
+  // Download state
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  // Visible sensor groups (for downloaded data view)
+  const [visibleGroups, setVisibleGroups] = useState({
     temperature: true,
     battery: true,
     highShock: true,
     lowShock: true,
     pressure: true,
     rotational: true,
-    temperatureEM: false,
-    limpet: false,
-    flashTest: false,
-    pressureSelfTest: false,
+    shockLateral: false,
   });
 
   // Launch device
@@ -74,7 +61,6 @@ export default function DeviceMonitoringPage() {
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
   const pollingRef = useRef(false);
 
-  // Self test items
   const selfTestItems = [
     'Temperature', 'Battery', 'HighShock', 'LowShock',
     'Pressure', 'Rotational', 'Limpet', 'Flash',
@@ -82,7 +68,7 @@ export default function DeviceMonitoringPage() {
 
   // Real-time polling
   useEffect(() => {
-    if (!isMonitoring || !connected) {
+    if (!isMonitoring || !connected || dataSource !== 'polling') {
       pollingRef.current = false;
       return;
     }
@@ -101,22 +87,11 @@ export default function DeviceMonitoringPage() {
             String(now.getHours()).padStart(2, '0') + ':' +
             String(now.getMinutes()).padStart(2, '0') + ':' +
             String(now.getSeconds()).padStart(2, '0');
-          setSensorRecords(prev => {
-            const newRecord: SensorRecord = {
+          setPollRecords(prev => {
+            const newRecord: Record<string, string> = {
               timestamp: ts,
-              temperature: data.temperatureCM || '--',
-              batteryVoltage: data.batteryVoltage || '--',
-              highShockCM: data.highShockCM || '--',
-              lowShockCM: data.lowShockCM || '--',
-              lowShockEM: data.lowShockEM || '--',
-              pressureCM: data.pressureCM || '--',
-              pressureEM: data.pressureEM || '--',
-              rotationalCM: data.rotationalCM || '--',
-              rotationalEM: data.rotationalEM || '--',
-              temperatureEM: data.temperatureEM || '--',
-              limpetEM: data.limpetEM || '--',
-              flashTest: data.flashTest || '--',
-              pressureSelfTest: data.pressureSelfTest || '--',
+              temperature: data.temperatureCM != null ? String(data.temperatureCM) : 'N/A',
+              batteryVoltage: data.batteryVoltage != null ? String(data.batteryVoltage) : 'N/A',
             };
             const updated = [newRecord, ...prev];
             return updated.slice(0, 200);
@@ -136,7 +111,27 @@ export default function DeviceMonitoringPage() {
 
     poll();
     return () => { pollingRef.current = false; };
-  }, [isMonitoring, connected, getSensorData, dm.pollFailed]);
+  }, [isMonitoring, connected, getSensorData, dm.pollFailed, dataSource]);
+
+  // Download data handler
+  const handleDownload = useCallback(async () => {
+    if (!connected) {
+      alert(String(t.errors?.deviceNotFound || '设备未连接'));
+      return;
+    }
+    setIsDownloading(true);
+    setDownloadError(null);
+    try {
+      const result = await downloadData();
+      if (!result?.success) {
+        setDownloadError(result?.error || String(dm.downloadFailed || '下载失败'));
+      }
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : String(dm.downloadFailed || '下载失败'));
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [connected, downloadData, dm.downloadFailed, t.errors]);
 
   const handleLaunch = async () => {
     if (!connected) {
@@ -179,7 +174,7 @@ export default function DeviceMonitoringPage() {
 
   const toggleTest = (test: string) => {
     setSelectedTests(prev =>
-      prev.includes(test) ? prev.filter(t => t !== test) : [...prev, test]
+      prev.includes(test) ? prev.filter(t2 => t2 !== test) : [...prev, test]
     );
   };
 
@@ -195,76 +190,110 @@ export default function DeviceMonitoringPage() {
     }
   };
 
-  const toggleSensor = (key: keyof typeof visibleSensors) => {
-    setVisibleSensors(prev => ({ ...prev, [key]: !prev[key] }));
+  const toggleGroup = (key: keyof typeof visibleGroups) => {
+    setVisibleGroups(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const exportCSV = () => {
-    if (sensorRecords.length === 0) return;
-    // Match original Procyon software CSV format
-    // Export separate CSVs per sensor group, then a combined one
-    const BOM = '\uFEFF'; // UTF-8 BOM for Excel compatibility
+  // Format number with fixed decimal places
+  const fmt = (val: number | undefined | null, decimals: number = 2): string => {
+    if (val == null || isNaN(val)) return 'N/A';
+    return val.toFixed(decimals);
+  };
 
-    // Temperature CSV (like original)
-    const tempHeaders = ['Timestamp', 'Temperature'];
-    const tempRows = sensorRecords
-      .filter(r => r.temperature !== '--')
-      .map(r => [r.timestamp, r.temperature].join(','));
-    const tempCsv = BOM + [tempHeaders.join(','), ...tempRows].join('\n');
+  // CSV export for downloaded data - match original Procyon software format
+  const exportDownloadedCSV = () => {
+    if (downloadedData.length === 0) return;
+    const BOM = '\uFEFF';
+
+    // Temperature CSV (like original: Timestamp, Temperature)
+    const tempCsv = BOM + [
+      'Timestamp,Temperature',
+      ...downloadedData.map(r => `${r.timestamp},${fmt(r.temperature, 4)}`)
+    ].join('\n');
 
     // Battery CSV
-    const battHeaders = ['Timestamp', 'Battery_mV'];
-    const battRows = sensorRecords
-      .filter(r => r.batteryVoltage !== '--')
-      .map(r => [r.timestamp, r.batteryVoltage].join(','));
-    const battCsv = BOM + [battHeaders.join(','), ...battRows].join('\n');
+    const battCsv = BOM + [
+      'Timestamp,Battery_mV',
+      ...downloadedData.map(r => `${r.timestamp},${fmt(r.batteryVoltage, 0)}`)
+    ].join('\n');
 
-    // High Shock CSV (single value - GET command only returns aggregate)
-    const hsHeaders = ['Timestamp', 'highShock_g'];
-    const hsRows = sensorRecords
-      .filter(r => r.highShockCM !== '--')
-      .map(r => [r.timestamp, r.highShockCM].join(','));
-    const hsCsv = BOM + [hsHeaders.join(','), ...hsRows].join('\n');
+    // HighShock CSV - X/Y/Z min/max/avg/rms (like original)
+    const hsHeaders = 'Timestamp,highShockX_min,highShockX_max,highShockX_avg,highShockX_rms,highShockY_min,highShockY_max,highShockY_avg,highShockY_rms,highShockZ_min,highShockZ_max,highShockZ_avg,highShockZ_rms';
+    const hsCsv = BOM + [
+      hsHeaders,
+      ...downloadedData.map(r => [
+        r.timestamp,
+        fmt(r.shockMinX), fmt(r.shockMaxX), fmt(r.shockAvgX), fmt(r.shockRmsX),
+        fmt(r.shockMinY), fmt(r.shockMaxY), fmt(r.shockAvgY), fmt(r.shockRmsY),
+        fmt(r.shockMinZ), fmt(r.shockMaxZ), fmt(r.shockAvgZ), fmt(r.shockRmsZ),
+      ].join(','))
+    ].join('\n');
 
-    // Low Shock CSV (CM + EM)
-    const lsHeaders = ['Timestamp', 'lowShockCM_g', 'lowShockEM_g'];
-    const lsRows = sensorRecords
-      .filter(r => r.lowShockCM !== '--' || r.lowShockEM !== '--')
-      .map(r => [r.timestamp, r.lowShockCM, r.lowShockEM].join(','));
-    const lsCsv = BOM + [lsHeaders.join(','), ...lsRows].join('\n');
+    // LowShock CSV - X/Y/Z min/max/avg/rms (like original)
+    const lsHeaders = 'Timestamp,lowShockX_min,lowShockX_max,lowShockX_avg,lowShockX_rms,lowShockY_min,lowShockY_max,lowShockY_avg,lowShockY_rms,lowShockZ_min,lowShockZ_max,lowShockZ_avg,lowShockZ_rms';
+    const lsCsv = BOM + [
+      lsHeaders,
+      ...downloadedData.map(r => [
+        r.timestamp,
+        fmt(r.shockLowMinX), fmt(r.shockLowMaxX), fmt(r.shockLowAvgX), fmt(r.shockLowRmsX),
+        fmt(r.shockLowMinY), fmt(r.shockLowMaxY), fmt(r.shockLowAvgY), fmt(r.shockLowRmsY),
+        fmt(r.shockLowMinZ), fmt(r.shockLowMaxZ), fmt(r.shockLowAvgZ), fmt(r.shockLowRmsZ),
+      ].join(','))
+    ].join('\n');
 
-    // Pressure CSV (CM + EM)
-    const prHeaders = ['Timestamp', 'psi_CM', 'psi_EM'];
-    const prRows = sensorRecords
-      .filter(r => r.pressureCM !== '--' || r.pressureEM !== '--')
-      .map(r => [r.timestamp, r.pressureCM, r.pressureEM].join(','));
-    const prCsv = BOM + [prHeaders.join(','), ...prRows].join('\n');
+    // Pressure CSV (like original: psi_min, psi_max, psi_avg)
+    const prCsv = BOM + [
+      'Timestamp,psi_min,psi_max,psi_avg',
+      ...downloadedData.map(r => [
+        r.timestamp, fmt(r.pressure), fmt(r.pressure), fmt(r.pressure)
+      ].join(','))
+    ].join('\n');
 
-    // Rotational CSV (CM + EM)
-    const rotHeaders = ['Timestamp', 'rpm_CM', 'rpm_EM'];
-    const rotRows = sensorRecords
-      .filter(r => r.rotationalCM !== '--' || r.rotationalEM !== '--')
-      .map(r => [r.timestamp, r.rotationalCM, r.rotationalEM].join(','));
-    const rotCsv = BOM + [rotHeaders.join(','), ...rotRows].join('\n');
+    // Rotational CSV - X/Y/Z min/max/avg/rms (like original)
+    const rotHeaders = 'Timestamp,rpmX_min,rpmX_max,rpmX_avg,rpmX_rms,rpmY_min,rpmY_max,rpmY_avg,rpmY_rms,rpmZ_min,rpmZ_max,rpmZ_avg,rpmZ_rms';
+    const rotCsv = BOM + [
+      rotHeaders,
+      ...downloadedData.map(r => [
+        r.timestamp,
+        fmt(r.rpmMinX), fmt(r.rpmMaxX), fmt(r.rpmAvgX), fmt(r.rpmRmsX),
+        fmt(r.rpmMinY), fmt(r.rpmMaxY), fmt(r.rpmAvgY), fmt(r.rpmRmsY),
+        fmt(r.rpmMinZ), fmt(r.rpmMaxZ), fmt(r.rpmAvgZ), fmt(r.rpmRmsZ),
+      ].join(','))
+    ].join('\n');
 
-    // Combined full CSV
+    // Combined all data CSV
     const allHeaders = [
-      'Timestamp', 'Temperature_C', 'Battery_mV',
-      'HighShock_CM_g', 'LowShock_CM_g', 'LowShock_EM_g',
-      'Pressure_CM_psi', 'Pressure_EM_psi',
-      'Rotational_CM_rpm', 'Rotational_EM_rpm',
-      'Temperature_EM_C', 'Limpet_EM', 'FlashTest', 'PressureSelfTest',
+      'Timestamp', 'Temperature', 'Battery_mV',
+      'highShockX_min', 'highShockX_max', 'highShockX_avg', 'highShockX_rms',
+      'highShockY_min', 'highShockY_max', 'highShockY_avg', 'highShockY_rms',
+      'highShockZ_min', 'highShockZ_max', 'highShockZ_avg', 'highShockZ_rms',
+      'shockLateralMax', 'shockLateralRms',
+      'lowShockX_min', 'lowShockX_max', 'lowShockX_avg', 'lowShockX_rms',
+      'lowShockY_min', 'lowShockY_max', 'lowShockY_avg', 'lowShockY_rms',
+      'lowShockZ_min', 'lowShockZ_max', 'lowShockZ_avg', 'lowShockZ_rms',
+      'rpmX_min', 'rpmX_max', 'rpmX_avg', 'rpmX_rms',
+      'rpmY_min', 'rpmY_max', 'rpmY_avg', 'rpmY_rms',
+      'rpmZ_min', 'rpmZ_max', 'rpmZ_avg', 'rpmZ_rms',
+      'psi_avg',
     ];
-    const allRows = sensorRecords.map(r => [
-      r.timestamp, r.temperature, r.batteryVoltage,
-      r.highShockCM, r.lowShockCM, r.lowShockEM,
-      r.pressureCM, r.pressureEM,
-      r.rotationalCM, r.rotationalEM,
-      r.temperatureEM, r.limpetEM, r.flashTest, r.pressureSelfTest,
-    ].join(','));
-    const allCsv = BOM + [allHeaders.join(','), ...allRows].join('\n');
+    const allCsv = BOM + [
+      allHeaders.join(','),
+      ...downloadedData.map(r => [
+        r.timestamp, fmt(r.temperature, 4), fmt(r.batteryVoltage, 0),
+        fmt(r.shockMinX), fmt(r.shockMaxX), fmt(r.shockAvgX), fmt(r.shockRmsX),
+        fmt(r.shockMinY), fmt(r.shockMaxY), fmt(r.shockAvgY), fmt(r.shockRmsY),
+        fmt(r.shockMinZ), fmt(r.shockMaxZ), fmt(r.shockAvgZ), fmt(r.shockRmsZ),
+        fmt(r.shockLateralMax), fmt(r.shockLateralRms),
+        fmt(r.shockLowMinX), fmt(r.shockLowMaxX), fmt(r.shockLowAvgX), fmt(r.shockLowRmsX),
+        fmt(r.shockLowMinY), fmt(r.shockLowMaxY), fmt(r.shockLowAvgY), fmt(r.shockLowRmsY),
+        fmt(r.shockLowMinZ), fmt(r.shockLowMaxZ), fmt(r.shockLowAvgZ), fmt(r.shockLowRmsZ),
+        fmt(r.rpmMinX), fmt(r.rpmMaxX), fmt(r.rpmAvgX), fmt(r.rpmRmsX),
+        fmt(r.rpmMinY), fmt(r.rpmMaxY), fmt(r.rpmAvgY), fmt(r.rpmRmsY),
+        fmt(r.rpmMinZ), fmt(r.rpmMaxZ), fmt(r.rpmAvgZ), fmt(r.rpmRmsZ),
+        fmt(r.pressure),
+      ].join(','))
+    ].join('\n');
 
-    // Download all files
     const files = [
       { name: 'monitoring_temperature.csv', content: tempCsv },
       { name: 'monitoring_battery.csv', content: battCsv },
@@ -288,8 +317,247 @@ export default function DeviceMonitoringPage() {
     });
   };
 
-  // Get battery from deviceInfo
+  // CSV export for polling data (simpler format)
+  const exportPollingCSV = () => {
+    if (pollRecords.length === 0) return;
+    const BOM = '\uFEFF';
+    const headers = Object.keys(pollRecords[0]);
+    const csv = BOM + [
+      headers.join(','),
+      ...pollRecords.map(r => headers.map(h => r[h] || 'N/A').join(','))
+    ].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'monitoring_realtime.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Export using context's exportData (full format from procyon.ts)
+  const handleExportFullCSV = () => {
+    const csv = exportData();
+    if (!csv) return;
+    const BOM = '\uFEFF';
+    const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'procyon_data.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const batteryMv = deviceInfo?.batteryVoltage;
+
+  // Render OneSecondRecord data table
+  const renderDownloadedTable = () => {
+    if (downloadedData.length === 0) {
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center py-16 text-gray-400">
+          <svg className="w-16 h-16 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          <p className="text-sm mb-2">{dm.noData || '暂无数据'}</p>
+          <p className="text-xs mb-4">{dm.downloadFirst || '请先从设备下载数据'}</p>
+          <button
+            onClick={handleDownload}
+            disabled={!connected || isDownloading}
+            className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+          >
+            {isDownloading ? (dm.downloading || '下载中...') : (dm.startDownload || '下载数据')}
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex-1 overflow-auto border border-gray-200 rounded-lg">
+        <table className="w-full text-xs border-collapse">
+          <thead className="bg-gray-50 sticky top-0 z-10">
+            <tr>
+              <th className="px-2 py-2 text-left font-semibold text-gray-700 whitespace-nowrap border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20">
+                {dm.timestamp || '时间戳'}
+              </th>
+              {visibleGroups.temperature && (
+                <th className="px-2 py-2 text-center font-semibold text-blue-700 whitespace-nowrap border-b border-r border-gray-200 bg-blue-50">
+                  {dm.temperature || '温度'} (°C)
+                </th>
+              )}
+              {visibleGroups.battery && (
+                <th className="px-2 py-2 text-center font-semibold text-green-700 whitespace-nowrap border-b border-r border-gray-200 bg-green-50">
+                  {dm.batteryVoltage || '电池'} (mV)
+                </th>
+              )}
+              {visibleGroups.highShock && (
+                <>
+                  <th colSpan={12} className="px-2 py-1 text-center font-semibold text-red-700 border-b border-gray-200 bg-red-50 text-xs">
+                    {dm.highShockLabel || '高冲击'} (g)
+                  </th>
+                </>
+              )}
+              {visibleGroups.lowShock && (
+                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-yellow-700 border-b border-gray-200 bg-yellow-50 text-xs">
+                  {dm.lowShockLabel || '低冲击'} (g)
+                </th>
+              )}
+              {visibleGroups.rotational && (
+                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-purple-700 border-b border-gray-200 bg-purple-50 text-xs">
+                  {dm.rotational || '旋转'} (rpm)
+                </th>
+              )}
+              {visibleGroups.pressure && (
+                <th className="px-2 py-2 text-center font-semibold text-cyan-700 whitespace-nowrap border-b border-r border-gray-200 bg-cyan-50">
+                  {dm.pressureLabel || '压力'} (psi)
+                </th>
+              )}
+            </tr>
+            {/* Sub-headers for X/Y/Z min/max/avg/rms */}
+            <tr>
+              <th className="px-2 py-1 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20"></th>
+              {visibleGroups.temperature && <th className="px-1 py-1 border-b border-r border-gray-200 bg-blue-50/50"></th>}
+              {visibleGroups.battery && <th className="px-1 py-1 border-b border-r border-gray-200 bg-green-50/50"></th>}
+              {visibleGroups.highShock && (
+                ['X', 'Y', 'Z'].map(axis => (
+                  ['min', 'max', 'avg', 'rms'].map(stat => (
+                    <th key={`hs-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-red-50/30 text-[10px]">
+                      {axis}_{stat}
+                    </th>
+                  ))
+                )).flat()
+              )}
+              {visibleGroups.lowShock && (
+                ['X', 'Y', 'Z'].map(axis => (
+                  ['min', 'max', 'avg', 'rms'].map(stat => (
+                    <th key={`ls-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-yellow-50/30 text-[10px]">
+                      {axis}_{stat}
+                    </th>
+                  ))
+                )).flat()
+              )}
+              {visibleGroups.rotational && (
+                ['X', 'Y', 'Z'].map(axis => (
+                  ['min', 'max', 'avg', 'rms'].map(stat => (
+                    <th key={`rot-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-purple-50/30 text-[10px]">
+                      {axis}_{stat}
+                    </th>
+                  ))
+                )).flat()
+              )}
+              {visibleGroups.pressure && <th className="px-1 py-1 border-b border-r border-gray-200 bg-cyan-50/50"></th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {downloadedData.map((record, idx) => (
+              <tr key={idx} className={idx === 0 ? 'bg-blue-50/30' : 'hover:bg-gray-50/50'}>
+                <td className="px-2 py-1.5 text-gray-700 whitespace-nowrap font-mono border-r border-gray-100 sticky left-0 bg-white">
+                  {record.timestamp}
+                </td>
+                {visibleGroups.temperature && (
+                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
+                    {fmt(record.temperature, 4)}
+                  </td>
+                )}
+                {visibleGroups.battery && (
+                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
+                    {fmt(record.batteryVoltage, 0)}
+                  </td>
+                )}
+                {visibleGroups.highShock && (
+                  <>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsZ)}</td>
+                  </>
+                )}
+                {visibleGroups.lowShock && (
+                  <>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinX, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxX, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgX, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsX, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinY, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxY, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgY, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsY, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinZ, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxZ, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgZ, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsZ, 4)}</td>
+                  </>
+                )}
+                {visibleGroups.rotational && (
+                  <>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsZ)}</td>
+                  </>
+                )}
+                {visibleGroups.pressure && (
+                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
+                    {fmt(record.pressure)}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  // Render polling data table (simpler, single values)
+  const renderPollingTable = () => {
+    if (pollRecords.length === 0) {
+      return (
+        <div className="flex-1 flex items-center justify-center py-16 text-gray-400 text-sm">
+          {isMonitoring ? (dm.waitingData || '等待数据...') : (dm.clickStart || '点击"开始监控"获取实时数据')}
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex-1 overflow-auto border border-gray-200 rounded-lg">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50 sticky top-0">
+            <tr>
+              <th className="px-2 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{dm.timestamp || '时间'}</th>
+              <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.temperature || '温度'} (°C)</th>
+              <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.batteryVoltage || '电池'} (mV)</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {pollRecords.map((record, idx) => (
+              <tr key={idx} className={idx === 0 ? 'bg-blue-50' : ''}>
+                <td className="px-2 py-1.5 text-gray-700 whitespace-nowrap font-mono">{record.timestamp}</td>
+                <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.temperature}</td>
+                <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.batteryVoltage}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -320,164 +588,138 @@ export default function DeviceMonitoringPage() {
       {/* Real-Time Tab */}
       {activeTab === 'realtime' && (
         <div className="flex-1 flex gap-4 overflow-hidden">
-          {/* Left: Sensor Data Table */}
+          {/* Left: Sensor Data */}
           <div className="flex-1 flex flex-col min-w-0">
-            {/* Monitoring Controls */}
-            <div className="flex items-center gap-3 mb-3">
-              {!isMonitoring ? (
+            {/* Data Source Switch + Controls */}
+            <div className="flex items-center gap-3 mb-3 flex-wrap">
+              {/* Data Source Toggle */}
+              <div className="flex bg-gray-100 rounded-lg p-0.5">
                 <button
-                  onClick={() => { setIsMonitoring(true); setPollError(null); }}
-                  disabled={!connected}
-                  className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    dataSource === 'downloaded' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'
+                  }`}
+                  onClick={() => setDataSource('downloaded')}
                 >
-                  {dm.startMonitoring || '开始监控'}
+                  {dm.downloadedData || '下载数据'}
                 </button>
-              ) : (
                 <button
-                  onClick={() => { setIsMonitoring(false); setPollError(null); }}
-                  className="px-4 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700"
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    dataSource === 'polling' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'
+                  }`}
+                  onClick={() => setDataSource('polling')}
                 >
-                  {dm.stopMonitoring || '停止监控'}
+                  {dm.instantPolling || '实时轮询'}
                 </button>
+              </div>
+
+              {dataSource === 'downloaded' && (
+                <>
+                  <button
+                    onClick={handleDownload}
+                    disabled={!connected || isDownloading}
+                    className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isDownloading ? (dm.downloading || '下载中...') : (dm.startDownload || '下载数据')}
+                  </button>
+                  {downloadProgress && (
+                    <span className="text-xs text-blue-600">
+                      {dm.chunkProgress || '进度'}: {downloadProgress.chunk}/{downloadProgress.totalChunks}
+                    </span>
+                  )}
+                  {downloadedData.length > 0 && (
+                    <>
+                      <span className="text-xs text-gray-500">
+                        {downloadedData.length} {dm.records || '条记录'}
+                      </span>
+                      <button
+                        onClick={exportDownloadedCSV}
+                        className="ml-auto px-3 py-1.5 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                      >
+                        {dm.exportCSV || '导出CSV'}
+                      </button>
+                      <button
+                        onClick={handleExportFullCSV}
+                        className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700"
+                      >
+                        {dm.exportFullCSV || '导出全量CSV'}
+                      </button>
+                      <button
+                        onClick={clearData}
+                        className="px-3 py-1.5 text-xs bg-gray-400 text-white rounded hover:bg-gray-500"
+                      >
+                        {dm.clearData || '清除数据'}
+                      </button>
+                    </>
+                  )}
+                </>
               )}
-              <span className="text-xs text-gray-500">
-                {isMonitoring ? (dm.pollingEvery || '每2秒轮询...') : ''}
-              </span>
-              {sensorRecords.length > 0 && (
-                <button
-                  onClick={exportCSV}
-                  className="ml-auto px-3 py-1.5 text-xs bg-green-600 text-white rounded hover:bg-green-700"
-                >
-                  {dm.exportCSV || '导出CSV'}
-                </button>
+
+              {dataSource === 'polling' && (
+                <>
+                  {!isMonitoring ? (
+                    <button
+                      onClick={() => { setIsMonitoring(true); setPollError(null); }}
+                      disabled={!connected}
+                      className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {dm.startMonitoring || '开始监控'}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { setIsMonitoring(false); setPollError(null); }}
+                      className="px-4 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700"
+                    >
+                      {dm.stopMonitoring || '停止监控'}
+                    </button>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    {isMonitoring ? (dm.pollingEvery || '每2秒轮询...') : ''}
+                  </span>
+                  {pollRecords.length > 0 && (
+                    <button
+                      onClick={exportPollingCSV}
+                      className="ml-auto px-3 py-1.5 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                    >
+                      {dm.exportCSV || '导出CSV'}
+                    </button>
+                  )}
+                </>
               )}
-              {pollError && (
-                <span className="text-xs text-red-500 ml-2">{pollError}</span>
-              )}
+
+              {pollError && <span className="text-xs text-red-500 ml-2">{pollError}</span>}
+              {downloadError && <span className="text-xs text-red-500 ml-2">{downloadError}</span>}
             </div>
 
             {/* Data Table */}
-            <div className="flex-1 overflow-auto border border-gray-200 rounded-lg">
-              <table className="w-full text-xs">
-                <thead className="bg-gray-50 sticky top-0">
-                  <tr>
-                    <th className="px-2 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{dm.timestamp || '时间'}</th>
-                    {visibleSensors.temperature && (
-                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.temperature || '温度'} (°C)</th>
-                    )}
-                    {visibleSensors.battery && (
-                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.batteryVoltage || '电池'} (mV)</th>
-                    )}
-                    {visibleSensors.highShock && (
-                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.highShock || '高冲击'} CM(g)</th>
-                    )}
-                    {visibleSensors.lowShock && (
-                      <>
-                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.lowShockCM || '低冲击'} CM(g)</th>
-                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.lowShockCM || '低冲击'} EM(g)</th>
-                      </>
-                    )}
-                    {visibleSensors.pressure && (
-                      <>
-                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.pressureCM || '压力'} CM(psi)</th>
-                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.pressureCM || '压力'} EM(psi)</th>
-                      </>
-                    )}
-                    {visibleSensors.rotational && (
-                      <>
-                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.rotational || '旋转'} CM(rpm)</th>
-                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.rotational || '旋转'} EM(rpm)</th>
-                      </>
-                    )}
-                    {visibleSensors.temperatureEM && (
-                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.temperature || '温度'} EM(°C)</th>
-                    )}
-                    {visibleSensors.limpet && (
-                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">Limpet EM</th>
-                    )}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {sensorRecords.length === 0 ? (
-                    <tr>
-                      <td colSpan={14} className="px-3 py-8 text-center text-gray-400">
-                        {isMonitoring
-                          ? (dm.waitingData || '等待数据...')
-                          : (dm.clickStart || '点击"开始监控"获取实时数据')}
-                      </td>
-                    </tr>
-                  ) : (
-                    sensorRecords.map((record, idx) => (
-                      <tr key={idx} className={idx === 0 ? 'bg-blue-50' : ''}>
-                        <td className="px-2 py-1.5 text-gray-700 whitespace-nowrap font-mono">{record.timestamp}</td>
-                        {visibleSensors.temperature && (
-                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.temperature}</td>
-                        )}
-                        {visibleSensors.battery && (
-                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.batteryVoltage}</td>
-                        )}
-                        {visibleSensors.highShock && (
-                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.highShockCM}</td>
-                        )}
-                        {visibleSensors.lowShock && (
-                          <>
-                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.lowShockCM}</td>
-                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.lowShockEM}</td>
-                          </>
-                        )}
-                        {visibleSensors.pressure && (
-                          <>
-                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.pressureCM}</td>
-                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.pressureEM}</td>
-                          </>
-                        )}
-                        {visibleSensors.rotational && (
-                          <>
-                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.rotationalCM}</td>
-                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.rotationalEM}</td>
-                          </>
-                        )}
-                        {visibleSensors.temperatureEM && (
-                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.temperatureEM}</td>
-                        )}
-                        {visibleSensors.limpet && (
-                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.limpetEM}</td>
-                        )}
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+            {dataSource === 'downloaded' ? renderDownloadedTable() : renderPollingTable()}
 
-            {/* Sensor Visibility Toggles */}
-            <div className="flex flex-wrap gap-3 mt-3 pt-3 border-t border-gray-100">
-              {(Object.keys(visibleSensors) as Array<keyof typeof visibleSensors>).map(key => {
-                const labelMap: Record<string, string> = {
-                  temperature: dm.temperature || '温度',
-                  battery: dm.batteryVoltage || '电池',
-                  highShock: dm.highShockLabel || '高冲击',
-                  lowShock: dm.lowShockLabel || '低冲击',
-                  pressure: dm.pressureLabel || '压力',
-                  rotational: dm.rotational || '旋转',
-                  temperatureEM: (dm.temperature || '温度') + ' EM',
-                  limpet: 'Limpet',
-                  flashTest: 'Flash',
-                  pressureSelfTest: (dm.pressureLabel || '压力') + ' 自检',
-                };
-                return (
-                  <label key={key} className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={visibleSensors[key]}
-                      onChange={() => toggleSensor(key)}
-                      className="rounded border-gray-300"
-                    />
-                    {labelMap[key] || key}
-                  </label>
-                );
-              })}
-            </div>
+            {/* Sensor Visibility Toggles (only for downloaded data) */}
+            {dataSource === 'downloaded' && downloadedData.length > 0 && (
+              <div className="flex flex-wrap gap-3 mt-3 pt-3 border-t border-gray-100">
+                {(Object.keys(visibleGroups) as Array<keyof typeof visibleGroups>).map(key => {
+                  const labelMap: Record<string, string> = {
+                    temperature: dm.temperature || '温度',
+                    battery: dm.batteryVoltage || '电池',
+                    highShock: dm.highShockLabel || '高冲击',
+                    lowShock: dm.lowShockLabel || '低冲击',
+                    pressure: dm.pressureLabel || '压力',
+                    rotational: dm.rotational || '旋转',
+                    shockLateral: dm.shockLateral || '横向冲击',
+                  };
+                  return (
+                    <label key={key} className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={visibleGroups[key]}
+                        onChange={() => toggleGroup(key)}
+                        className="rounded border-gray-300"
+                      />
+                      {labelMap[key] || key}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Right: Quick Actions */}
@@ -635,19 +877,21 @@ export default function DeviceMonitoringPage() {
                 {testResults.map((result, idx) => (
                   <div key={idx} className="flex items-center gap-3 text-xs p-2 rounded bg-gray-50">
                     <span className={`w-2 h-2 rounded-full ${result.pass ? 'bg-green-500' : 'bg-red-500'}`} />
-                    <span className="font-medium text-gray-700 w-24">{result.name}</span>
+                    <span className="font-medium text-gray-700">{result.name}</span>
                     <span className={result.pass ? 'text-green-600' : 'text-red-600'}>
-                      {result.pass ? (dm.passResult || '通过') : (dm.failResult || '失败')}
+                      {result.pass ? (dm.passed || '通过') : (dm.failed || '失败')}
                     </span>
-                    <span className="text-gray-500">{result.detail}</span>
-                    {result.value !== undefined && (
-                      <span className="font-mono text-gray-700">{result.value}{result.unit ? ' ' + result.unit : ''}</span>
+                    {result.detail && <span className="text-gray-500">- {result.detail}</span>}
+                    {result.value != null && (
+                      <span className="font-mono text-gray-600">
+                        {result.value}{result.unit ? ' ' + result.unit : ''}
+                      </span>
                     )}
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-gray-400">{dm.noTestResults || '暂无测试结果'}</p>
+              <p className="text-sm text-gray-400">{dm.noTestResults || '暂无测试结果'}</p>
             )}
           </div>
         </div>

@@ -407,6 +407,18 @@ export const en: TranslationType = {
     noTestResults: 'No test results yet',
     selectTests: 'Select Tests',
     testing: 'Testing...',
+    noData: 'No Data',
+    downloadFirst: 'Please download data from device first',
+    startDownload: 'Download Data',
+    downloading: 'Downloading...',
+    downloadFailed: 'Download Failed',
+    downloadedData: 'Downloaded Data',
+    instantPolling: 'Instant Polling',
+    chunkProgress: 'Progress',
+    records: 'records',
+    exportFullCSV: 'Export Full CSV',
+    clearData: 'Clear Data',
+    shockLateral: 'Shock Lateral',
   },
 
   // Work History

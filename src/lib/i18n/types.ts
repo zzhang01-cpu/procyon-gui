@@ -388,6 +388,18 @@ export interface TranslationType {
     noTestResults: string;
     selectTests: string;
     testing: string;
+    noData: string;
+    downloadFirst: string;
+    startDownload: string;
+    downloading: string;
+    downloadFailed: string;
+    downloadedData: string;
+    instantPolling: string;
+    chunkProgress: string;
+    records: string;
+    exportFullCSV: string;
+    clearData: string;
+    shockLateral: string;
   };
   workHistory: {
     title: string;
