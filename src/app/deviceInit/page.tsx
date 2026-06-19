@@ -122,7 +122,12 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
       if (result.success) {
         setInitComplete(true);
       } else {
-        setInitError(result.error || 'Initialization failed');
+        const stepInfo = result.steps && result.steps.length > 0
+          ? result.steps.map((s: { name: string; success: boolean; detail?: string }) =>
+              `${s.success ? 'OK' : 'FAIL'}: ${s.name}${s.detail ? ' (' + s.detail + ')' : ''}`
+            ).join('\n')
+          : '';
+        setInitError(result.error || 'Initialization failed' + (stepInfo ? '\n\nSteps:\n' + stepInfo : ''));
       }
     } catch (err) {
       setInitError(err instanceof Error ? err.message : 'Initialization failed');

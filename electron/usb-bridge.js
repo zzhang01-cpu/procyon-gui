@@ -1003,9 +1003,9 @@ ProcyonUsbBridge.prototype.initializeLogger = async function(params, eraseMemory
     if (eraseMemory) {
       if (onProgress) onProgress({ step: 'Erasing Device Memory', status: 'running' });
       var eraseResp = await this.eraseMemory(true);
-      steps.push({ name: 'Erasing Device Memory', success: eraseResp.success });
+      steps.push({ name: 'Erasing Device Memory', success: eraseResp.success, detail: eraseResp.error || '' });
       if (!eraseResp.success) {
-        return { success: false, error: 'Memory erase failed', steps: steps };
+        return { success: false, error: 'Memory erase failed: ' + (eraseResp.error || 'Unknown error'), steps: steps };
       }
     }
 
