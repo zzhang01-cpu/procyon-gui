@@ -105,7 +105,10 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
   };
 
   const handleInitialize = useCallback(async () => {
-    if (!connected) return;
+    if (!connected) {
+      setInitError('Device not connected. Please connect the device first using the left panel.');
+      return;
+    }
     setInitializing(true);
     setInitError(null);
 
@@ -434,7 +437,7 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
           ) : (
             <Button
               onClick={handleInitialize}
-              disabled={!canNext() || initializing || !connected}
+              disabled={!canNext() || initializing}
               className="bg-green-600 hover:bg-green-700 flex items-center gap-1"
             >
               {initializing ? (

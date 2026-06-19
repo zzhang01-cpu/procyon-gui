@@ -66,6 +66,9 @@ export interface TranslationType {
     system: string;
     initializing: string;
     downloading: string;
+    connect: string;
+    disconnect: string;
+    connecting: string;
   };
   home: {
     deviceInit: string;

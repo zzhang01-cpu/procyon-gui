@@ -73,6 +73,9 @@ export const zh: TranslationType = {
     system: '系统测试',
     initializing: '初始化中',
     downloading: '下载中',
+    connect: '连接设备',
+    disconnect: '断开设备',
+    connecting: '连接中...',
   },
 
   // Home

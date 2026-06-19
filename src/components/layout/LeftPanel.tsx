@@ -7,7 +7,7 @@ import { Battery, Wifi, WifiOff, Clock } from 'lucide-react';
 
 export function LeftPanel() {
   const { t, language, setLanguage } = useI18n();
-  const { connected, deviceInfo } = useDevice();
+  const { connected, connecting, deviceInfo, connect, disconnect } = useDevice();
   const [currentTime, setCurrentTime] = useState('');
 
   useEffect(() => {
@@ -82,6 +82,17 @@ export function LeftPanel() {
               }`}
             />
           </div>
+          <button
+            onClick={connected ? disconnect : connect}
+            disabled={connecting}
+            className={`w-full mt-2 text-xs py-1.5 rounded font-medium transition-colors ${
+              connected
+                ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30'
+                : 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
+            } ${connecting ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {connecting ? (t.leftPanel.connecting || 'Connecting...') : connected ? (t.leftPanel.disconnect || 'Disconnect') : (t.leftPanel.connect || 'Connect Device')}
+          </button>
         </div>
       </div>
 

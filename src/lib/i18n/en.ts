@@ -73,6 +73,9 @@ export const en: TranslationType = {
     system: 'System',
     initializing: 'Initializing',
     downloading: 'Downloading',
+    connect: 'Connect Device',
+    disconnect: 'Disconnect',
+    connecting: 'Connecting...',
   },
 
   // Home
