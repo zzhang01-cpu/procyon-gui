@@ -549,9 +549,19 @@ ProcyonUsbBridge.prototype.getFirmwareVersion = async function() {
 ProcyonUsbBridge.prototype.getBatteryVoltage = async function() {
   try {
     var resp = await this.sendGetCommand(CMD.GET_BATTERY_VOLTAGE);
-    if (resp.success && resp.data && resp.data.length >= 4) {
-      var rawMv = this._parseFloat(resp.data);
-      // Device returns millivolts, convert to volts for display
+    if (resp.success && resp.data && resp.data.length > 0) {
+      var rawMv = 0;
+      // First try ASCII string value (e.g. "3620" => 3620 mV)
+      if (resp.value && resp.value.length > 0) {
+        var parsed = parseInt(resp.value, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          rawMv = parsed;
+        }
+      }
+      // Fallback: try float32 binary
+      if (rawMv === 0 && resp.data.length >= 4) {
+        rawMv = Math.round(this._parseFloat(resp.data));
+      }
       var volts = Math.round(rawMv / 10) / 100;
       return { success: true, voltage: volts, rawMv: rawMv };
     }
@@ -577,8 +587,19 @@ ProcyonUsbBridge.prototype.getDeviceTime = async function() {
 ProcyonUsbBridge.prototype.getTemperature = async function() {
   try {
     var resp = await this.sendGetCommand(CMD.GET_TEMPERATURE_DATA_CM);
-    if (resp.success && resp.data && resp.data.length >= 4) {
-      var temp = this._parseFloat(resp.data);
+    if (resp.success && resp.data && resp.data.length > 0) {
+      var temp = 0;
+      // First try ASCII string value
+      if (resp.value && resp.value.length > 0) {
+        var parsed = parseFloat(resp.value);
+        if (!isNaN(parsed) && parsed !== 0) {
+          temp = parsed;
+        }
+      }
+      // Fallback: try float32 binary
+      if (temp === 0 && resp.data.length >= 4) {
+        temp = this._parseFloat(resp.data);
+      }
       return { success: true, temperature: Math.round(temp * 100) / 100 };
     }
     return { success: false, temperature: 0 };
@@ -934,10 +955,10 @@ ProcyonUsbBridge.prototype.initializeLogger = async function(params, eraseMemory
     // Step 2: Check battery level
     if (onProgress) onProgress({ step: 'Checking Connected Battery Level', status: 'running' });
     var battResp = await this.getBatteryVoltage();
-    var battOk = battResp.success && battResp.millivolts >= 3500;
-    steps.push({ name: 'Checking Connected Battery Level', success: battOk, detail: battResp.success ? battResp.millivolts + ' mV' : 'Failed to read' });
+    var battOk = battResp.success && battResp.rawMv >= 3500;
+    steps.push({ name: 'Checking Connected Battery Level', success: battOk, detail: battResp.success ? battResp.rawMv + ' mV' : 'Failed to read' });
     if (!battOk) {
-      return { success: false, error: 'Battery voltage too low (' + (battResp.millivolts || 0) + ' mV, minimum 3500 mV)', steps: steps };
+      return { success: false, error: 'Battery voltage too low (' + (battResp.rawMv || 0) + ' mV, minimum 3500 mV)', steps: steps };
     }
 
     // Step 3: Erase device memory (if requested)
