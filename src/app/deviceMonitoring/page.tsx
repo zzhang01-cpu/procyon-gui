@@ -6,12 +6,25 @@ import { useI18n } from '@/lib/i18n/context';
 
 interface SensorRecord {
   timestamp: string;
+  // Temperature & Battery (from custom GET)
   temperature: string;
   batteryVoltage: string;
-  highShock: string;
-  lowShock: string;
-  pressure: string;
-  rotational: string;
+  // High Shock (g)
+  highShockCM: string;
+  // Low Shock (g)
+  lowShockCM: string;
+  lowShockEM: string;
+  // Pressure (psi)
+  pressureCM: string;
+  pressureEM: string;
+  // Rotational (rpm)
+  rotationalCM: string;
+  rotationalEM: string;
+  // Additional sensors
+  temperatureEM: string;
+  limpetEM: string;
+  flashTest: string;
+  pressureSelfTest: string;
 }
 
 export default function DeviceMonitoringPage() {
@@ -40,6 +53,10 @@ export default function DeviceMonitoringPage() {
     lowShock: true,
     pressure: true,
     rotational: true,
+    temperatureEM: false,
+    limpet: false,
+    flashTest: false,
+    pressureSelfTest: false,
   });
 
   // Launch device
@@ -89,10 +106,17 @@ export default function DeviceMonitoringPage() {
               timestamp: ts,
               temperature: data.temperatureCM || '--',
               batteryVoltage: data.batteryVoltage || '--',
-              highShock: data.highShockCM || '--',
-              lowShock: data.lowShockCM || '--',
-              pressure: data.pressureCM || '--',
-              rotational: data.rotationalCM || '--',
+              highShockCM: data.highShockCM || '--',
+              lowShockCM: data.lowShockCM || '--',
+              lowShockEM: data.lowShockEM || '--',
+              pressureCM: data.pressureCM || '--',
+              pressureEM: data.pressureEM || '--',
+              rotationalCM: data.rotationalCM || '--',
+              rotationalEM: data.rotationalEM || '--',
+              temperatureEM: data.temperatureEM || '--',
+              limpetEM: data.limpetEM || '--',
+              flashTest: data.flashTest || '--',
+              pressureSelfTest: data.pressureSelfTest || '--',
             };
             const updated = [newRecord, ...prev];
             return updated.slice(0, 200);
@@ -177,18 +201,91 @@ export default function DeviceMonitoringPage() {
 
   const exportCSV = () => {
     if (sensorRecords.length === 0) return;
-    const headers = ['Timestamp', 'Temperature (C)', 'Battery (mV)', 'HighShock (g)', 'LowShock (g)', 'Pressure (psi)', 'Rotational (rpm)'];
-    const rows = sensorRecords.map(r =>
-      [r.timestamp, r.temperature, r.batteryVoltage, r.highShock, r.lowShock, r.pressure, r.rotational].join(',')
-    );
-    const csv = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'monitoring_data.csv';
-    link.click();
-    URL.revokeObjectURL(url);
+    // Match original Procyon software CSV format
+    // Export separate CSVs per sensor group, then a combined one
+    const BOM = '\uFEFF'; // UTF-8 BOM for Excel compatibility
+
+    // Temperature CSV (like original)
+    const tempHeaders = ['Timestamp', 'Temperature'];
+    const tempRows = sensorRecords
+      .filter(r => r.temperature !== '--')
+      .map(r => [r.timestamp, r.temperature].join(','));
+    const tempCsv = BOM + [tempHeaders.join(','), ...tempRows].join('\n');
+
+    // Battery CSV
+    const battHeaders = ['Timestamp', 'Battery_mV'];
+    const battRows = sensorRecords
+      .filter(r => r.batteryVoltage !== '--')
+      .map(r => [r.timestamp, r.batteryVoltage].join(','));
+    const battCsv = BOM + [battHeaders.join(','), ...battRows].join('\n');
+
+    // High Shock CSV (single value - GET command only returns aggregate)
+    const hsHeaders = ['Timestamp', 'highShock_g'];
+    const hsRows = sensorRecords
+      .filter(r => r.highShockCM !== '--')
+      .map(r => [r.timestamp, r.highShockCM].join(','));
+    const hsCsv = BOM + [hsHeaders.join(','), ...hsRows].join('\n');
+
+    // Low Shock CSV (CM + EM)
+    const lsHeaders = ['Timestamp', 'lowShockCM_g', 'lowShockEM_g'];
+    const lsRows = sensorRecords
+      .filter(r => r.lowShockCM !== '--' || r.lowShockEM !== '--')
+      .map(r => [r.timestamp, r.lowShockCM, r.lowShockEM].join(','));
+    const lsCsv = BOM + [lsHeaders.join(','), ...lsRows].join('\n');
+
+    // Pressure CSV (CM + EM)
+    const prHeaders = ['Timestamp', 'psi_CM', 'psi_EM'];
+    const prRows = sensorRecords
+      .filter(r => r.pressureCM !== '--' || r.pressureEM !== '--')
+      .map(r => [r.timestamp, r.pressureCM, r.pressureEM].join(','));
+    const prCsv = BOM + [prHeaders.join(','), ...prRows].join('\n');
+
+    // Rotational CSV (CM + EM)
+    const rotHeaders = ['Timestamp', 'rpm_CM', 'rpm_EM'];
+    const rotRows = sensorRecords
+      .filter(r => r.rotationalCM !== '--' || r.rotationalEM !== '--')
+      .map(r => [r.timestamp, r.rotationalCM, r.rotationalEM].join(','));
+    const rotCsv = BOM + [rotHeaders.join(','), ...rotRows].join('\n');
+
+    // Combined full CSV
+    const allHeaders = [
+      'Timestamp', 'Temperature_C', 'Battery_mV',
+      'HighShock_CM_g', 'LowShock_CM_g', 'LowShock_EM_g',
+      'Pressure_CM_psi', 'Pressure_EM_psi',
+      'Rotational_CM_rpm', 'Rotational_EM_rpm',
+      'Temperature_EM_C', 'Limpet_EM', 'FlashTest', 'PressureSelfTest',
+    ];
+    const allRows = sensorRecords.map(r => [
+      r.timestamp, r.temperature, r.batteryVoltage,
+      r.highShockCM, r.lowShockCM, r.lowShockEM,
+      r.pressureCM, r.pressureEM,
+      r.rotationalCM, r.rotationalEM,
+      r.temperatureEM, r.limpetEM, r.flashTest, r.pressureSelfTest,
+    ].join(','));
+    const allCsv = BOM + [allHeaders.join(','), ...allRows].join('\n');
+
+    // Download all files
+    const files = [
+      { name: 'monitoring_temperature.csv', content: tempCsv },
+      { name: 'monitoring_battery.csv', content: battCsv },
+      { name: 'monitoring_highShock.csv', content: hsCsv },
+      { name: 'monitoring_lowShock.csv', content: lsCsv },
+      { name: 'monitoring_pressure.csv', content: prCsv },
+      { name: 'monitoring_rotational.csv', content: rotCsv },
+      { name: 'monitoring_all_data.csv', content: allCsv },
+    ];
+
+    files.forEach((file, idx) => {
+      setTimeout(() => {
+        const blob = new Blob([file.content], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = file.name;
+        link.click();
+        URL.revokeObjectURL(url);
+      }, idx * 300);
+    });
   };
 
   // Get battery from deviceInfo
@@ -264,31 +361,46 @@ export default function DeviceMonitoringPage() {
               <table className="w-full text-xs">
                 <thead className="bg-gray-50 sticky top-0">
                   <tr>
-                    <th className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{dm.timestamp || '时间'}</th>
+                    <th className="px-2 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{dm.timestamp || '时间'}</th>
                     {visibleSensors.temperature && (
-                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.temperature || '温度'} (°C)</th>
+                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.temperature || '温度'} (°C)</th>
                     )}
                     {visibleSensors.battery && (
-                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.batteryVoltage || '电池'} (mV)</th>
+                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.batteryVoltage || '电池'} (mV)</th>
                     )}
                     {visibleSensors.highShock && (
-                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.highShock || '高冲击'} (g)</th>
+                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.highShock || '高冲击'} CM(g)</th>
                     )}
                     {visibleSensors.lowShock && (
-                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.lowShockCM || '低冲击'} (g)</th>
+                      <>
+                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.lowShockCM || '低冲击'} CM(g)</th>
+                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.lowShockCM || '低冲击'} EM(g)</th>
+                      </>
                     )}
                     {visibleSensors.pressure && (
-                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.pressureCM || '压力'} (psi)</th>
+                      <>
+                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.pressureCM || '压力'} CM(psi)</th>
+                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.pressureCM || '压力'} EM(psi)</th>
+                      </>
                     )}
                     {visibleSensors.rotational && (
-                      <th className="px-3 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.rotational || '旋转'} (rpm)</th>
+                      <>
+                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.rotational || '旋转'} CM(rpm)</th>
+                        <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.rotational || '旋转'} EM(rpm)</th>
+                      </>
+                    )}
+                    {visibleSensors.temperatureEM && (
+                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">{dm.temperature || '温度'} EM(°C)</th>
+                    )}
+                    {visibleSensors.limpet && (
+                      <th className="px-2 py-2 text-center font-medium text-gray-600 whitespace-nowrap">Limpet EM</th>
                     )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {sensorRecords.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-3 py-8 text-center text-gray-400">
+                      <td colSpan={14} className="px-3 py-8 text-center text-gray-400">
                         {isMonitoring
                           ? (dm.waitingData || '等待数据...')
                           : (dm.clickStart || '点击"开始监控"获取实时数据')}
@@ -297,24 +409,39 @@ export default function DeviceMonitoringPage() {
                   ) : (
                     sensorRecords.map((record, idx) => (
                       <tr key={idx} className={idx === 0 ? 'bg-blue-50' : ''}>
-                        <td className="px-3 py-1.5 text-gray-700 whitespace-nowrap font-mono">{record.timestamp}</td>
+                        <td className="px-2 py-1.5 text-gray-700 whitespace-nowrap font-mono">{record.timestamp}</td>
                         {visibleSensors.temperature && (
-                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.temperature}</td>
+                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.temperature}</td>
                         )}
                         {visibleSensors.battery && (
-                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.batteryVoltage}</td>
+                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.batteryVoltage}</td>
                         )}
                         {visibleSensors.highShock && (
-                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.highShock}</td>
+                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.highShockCM}</td>
                         )}
                         {visibleSensors.lowShock && (
-                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.lowShock}</td>
+                          <>
+                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.lowShockCM}</td>
+                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.lowShockEM}</td>
+                          </>
                         )}
                         {visibleSensors.pressure && (
-                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.pressure}</td>
+                          <>
+                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.pressureCM}</td>
+                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.pressureEM}</td>
+                          </>
                         )}
                         {visibleSensors.rotational && (
-                          <td className="px-3 py-1.5 text-center text-gray-700 font-mono">{record.rotational}</td>
+                          <>
+                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.rotationalCM}</td>
+                            <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.rotationalEM}</td>
+                          </>
+                        )}
+                        {visibleSensors.temperatureEM && (
+                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.temperatureEM}</td>
+                        )}
+                        {visibleSensors.limpet && (
+                          <td className="px-2 py-1.5 text-center text-gray-700 font-mono">{record.limpetEM}</td>
                         )}
                       </tr>
                     ))
@@ -333,6 +460,10 @@ export default function DeviceMonitoringPage() {
                   lowShock: dm.lowShockLabel || '低冲击',
                   pressure: dm.pressureLabel || '压力',
                   rotational: dm.rotational || '旋转',
+                  temperatureEM: (dm.temperature || '温度') + ' EM',
+                  limpet: 'Limpet',
+                  flashTest: 'Flash',
+                  pressureSelfTest: (dm.pressureLabel || '压力') + ' 自检',
                 };
                 return (
                   <label key={key} className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">

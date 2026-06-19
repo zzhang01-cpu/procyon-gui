@@ -43,27 +43,31 @@ export default function WorkHistoryPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'procyon_data.csv';
+    link.download = 'procyon_all_data.csv';
     link.click();
     URL.revokeObjectURL(url);
   };
 
   const handleExportGroup = (group: SensorGroup) => {
     if (downloadedData.length === 0) return;
+    const BOM = '\uFEFF'; // UTF-8 BOM for Excel compatibility
     let headers: string[] = ['Timestamp'];
     let rows: string[][];
 
     switch (group) {
       case 'temperature':
-        headers = ['Timestamp', 'Temperature (C)'];
-        rows = downloadedData.map(r => [r.timestamp, r.temperature.toFixed(2)]);
+        headers = ['Timestamp', 'Temperature'];
+        rows = downloadedData.map(r => [r.timestamp, r.temperature.toFixed(4)]);
         break;
       case 'battery':
-        headers = ['Timestamp', 'Battery (mV)'];
+        headers = ['Timestamp', 'BatteryV'];
         rows = downloadedData.map(r => [r.timestamp, r.batteryVoltage.toFixed(0)]);
         break;
       case 'highShock':
-        headers = ['Timestamp', 'X_min', 'X_max', 'X_avg', 'X_rms', 'Y_min', 'Y_max', 'Y_avg', 'Y_rms', 'Z_min', 'Z_max', 'Z_avg', 'Z_rms'];
+        // Match original software format: highShockX_min, highShockX_max, etc.
+        headers = ['Timestamp', 'highShockX_min', 'highShockX_max', 'highShockX_avg', 'highShockX_rms',
+          'highShockY_min', 'highShockY_max', 'highShockY_avg', 'highShockY_rms',
+          'highShockZ_min', 'highShockZ_max', 'highShockZ_avg', 'highShockZ_rms'];
         rows = downloadedData.map(r => [
           r.timestamp,
           r.shockMinX.toFixed(3), r.shockMaxX.toFixed(3), r.shockAvgX.toFixed(3), r.shockRmsX.toFixed(3),
@@ -72,7 +76,10 @@ export default function WorkHistoryPage() {
         ]);
         break;
       case 'lowShock':
-        headers = ['Timestamp', 'X_min', 'X_max', 'X_avg', 'X_rms', 'Y_min', 'Y_max', 'Y_avg', 'Y_rms', 'Z_min', 'Z_max', 'Z_avg', 'Z_rms'];
+        // Match original software format: lowShockX_min, lowShockX_max, etc.
+        headers = ['Timestamp', 'lowShockX_min', 'lowShockX_max', 'lowShockX_avg', 'lowShockX_rms',
+          'lowShockY_min', 'lowShockY_max', 'lowShockY_avg', 'lowShockY_rms',
+          'lowShockZ_min', 'lowShockZ_max', 'lowShockZ_avg', 'lowShockZ_rms'];
         rows = downloadedData.map(r => [
           r.timestamp,
           r.shockLowMinX.toFixed(4), r.shockLowMaxX.toFixed(4), r.shockLowAvgX.toFixed(4), r.shockLowRmsX.toFixed(4),
@@ -81,7 +88,10 @@ export default function WorkHistoryPage() {
         ]);
         break;
       case 'rotational':
-        headers = ['Timestamp', 'X_min', 'X_max', 'X_avg', 'X_rms', 'Y_min', 'Y_max', 'Y_avg', 'Y_rms', 'Z_min', 'Z_max', 'Z_avg', 'Z_rms'];
+        // Match original software format: rpmX_min, rpmX_max, etc.
+        headers = ['Timestamp', 'rpmX_min', 'rpmX_max', 'rpmX_avg', 'rpmX_rms',
+          'rpmY_min', 'rpmY_max', 'rpmY_avg', 'rpmY_rms',
+          'rpmZ_min', 'rpmZ_max', 'rpmZ_avg', 'rpmZ_rms'];
         rows = downloadedData.map(r => [
           r.timestamp,
           r.rpmMinX.toFixed(2), r.rpmMaxX.toFixed(2), r.rpmAvgX.toFixed(2), r.rpmRmsX.toFixed(2),
@@ -90,14 +100,19 @@ export default function WorkHistoryPage() {
         ]);
         break;
       case 'pressure':
-        headers = ['Timestamp', 'Pressure (psi)'];
-        rows = downloadedData.map(r => [r.timestamp, r.pressure.toFixed(2)]);
+        // Match original software format: psi_min, psi_max, psi_avg
+        headers = ['Timestamp', 'psi_min', 'psi_max', 'psi_avg'];
+        rows = downloadedData.map(r => {
+          const p = r.pressure;
+          const hasVal = p !== undefined && !isNaN(p);
+          return [r.timestamp, hasVal ? p.toFixed(2) : '', hasVal ? p.toFixed(2) : '', hasVal ? p.toFixed(2) : ''];
+        });
         break;
       default:
         return;
     }
 
-    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const csv = BOM + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

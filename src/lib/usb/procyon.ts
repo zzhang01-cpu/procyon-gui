@@ -665,24 +665,25 @@ export function exportToCSV(data: OneSecondRecord[]): string {
     return '';
   }
 
+  // Match original Procyon software CSV column names
   const headers = [
-    'Timestamp', 'Temperature(C)', 'BatteryV(mV)',
-    'RpmMinX', 'RpmMaxX', 'RpmAvgX', 'RpmRmsX',
-    'RpmMinY', 'RpmMaxY', 'RpmAvgY', 'RpmRmsY',
-    'RpmMinZ', 'RpmMaxZ', 'RpmAvgZ', 'RpmRmsZ',
-    'ShockLowMinX(g)', 'ShockLowMaxX(g)', 'ShockLowAvgX(g)', 'ShockLowRmsX(g)',
-    'ShockLowMinY(g)', 'ShockLowMaxY(g)', 'ShockLowAvgY(g)', 'ShockLowRmsY(g)',
-    'ShockLowMinZ(g)', 'ShockLowMaxZ(g)', 'ShockLowAvgZ(g)', 'ShockLowRmsZ(g)',
-    'ShockMinX(g)', 'ShockMaxX(g)', 'ShockAvgX(g)', 'ShockRmsX(g)',
-    'ShockMinY(g)', 'ShockMaxY(g)', 'ShockAvgY(g)', 'ShockRmsY(g)',
-    'ShockMinZ(g)', 'ShockMaxZ(g)', 'ShockAvgZ(g)', 'ShockRmsZ(g)',
-    'ShockLateralMax(g)', 'ShockLateralRms(g)',
-    'Pressure(psi)',
+    'Timestamp', 'Temperature', 'BatteryV',
+    'rpmX_min', 'rpmX_max', 'rpmX_avg', 'rpmX_rms',
+    'rpmY_min', 'rpmY_max', 'rpmY_avg', 'rpmY_rms',
+    'rpmZ_min', 'rpmZ_max', 'rpmZ_avg', 'rpmZ_rms',
+    'lowShockX_min', 'lowShockX_max', 'lowShockX_avg', 'lowShockX_rms',
+    'lowShockY_min', 'lowShockY_max', 'lowShockY_avg', 'lowShockY_rms',
+    'lowShockZ_min', 'lowShockZ_max', 'lowShockZ_avg', 'lowShockZ_rms',
+    'highShockX_min', 'highShockX_max', 'highShockX_avg', 'highShockX_rms',
+    'highShockY_min', 'highShockY_max', 'highShockY_avg', 'highShockY_rms',
+    'highShockZ_min', 'highShockZ_max', 'highShockZ_avg', 'highShockZ_rms',
+    'highShockLateral_max', 'highShockLateral_rms',
+    'psi_avg',
   ];
 
   const rows = data.map((r) => [
     r.timestamp,
-    r.temperature.toFixed(2),
+    r.temperature.toFixed(4),
     r.batteryVoltage.toFixed(0),
     r.rpmMinX.toFixed(2), r.rpmMaxX.toFixed(2), r.rpmAvgX.toFixed(2), r.rpmRmsX.toFixed(2),
     r.rpmMinY.toFixed(2), r.rpmMaxY.toFixed(2), r.rpmAvgY.toFixed(2), r.rpmRmsY.toFixed(2),
@@ -697,7 +698,8 @@ export function exportToCSV(data: OneSecondRecord[]): string {
     r.pressure.toFixed(2),
   ].join(','));
 
-  return [headers.join(','), ...rows].join('\n');
+  const BOM = '\uFEFF'; // UTF-8 BOM for Excel compatibility
+  return BOM + [headers.join(','), ...rows].join('\n');
 }
 
 // USB Configuration constants
