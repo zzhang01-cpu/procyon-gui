@@ -859,6 +859,25 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         }
       }
 
+      // Alt 5: Try direct bulk read after MEMORY_DUMP_START
+      // Some firmware versions push data without needing GET commands
+      if (numPartitions === 0) {
+        console.log('[USB] Trying direct bulk read after MEMORY_DUMP_START...');
+        // Re-send MEMORY_DUMP_START to ensure device is in dump mode
+        try { await this.sendAckCommand(CMD.MEMORY_DUMP_START); } catch(e) {}
+        await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+
+        // Try reading raw data from EP1 IN (device may push data automatically)
+        var rawBuf = this._readFromDevice(4096, 3000);
+        if (rawBuf && rawBuf.length > 4) {
+          numPartitions = 1;
+          chunksToRead = 0;
+          console.log('[USB] Direct bulk read got ' + rawBuf.length + ' bytes - device pushes data!');
+          // Store the first read for later
+          this._firstDumpRead = rawBuf;
+        }
+      }
+
       // If all alternatives failed, device doesn't support memory dump
       if (numPartitions === 0) {
         console.log('[USB] All memory dump queries failed - device firmware may not support dump commands');
@@ -871,8 +890,16 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     // Step 3: Download data per partition
     var allData = [];
     for (var p = 0; p < numPartitions; p++) {
+      var partitionData = [];
+
+      // If we already have first dump read from direct bulk read, use it
+      if (this._firstDumpRead) {
+        partitionData.push(Buffer.from(this._firstDumpRead));
+        this._firstDumpRead = null;
+      }
+
       // Get chunk info if not already known
-      if (chunksToRead === 0) {
+      if (chunksToRead === 0 && partitionData.length === 0) {
         var totalChunksResp2 = await this.sendGetCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS);
         var writtenChunksResp2 = await this.sendGetCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN);
         var totalC = totalChunksResp2.success ? this._parseU32(totalChunksResp2.data) : 0;
@@ -887,27 +914,49 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         if (cs > 0) chunkSize = cs;
       }
 
-      console.log('[USB] Partition ' + (p + 1) + ': chunksToRead=' + chunksToRead + ', chunkSize=' + chunkSize);
+      var hadFirstRead = partitionData.length > 0; // If we preloaded first dump read, device pushes data directly
+      var useBulkMode = hadFirstRead;
 
-      var partitionData = [];
       var readLimit = chunksToRead > 0 ? chunksToRead : 5000; // max 5000 chunks if unknown
       var consecutiveFailures = 0;
 
-      for (var c = 0; c < readLimit; c++) {
+      console.log('[USB] Partition ' + (p + 1) + ': chunksToRead=' + chunksToRead + ', chunkSize=' + chunkSize + ', preloaded=' + partitionData.length + ', bulkMode=' + useBulkMode);
+
+      for (var c = partitionData.length; c < readLimit; c++) {
         try {
-          var chunkResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_DATA);
-          if (!chunkResp.success || !chunkResp.data || chunkResp.data.length === 0) {
+          var chunkData = null;
+
+          if (useBulkMode) {
+            // Device pushes data directly - use bulk read
+            var directRead = this._readFromDevice(4096, 3000);
+            if (directRead && directRead.length > 4) {
+              chunkData = Buffer.from(directRead);
+            }
+          } else {
+            // Standard GET command mode
+            var chunkResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_DATA);
+            if (chunkResp.success && chunkResp.data && chunkResp.data.length > 0) {
+              chunkData = Buffer.from(chunkResp.data);
+            } else {
+              // Try direct bulk read as fallback
+              var bulkRead = this._readFromDevice(4096, 2000);
+              if (bulkRead && bulkRead.length > 4) {
+                chunkData = Buffer.from(bulkRead);
+                useBulkMode = true; // Switch to bulk mode for subsequent reads
+              }
+            }
+          }
+
+          if (!chunkData) {
             consecutiveFailures++;
             if (consecutiveFailures >= 2 || chunksToRead > 0) {
-              // If we know how many chunks to read, stop on first failure
-              // If unknown, allow one retry
               console.log('[USB] Chunk read failed at ' + (c + 1) + ', stopping');
               break;
             }
             continue;
           }
           consecutiveFailures = 0;
-          partitionData.push(Buffer.from(chunkResp.data));
+          partitionData.push(chunkData);
           if (onProgress) {
             var pct = chunksToRead > 0
               ? Math.round(((c + 1) / chunksToRead) * 100)
