@@ -206,17 +206,17 @@ function findProcyonDevice() {
 // -- Command codes --
 var CMD = {
   GET_FIRMWARE_VERSION: 0x0005,
-  GET_NUMBER_MEMORY_PARTITIONS: 0x000A,
-  GET_MEMORY_DUMP_CHUNK_DATA: 0x0010,
-  GET_PARTITION_WRITTEN_BYTE_COUNT: 0x0019,
-  GET_PARTITION_NUMBER_CHUNKS_WRITTEN: 0x001B,
-  GET_PARTITION_TOTAL_NUMBER_CHUNKS: 0x001D,
-  GET_MEMORY_DUMP_CHUNK_SIZE: 0x001F,
-  MEMORY_ERASE_USED: 0x0030,
-  MEMORY_ERASE_ALL: 0x0032,
-  GET_MEMORY_ERASE_PERCENT: 0x0034,
-  MEMORY_DUMP_START: 0x000C,
-  MEMORY_DUMP_END: 0x000E,
+  GET_NUMBER_MEMORY_PARTITIONS: 0x0190,
+  GET_MEMORY_DUMP_CHUNK_DATA: 0x019A,
+  GET_PARTITION_WRITTEN_BYTE_COUNT: 0x0196,
+  GET_PARTITION_NUMBER_CHUNKS_WRITTEN: 0x0192,
+  GET_PARTITION_TOTAL_NUMBER_CHUNKS: 0x0194,
+  GET_MEMORY_DUMP_CHUNK_SIZE: 0x0198,
+  MEMORY_ERASE_USED: 0x0186,
+  MEMORY_ERASE_ALL: 0x0184,
+  GET_MEMORY_ERASE_PERCENT: 0x0188,
+  MEMORY_DUMP_START: 0x0180,
+  MEMORY_DUMP_END: 0x0182,
   GET_BATTERY_VOLTAGE: 0x0040,
   GET_DEVICE_TIME: 0x0042,
   SET_DEVICE_TIME: 0x0044,
@@ -243,25 +243,22 @@ var CMD = {
   GET_INT_PRESSURE_SENSOR_SN: 0x0168, SET_INT_PRESSURE_SENSOR_SN: 0x016A,
   GET_EXT_PRESSURE_SENSOR_SN: 0x016C, SET_EXT_PRESSURE_SENSOR_SN: 0x016E,
   GET_LIMPET_SENSOR_SN: 0x0170, SET_LIMPET_SENSOR_SN: 0x0172,
-  SET_SELF_TEST_MODE: 0x0064,
-  GET_SELF_TEST_MODE_STATUS: 0x0066,
-  GET_GYRO_SELF_TEST_DATA: 0x0068,
-  GET_GYRO_ACCEL_SELF_TEST_DATA: 0x006A,
-  GET_ACCEL_SELF_TEST_DATA: 0x006C,
-  GET_SPI_TEST_DATA: 0x006E,
-  GET_FLASH_TEST_DATA: 0x0070,
-  GET_ROTATIONAL_DATA_CM: 0x0072,
-  GET_HIGHSHOCK_DATA_CM: 0x0074,
-  GET_LOWSHOCK_DATA_CM: 0x0076,
-  GET_LOWSHOCK_DATA_EM: 0x0078,
-  GET_PRESSURE_DATA_CM: 0x007A,
-  GET_PRESSURE_DATA_EM: 0x007C,
-  GET_PRESSURRE_SELF_TEST_DATA: 0x007E,
-  GET_TEMPERATURE_DATA_EM: 0x0080,
-  GET_LIMPET_DATA_EM: 0x0082,
-  LAUNCH_DEVICE: 0x0050,
-  START_VERIFICATION: 0x0084,
-  VERIFY_STATUS: 0x0086,
+  SET_SELF_TEST_MODE: 0x01E4,
+  GET_SELF_TEST_MODE_STATUS: 0x01E5,
+  GET_FLASH_TEST_DATA: 0x01A0,
+  GET_HIGHSHOCK_DATA_CM: 0x01A2,
+  GET_LOWSHOCK_DATA_CM: 0x01A4,
+  GET_LOWSHOCK_DATA_EM: 0x01A6,
+  GET_PRESSURE_DATA_CM: 0x01A8,
+  GET_PRESSURE_DATA_EM: 0x01AA,
+  GET_PRESSURRE_SELF_TEST_DATA: 0x01AC,
+  GET_ROTATIONAL_DATA_CM: 0x01AE,
+  GET_ROTATIONAL_DATA_EM: 0x01B0,
+  GET_TEMPERATURE_DATA_EM: 0x01B2,
+  GET_LIMPET_DATA_EM: 0x01B4,
+  LAUNCH_DEVICE: 0x0200,
+  START_VERIFICATION: 0x01E0,
+  VERIFY_STATUS: 0x01E2,
   MEMORY_ERASE_TIMEOUT_SECONDS: 0x0036,
   ABORT_FIRMWARE_UPDATE: 0x0052,
   ERASE_INTERNAL_FLASH: 0x0054,
@@ -758,7 +755,7 @@ ProcyonUsbBridge.prototype.getMemoryPartitions = async function() {
 ProcyonUsbBridge.prototype.eraseMemory = async function(eraseAll) {
   try {
     var cmd = eraseAll ? CMD.MEMORY_ERASE_ALL : CMD.MEMORY_ERASE_USED;
-    var resp = await this.sendGetCommand(cmd);
+    var resp = await this.sendAckCommand(cmd);
     if (resp.success) {
       // Wait for erase to complete - poll erase percent
       for (var i = 0; i < 120; i++) {
@@ -779,7 +776,7 @@ ProcyonUsbBridge.prototype.eraseMemory = async function(eraseAll) {
 ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   try {
     // Step 1: Notify device about dump start
-    var notifyResp = await this.sendGetCommand(CMD.MEMORY_DUMP_START);
+    var notifyResp = await this.sendAckCommand(CMD.MEMORY_DUMP_START);
     if (!notifyResp.success) {
       return { success: false, error: 'Failed to start dump', records: [] };
     }
@@ -823,7 +820,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     }
 
     // Step 4: End dump
-    await this.sendGetCommand(CMD.MEMORY_DUMP_END);
+    await this.sendAckCommand(CMD.MEMORY_DUMP_END);
 
     return { success: true, partitions: allData, totalPartitions: numPartitions };
   } catch (error) {
@@ -836,9 +833,9 @@ ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
     var results = [];
     var testList = tests || [
       'toolSNSet', 'rtcTest', 'batteryTest', 'ambientTempTest',
-      'setResetTestMode', 'gyroSelfTest', 'accelGyroSelfTest',
-      'accelSelfTest', 'rotationValidation', 'highShockValidation',
-      'erasingMemoryTest', 'setResetTestModeEnd'
+      'gyroSelfTest', 'accelGyroSelfTest', 'accelSelfTest',
+      'rotationValidation', 'highShockValidation', 'lowShockValidation',
+      'pressureTest', 'erasingMemoryTest'
     ];
 
     // Enter test mode
@@ -850,17 +847,17 @@ ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
 
     var testMap = {
       'toolSNSet': { name: 'Tool Serial Number Set', type: 'input' },
-      'rtcTest': { name: 'RTC Test', cmd: CMD.GET_DEVICE_TIME, compare: 'time' },
-      'batteryTest': { name: 'Battery Voltage Test', cmd: CMD.GET_BATTERY_VOLTAGE, check: 'range', min: 3500 },
-      'ambientTempTest': { name: 'Ambient Temperature Test', cmd: CMD.GET_TEMPERATURE_DATA_CM, check: 'range', min: -40, max: 150 },
-      'setResetTestMode': { name: 'Set Reset Test Mode', cmd: CMD.SET_SELF_TEST_MODE, value: '1' },
-      'gyroSelfTest': { name: 'Gyro Self Test', cmd: CMD.GET_GYRO_SELF_TEST_DATA },
-      'accelGyroSelfTest': { name: 'Accel Gyro Self Test', cmd: CMD.GET_GYRO_ACCEL_SELF_TEST_DATA },
-      'accelSelfTest': { name: 'Accel Self Test', cmd: CMD.GET_ACCEL_SELF_TEST_DATA },
-      'rotationValidation': { name: 'Rotation Validation', cmd: CMD.GET_ROTATIONAL_DATA_CM },
-      'highShockValidation': { name: 'High Shock Validation', cmd: CMD.GET_HIGHSHOCK_DATA_CM },
-      'erasingMemoryTest': { name: 'Erasing Memory Test', cmd: CMD.MEMORY_ERASE_USED },
-      'setResetTestModeEnd': { name: 'Set Reset Test Mode', cmd: CMD.SET_SELF_TEST_MODE, value: '0' },
+      'rtcTest': { name: 'RTC Test', type: 'verify', verificationId: '1' },
+      'batteryTest': { name: 'Battery Voltage Test', type: 'read', cmd: CMD.GET_BATTERY_VOLTAGE, check: 'range', min: 3500 },
+      'ambientTempTest': { name: 'Ambient Temperature Test', type: 'read', cmd: CMD.GET_TEMPERATURE_DATA_CM, check: 'range', min: -40, max: 150 },
+      'gyroSelfTest': { name: 'Gyro Self Test', type: 'verify', verificationId: '2' },
+      'accelGyroSelfTest': { name: 'Accel+Gyro Self Test', type: 'verify', verificationId: '3' },
+      'accelSelfTest': { name: 'Accel Self Test', type: 'verify', verificationId: '4' },
+      'rotationValidation': { name: 'Rotation Validation', type: 'verify', verificationId: '5' },
+      'highShockValidation': { name: 'High Shock Validation', type: 'verify', verificationId: '6' },
+      'lowShockValidation': { name: 'Low Shock Validation', type: 'verify', verificationId: '7' },
+      'pressureTest': { name: 'Pressure Sensor Test', type: 'verify', verificationId: '8' },
+      'erasingMemoryTest': { name: 'Erasing Memory Test', type: 'erase' }
     };
 
     for (var i = 0; i < testList.length; i++) {
@@ -883,34 +880,69 @@ ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
           var snResp = await this.getToolSN();
           testResult.pass = snResp.success && snResp.value && snResp.value.length > 0;
           testResult.detail = testResult.pass ? 'Tool S/N verified: ' + snResp.value : 'Tool S/N not set';
-        } else if (testInfo.value !== undefined) {
-          // SET command test
-          var setResp = await this.sendSetCommand(testInfo.cmd, testInfo.value);
-          testResult.pass = setResp.success;
-          testResult.detail = 'Set to: ' + testInfo.value;
-        } else if (testInfo.cmd) {
-          // GET command test
+
+        } else if (testInfo.type === 'verify') {
+          // Use START_VERIFICATION + VERIFY_STATUS protocol
+          // Send verification ID as data
+          var startResp = await this.sendCommand(CMD.START_VERIFICATION, [], true);
+          if (startResp.success) {
+            // Wait for verification to complete (up to 10 seconds)
+            var verifyPass = false;
+            var verifyDetail = '';
+            for (var retry = 0; retry < 20; retry++) {
+              await new Promise(function(resolve) { setTimeout(resolve, 500); });
+              var statusResp = await this.sendGetCommand(CMD.VERIFY_STATUS);
+              if (statusResp.success && statusResp.value) {
+                // Response value: non-zero and not '0' means pass
+                var statusVal = statusResp.value.trim();
+                if (statusVal !== '' && statusVal !== '0') {
+                  verifyPass = true;
+                  verifyDetail = 'Status: ' + statusVal;
+                  break;
+                } else if (statusVal === '0') {
+                  verifyDetail = 'Failed (status=0)';
+                  break;
+                }
+              }
+            }
+            testResult.pass = verifyPass;
+            testResult.detail = verifyDetail || 'Verification timeout';
+          } else {
+            testResult.detail = 'Failed to start verification';
+          }
+
+        } else if (testInfo.type === 'read') {
+          // Read sensor value and check range
           var resp = await this.sendGetCommand(testInfo.cmd);
           if (resp.success && resp.data) {
-            if (testInfo.check === 'range') {
-              var val = this._parseFloat(resp.data);
-              var minOk = testInfo.min === undefined || val >= testInfo.min;
-              var maxOk = testInfo.max === undefined || val <= testInfo.max;
-              testResult.pass = minOk && maxOk;
-              testResult.detail = 'Value: ' + val.toFixed(2);
-            } else if (testInfo.compare === 'time') {
-              testResult.pass = true;
-              testResult.detail = 'Time check passed';
-            } else if (testInfo.cmd === CMD.MEMORY_ERASE_USED) {
-              testResult.pass = true;
-              testResult.detail = 'Memory erase initiated';
-            } else {
-              // For sensor self tests, check if data returned and non-zero
-              testResult.pass = resp.data.length > 0;
-              testResult.detail = 'Data length: ' + resp.data.length + ' bytes';
-            }
+            var val = this._parseFloat(resp.data);
+            var minOk = testInfo.min === undefined || val >= testInfo.min;
+            var maxOk = testInfo.max === undefined || val <= testInfo.max;
+            testResult.pass = minOk && maxOk;
+            testResult.detail = 'Value: ' + val.toFixed(2);
           } else {
-            testResult.detail = 'No response or invalid data';
+            testResult.detail = 'No response';
+          }
+
+        } else if (testInfo.type === 'erase') {
+          // Erase memory test
+          var eraseResp = await this.eraseMemory(false);
+          testResult.pass = eraseResp.success;
+          testResult.detail = eraseResp.success ? 'Erase initiated' : 'Erase failed';
+          // Wait for erase to complete
+          if (eraseResp.success) {
+            for (var eraseRetry = 0; eraseRetry < 60; eraseRetry++) {
+              await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+              var pctResp = await this.sendGetCommand(CMD.GET_MEMORY_ERASE_PERCENT);
+              if (pctResp.success && pctResp.value) {
+                var pct = parseInt(pctResp.value, 10);
+                if (pct >= 100) {
+                  testResult.detail = 'Erase completed (100%)';
+                  break;
+                }
+                testResult.detail = 'Erasing: ' + pct + '%';
+              }
+            }
           }
         }
       } catch (testErr) {
@@ -918,7 +950,7 @@ ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
       }
 
       results.push(testResult);
-      await new Promise(function(resolve) { setTimeout(resolve, 300); });
+      await new Promise(function(resolve) { setTimeout(resolve, 200); });
     }
 
     // Exit test mode
@@ -936,6 +968,8 @@ ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
       }
     };
   } catch (error) {
+    // Try to exit test mode on error
+    try { await this.sendSetCommand(CMD.SET_SELF_TEST_MODE, '0'); } catch(e) {}
     return { success: false, error: error.message, results: [] };
   }
 };
@@ -944,8 +978,12 @@ ProcyonUsbBridge.prototype.initializeLogger = async function(params, eraseMemory
   try {
     var steps = [];
 
-    // Step 1: Set all parameters on the device
+    // Step 1: Set device time first
     if (onProgress) onProgress({ step: 'Setting Parameters On the Device', status: 'running' });
+    var timeResp = await this.setDeviceTime();
+    steps.push({ name: 'Set Device Time', success: timeResp.success });
+
+    // Step 2: Set all parameters on the device
     var setParams = await this.setMultipleParameters(params);
     steps.push({ name: 'Setting Parameters On the Device', success: setParams.success });
     if (!setParams.success) {
@@ -997,8 +1035,8 @@ ProcyonUsbBridge.prototype.launchDevice = async function(delaySeconds) {
     data.push((delay >> 8) & 0xFF);
     data.push((delay >> 16) & 0xFF);
     data.push((delay >> 24) & 0xFF);
-    var resp = await this.sendSetCommand(CMD.LAUNCH_DEVICE, data);
-    return { success: resp.success, detail: resp.success ? 'Device launched successfully' : 'Launch failed' };
+    var result = await this.sendCommand(CMD.LAUNCH_DEVICE, data);
+    return { success: result.success, detail: result.success ? 'Device launched with ' + delay + 's delay' : 'Launch failed' };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1007,8 +1045,8 @@ ProcyonUsbBridge.prototype.launchDevice = async function(delaySeconds) {
 ProcyonUsbBridge.prototype.listDevices = function() {
   if (this.connected && this.deviceInfo) {
     return [{
-      vendorId: '0x' + VID.toString(16).toUpperCase(),
-      productId: '0x' + PID.toString(16).toUpperCase(),
+      vendorId: '0x' + PROCYON_VID.toString(16).toUpperCase(),
+      productId: '0x' + PROCYON_PID.toString(16).toUpperCase(),
       serialNumber: this.deviceInfo.serialNumber || '',
       deviceName: 'Procyon-CM',
       manufacturer: 'Procyon',
