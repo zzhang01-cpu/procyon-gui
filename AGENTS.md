@@ -262,6 +262,42 @@ interface DeviceContextType {
 - SET 命令返回字符串值，`"0"` 表示失败，非零非null 表示成功
 - 响应包格式: `[cmdlow_resp, cmdhigh_resp, lengthlow, lengthhigh, ...data]` (响应码 = 请求码 + 1)
 
+### 数据记录格式（RecordFormatFiles.json）
+设备下载的二进制数据按 record format 解析，格式文件在 `public/RecordFormatFiles.json`。
+原始软件使用 C++ `LogConverter.dll`（`GenericLogConverter` 基类）解析二进制。
+
+**OneSecondData (0xA0) 记录结构**（固件 v2.1+）：
+```
+s16 Temperature  offset=0.0  scale=0.03125
+s16 BatteryV     offset=0.0  scale=0.001027
+s16 RpmMinX/Y/Z  offset=0.0  scale=0.02333  (4 each: Min/Max/Avg/Rms)
+s16 ShockLowMinX/Y/Z  offset=0.0  scale=0.000244  (4 each: Min/Max/Avg/Rms)
+s16 ShockMinX/Y/Z     offset=0.0  scale=0.2  (4 each: Min/Max/Avg/Rms)
+s16 ShockLateralMax/Rms  offset=0.0  scale=0.2
+```
+
+**其他记录类型**：
+- 0x01 FirmwareVersion, 0x02 Reset, 0x0D FlashDeviceID
+- 0x80 RpmAxialWaveform (csv_chain), 0x81 GyroTagDataCorrupt
+- 0x82 StickSlip, 0x90 AccelWaveform, 0x91 LowShockWaveform
+- 0xB0-B4 ParameterError events, 0xD0 DebugEvent, 0xD1 PhoenixOneSecondData
+- 0xFE LoggingSystemError, 0xFF Flush
+
+**二进制解析要点**（从 LogConverter.dll 提取）：
+- Record header pattern detection for record boundaries
+- Byte stuffing handling at record boundaries
+- csv_chain records: each row gets a timestamp, output to chain CSV
+- Main CSV: only non-chain records (OneSecondData, etc.)
+- Stats CSV: record count and byte totals per record type
+
+### 原始软件配置
+- **版本**: Procyon.exe v4.6.7.0, .NET 7.0 WinForms
+- **UI 框架**: Bunifu.UI.WinForms + DevExpress v23.2
+- **USB 库**: LibUsbDotNet.dll (v2.2.8/v3.0.0)
+- **数据库**: SQLite (encrypted, key in dbconfig.json)
+- **数据转换**: LogConverter.dll (C++ native, GenericLogConverter)
+- **安装方式**: ClickOnce (Launcher.exe 入口)
+
 ## 编码规范
 
 - TypeScript strict 模式，禁止隐式 any

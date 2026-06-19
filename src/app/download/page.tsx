@@ -275,24 +275,62 @@ export default function DownloadPage({ onNavigate }: DownloadPageProps) {
             </div>
           )}
 
-          {/* Export button */}
+          {/* Download result summary */}
+          {dumpComplete && downloadResult && downloadResult.success && (
+            <div className="mt-4 p-3 bg-green-50 rounded-lg border border-green-200">
+              <h4 className="text-xs font-semibold text-green-800 mb-2">Download Summary</h4>
+              <div className="grid grid-cols-3 gap-2 text-xs text-slate-600">
+                <div>Partitions: <span className="font-medium text-slate-800">{downloadResult.totalPartitions}</span></div>
+                <div>Total Size: <span className="font-medium text-slate-800">
+                  {downloadResult.partitions.reduce((sum, p) => sum + p.size, 0).toLocaleString()} bytes
+                </span></div>
+                <div>Device: <span className="font-medium text-slate-800">{deviceInfo?.serialNumber || 'N/A'}</span></div>
+              </div>
+            </div>
+          )}
+
+          {/* Export buttons */}
           {dumpComplete && downloadResult && downloadResult.success && (
             <div className="mt-4 flex gap-2">
               <Button
                 onClick={() => {
                   const csv = exportData();
-                  const blob = new Blob([csv], { type: 'text/csv' });
-                  const url = window.URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'OneSecondData.csv';
-                  a.click();
-                  window.URL.revokeObjectURL(url);
+                  if (csv) {
+                    const blob = new Blob([csv], { type: 'text/csv' });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'OneSecondData.csv';
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                  }
                 }}
                 className="bg-blue-600 hover:bg-blue-700 text-xs"
                 size="sm"
               >
                 {t.download.exportCSV}
+              </Button>
+              <Button
+                onClick={() => {
+                  // Export raw binary data
+                  const allData: number[] = [];
+                  downloadResult.partitions.forEach((p) => {
+                    allData.push(...p.data);
+                  });
+                  const byteArray = new Uint8Array(allData);
+                  const blob = new Blob([byteArray], { type: 'application/octet-stream' });
+                  const url = window.URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'procyon_raw_data.bin';
+                  a.click();
+                  window.URL.revokeObjectURL(url);
+                }}
+                variant="outline"
+                size="sm"
+                className="text-xs"
+              >
+                Export Binary
               </Button>
               <Button
                 onClick={() => {
