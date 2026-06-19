@@ -67,7 +67,7 @@ export default function HomePage({ onNavigate }: HomePageProps) {
           const descKey = (card.id + 'Desc') as keyof typeof t.home;
           const label = t.home[labelKey] || card.id;
           const description = t.home[descKey] || '';
-          const isDisabled = !connected && card.id !== 'settings';
+          const isDisabled = !connected && ['downloadUpload', 'workHistory', 'configStatus', 'deviceMonitoring'].includes(card.id);
 
           return (
             <button
