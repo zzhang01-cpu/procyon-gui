@@ -203,7 +203,7 @@ export default function ConnectionPage() {
             <div>
               <label className="text-sm text-slate-500">{t.connection.batteryVoltage}</label>
               <p className="font-mono text-slate-900">
-                {deviceInfo.batteryVoltage !== undefined ? `${deviceInfo.batteryVoltage.toFixed(2)} V` : '-'}
+                {deviceInfo.batteryVoltage !== undefined ? `${(deviceInfo.batteryVoltage / 1000).toFixed(2)} V` : '-'}
               </p>
             </div>
             <div>

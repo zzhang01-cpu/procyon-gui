@@ -62,7 +62,7 @@ export default function DashboardPage() {
                 </div>
                 <div>
                   <p className="text-sm text-slate-500">{t.connection.batteryVoltage}</p>
-                  <p className="font-medium">{deviceInfo.batteryVoltage?.toFixed(2) ?? '-'} V</p>
+                  <p className="font-medium">{deviceInfo.batteryVoltage !== undefined ? `${(deviceInfo.batteryVoltage / 1000).toFixed(2)} V` : '-'}</p>
                 </div>
               </div>
               <div className="flex items-center gap-3">

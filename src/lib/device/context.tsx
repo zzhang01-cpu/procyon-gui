@@ -408,7 +408,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       try {
         const battResult = await getBatteryVoltage();
         if (battResult.success) {
-          setDeviceInfo((prev) => prev ? { ...prev, batteryVoltage: battResult.voltage } : prev);
+          setDeviceInfo((prev) => prev ? { ...prev, batteryVoltage: battResult.rawMv || battResult.voltage } : prev);
         }
         const tempResult = await getTemperature();
         if (tempResult.success) {

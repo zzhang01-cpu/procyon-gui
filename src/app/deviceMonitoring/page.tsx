@@ -124,16 +124,17 @@ export default function DeviceMonitoringPage() {
 
   // Sensor display cards for real-time tab
   const sensorCards = [
-    { key: 'temperature', label: 'Temperature', unit: '\u00B0C', icon: '\uD83C\uDF21\uFE0F' },
-    { key: 'battery', label: 'Battery Voltage', unit: 'mV', icon: '\uD83D\uDD0B' },
-    { key: 'rpm_x', label: 'RPM X', unit: 'rpm', icon: '\uD83D\uDD04' },
-    { key: 'rpm_y', label: 'RPM Y', unit: 'rpm', icon: '\uD83D\uDD04' },
-    { key: 'rpm_z', label: 'RPM Z', unit: 'rpm', icon: '\uD83D\uDD04' },
-    { key: 'shock_high', label: 'High Shock', unit: 'g', icon: '\u26A1' },
-    { key: 'shock_low', label: 'Low Shock', unit: 'g', icon: '\uD83D\uDCA8' },
-    { key: 'pressure', label: 'Pressure', unit: 'psi', icon: '\uD83D\uDCCA' },
-    { key: 'rotation', label: 'Rotation', unit: '\u00B0/s', icon: '\uD83D\uDD04' },
-    { key: 'limpet', label: 'Limpet', unit: '', icon: '\uD83D\uDCE1' },
+    { key: 'temperatureCM', label: 'Temperature (CM)', unit: '\u00B0C', icon: '\uD83C\uDF21\uFE0F' },
+    { key: 'batteryVoltage', label: 'Battery Voltage', unit: 'mV', icon: '\uD83D\uDD0B' },
+    { key: 'highShockCM', label: 'High Shock', unit: 'g', icon: '\u26A1' },
+    { key: 'lowShockCM', label: 'Low Shock (CM)', unit: 'g', icon: '\uD83D\uDCA8' },
+    { key: 'lowShockEM', label: 'Low Shock (EM)', unit: 'g', icon: '\uD83D\uDCA8' },
+    { key: 'pressureCM', label: 'Pressure (CM)', unit: 'psi', icon: '\uD83D\uDCCA' },
+    { key: 'pressureEM', label: 'Pressure (EM)', unit: 'psi', icon: '\uD83D\uDCCA' },
+    { key: 'rotationalCM', label: 'Rotation (CM)', unit: 'rpm', icon: '\uD83D\uDD04' },
+    { key: 'rotationalEM', label: 'Rotation (EM)', unit: 'rpm', icon: '\uD83D\uDD04' },
+    { key: 'temperatureEM', label: 'Temperature (EM)', unit: '\u00B0C', icon: '\uD83C\uDF21\uFE0F' },
+    { key: 'limpetEM', label: 'Limpet (EM)', unit: '', icon: '\uD83D\uDCE1' },
   ];
 
   return (

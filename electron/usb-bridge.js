@@ -230,20 +230,25 @@ var CMD = {
   GET_DEPT_OUT: 0x0116, SET_DEPT_OUT: 0x0118,
   GET_UNIQUE_ID: 0x011A, SET_UNIQUE_ID: 0x011C,
   GET_LDAP: 0x011E, SET_LDAP: 0x0120,
+  SET_HOUSING_NUMBER: 0x0122,
+  SET_BHA_SERIAL_NUMBER: 0x0126,
   GET_TOOL_TYPE: 0x0130, SET_TOOL_TYPE: 0x0132,
   GET_TOOL_AXIAL_POSITION: 0x0134, SET_TOOL_AXIAL_POSITION: 0x0136,
   GET_TOOL_SIZE: 0x0138, SET_TOOL_SIZE: 0x013A,
   GET_TOOL_POSITION: 0x013C, SET_TOOL_POSITION: 0x013E,
-  GET_HOUSING_NUMBER: 0x0140, SET_HOUSING_NUMBER: 0x0142,
-  GET_BHA_SERIAL_NUMBER: 0x0144, SET_BHA_SERIAL_NUMBER: 0x0146,
+  SET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER: 0x0140,
+  SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER: 0x0142,
+  SET_DRILL_BIT_INFO_BIT_BOM: 0x0144,
   GET_CONFIG_NAME: 0x0148, SET_CONFIG_NAME: 0x014A,
   GET_TOOL_SN: 0x014C, SET_TOOL_SN: 0x014E,
+  GET_AMPLIFIER_DAC_OFFSET: 0x0150, SET_AMPLIFIER_DAC_OFFSET: 0x0152,
+  SET_AMPLIFIER_FIRST_STAGE_GAIN: 0x0154,
+  SET_AMPLIFIER_SECOND_STAGE_GAIN: 0x0156,
   GET_UH_CONNECTION_TYPE: 0x0160, SET_UH_CONNECTION_TYPE: 0x0162,
   GET_DH_CONNECTION_TYPE: 0x0164, SET_DH_CONNECTION_TYPE: 0x0166,
   GET_INT_PRESSURE_SENSOR_SN: 0x0168, SET_INT_PRESSURE_SENSOR_SN: 0x016A,
   GET_EXT_PRESSURE_SENSOR_SN: 0x016C, SET_EXT_PRESSURE_SENSOR_SN: 0x016E,
   GET_LIMPET_SENSOR_SN: 0x0170, SET_LIMPET_SENSOR_SN: 0x0172,
-  SET_SELF_TEST_MODE: 0x01E4,
   GET_SELF_TEST_MODE_STATUS: 0x01E5,
   GET_FLASH_TEST_DATA: 0x01A0,
   GET_HIGHSHOCK_DATA_CM: 0x01A2,
@@ -259,15 +264,6 @@ var CMD = {
   LAUNCH_DEVICE: 0x0200,
   START_VERIFICATION: 0x01E0,
   VERIFY_STATUS: 0x01E2,
-  MEMORY_ERASE_TIMEOUT_SECONDS: 0x0036,
-  ABORT_FIRMWARE_UPDATE: 0x0052,
-  ERASE_INTERNAL_FLASH: 0x0054,
-  GET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER: 0x0150, SET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER: 0x0152,
-  GET_DRILL_BIT_INFO_BIT_BLADE_NUMBER: 0x0154, SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER: 0x0156,
-  GET_DRILL_BIT_INFO_BIT_BOM: 0x0158, SET_DRILL_BIT_INFO_BIT_BOM: 0x015A,
-  GET_AMPLIFIER_DAC_OFFSET: 0x0174, SET_AMPLIFIER_DAC_OFFSET: 0x0176,
-  GET_AMPLIFIER_FIRST_STAGE_GAIN: 0x0178, SET_AMPLIFIER_FIRST_STAGE_GAIN: 0x017A,
-  GET_AMPLIFIER_SECOND_STAGE_GAIN: 0x017C, SET_AMPLIFIER_SECOND_STAGE_GAIN: 0x017E,
 };
 
 // -- Packet helpers --
@@ -624,6 +620,10 @@ ProcyonUsbBridge.prototype.getDHConnectionType = function()  { return this._getS
 ProcyonUsbBridge.prototype.getIntPressureSN = function()     { return this._getStringParam(CMD.GET_INT_PRESSURE_SENSOR_SN); };
 ProcyonUsbBridge.prototype.getExtPressureSN = function()     { return this._getStringParam(CMD.GET_EXT_PRESSURE_SENSOR_SN); };
 ProcyonUsbBridge.prototype.getLimpetSN = function()          { return this._getStringParam(CMD.GET_LIMPET_SENSOR_SN); };
+ProcyonUsbBridge.prototype.getToolAxialPosition = function() { return this._getStringParam(CMD.GET_TOOL_AXIAL_POSITION); };
+ProcyonUsbBridge.prototype.getAmplifierDACOffset = function() { return this._getStringParam(CMD.GET_AMPLIFIER_DAC_OFFSET); };
+// Note: Housing Number, BHA Serial Number, Sensor Head SN, Drill Bit info, and some Amplifier params
+// are SET-only per the DLL - no GET command defined. They will show N/A in Config Status.
 
 ProcyonUsbBridge.prototype._getStringParam = async function(commandCode) {
   try {
@@ -1084,6 +1084,10 @@ ProcyonUsbBridge.prototype.getAllParameters = async function() {
       intPressureSN: this.getIntPressureSN.bind(this),
       extPressureSN: this.getExtPressureSN.bind(this),
       limpetSN: this.getLimpetSN.bind(this),
+      toolAxialPosition: this.getToolAxialPosition.bind(this),
+      amplifierDACOffset: this.getAmplifierDACOffset.bind(this),
+      // SET-only params (no GET in protocol): housingNumber, bhaSerialNumber, sensorHeadSN,
+      // drillBitBladeNumber, drillBitBOM, amplifierFirstStageGain, amplifierSecondStageGain
     };
     var keys = Object.keys(getters);
     for (var i = 0; i < keys.length; i++) {
@@ -1126,9 +1130,20 @@ ProcyonUsbBridge.prototype.getSensorData = async function() {
       try {
         var result = await getter.fn();
         if (result && result.success) {
-          var val = result.value !== undefined ? result.value : '';
+          var val = result.value;
+          // getBatteryVoltage returns { voltage, rawMv }
+          if (val === undefined && result.rawMv !== undefined) {
+            val = result.rawMv;
+          }
+          // getTemperature returns { temperature }
+          if (val === undefined && result.temperature !== undefined) {
+            val = result.temperature;
+          }
           if (typeof val === 'number') {
             val = val.toFixed(3);
+          }
+          if (val === undefined || val === null) {
+            val = '';
           }
           sensorData[key] = String(val);
           sensorData[key + '_unit'] = getter.unit;
@@ -1177,15 +1192,18 @@ ProcyonUsbBridge.prototype.setMultipleParameters = async function(params) {
       toolSN: CMD.SET_TOOL_SN,
       uhConnectionType: CMD.SET_UH_CONNECTION_TYPE,
       dhConnectionType: CMD.SET_DH_CONNECTION_TYPE,
-      intPressureSN: CMD.SET_INT_PRESSURE_SENSOR_SERIAL_NUMBER,
-      extPressureSN: CMD.SET_EXT_PRESSURE_SENSOR_SERIAL_NUMBER,
-      limpetSN: CMD.SET_LIMPET_SENSOR_SERIAL_NUMBER,
+      intPressureSN: CMD.SET_INT_PRESSURE_SENSOR_SN,
+      extPressureSN: CMD.SET_EXT_PRESSURE_SENSOR_SN,
+      limpetSN: CMD.SET_LIMPET_SENSOR_SN,
       housingNumber: CMD.SET_HOUSING_NUMBER,
       bhaSerialNumber: CMD.SET_BHA_SERIAL_NUMBER,
       axialPosition: CMD.SET_TOOL_AXIAL_POSITION,
       sensorHeadSN: CMD.SET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER,
       bitBladeNumber: CMD.SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER,
       bitBOM: CMD.SET_DRILL_BIT_INFO_BIT_BOM,
+      amplifierDACOffset: CMD.SET_AMPLIFIER_DAC_OFFSET,
+      amplifierFirstStageGain: CMD.SET_AMPLIFIER_FIRST_STAGE_GAIN,
+      amplifierSecondStageGain: CMD.SET_AMPLIFIER_SECOND_STAGE_GAIN,
     };
     var keys = Object.keys(params);
     for (var i = 0; i < keys.length; i++) {

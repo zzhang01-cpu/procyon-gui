@@ -519,12 +519,12 @@ export function onSelfTestProgress(callback: (progress: SelfTestProgress) => voi
 /**
  * Get battery voltage
  */
-export async function getBatteryVoltage(): Promise<{ success: boolean; voltage: number; error?: string }> {
+export async function getBatteryVoltage(): Promise<{ success: boolean; voltage: number; rawMv?: number; error?: string }> {
   const api = getAPI();
   if (!api) {
     throw new Error('Not running in Electron environment');
   }
-  return api.getBatteryVoltage() as Promise<{ success: boolean; voltage: number; error?: string }>;
+  return api.getBatteryVoltage() as Promise<{ success: boolean; voltage: number; rawMv?: number; error?: string }>;
 }
 
 /**
