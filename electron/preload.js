@@ -48,17 +48,38 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Memory operations
   eraseUsedMemory: () => ipcRenderer.invoke('device:erase-used-memory'),
   eraseAllMemory: () => ipcRenderer.invoke('device:erase-all-memory'),
+  eraseMemory: (eraseAll) => ipcRenderer.invoke('device:erase-memory', eraseAll),
 
   // Test operations
-  runSelfTest: () => ipcRenderer.invoke('device:run-self-test'),
+  runSelfTest: (tests) => ipcRenderer.invoke('device:run-self-test', tests),
+
+  // Launch device (delayed start)
+  launchDevice: () => ipcRenderer.invoke('device:launch-device'),
 
   // Sensor readings
   getBatteryVoltage: () => ipcRenderer.invoke('device:get-battery-voltage'),
   getTemperature: () => ipcRenderer.invoke('device:get-temperature'),
 
   // Logger
-  initializeLogger: (config) => ipcRenderer.invoke('device:initialize-logger', config),
+  initializeLogger: (params, eraseMemory) => ipcRenderer.invoke('device:initialize-logger', params, eraseMemory),
 
   // Get all parameters at once
   getAllParameters: () => ipcRenderer.invoke('device:get-all-parameters'),
+
+  // Progress event listeners
+  onDownloadProgress: (callback) => {
+    var handler = function(_event, data) { callback(data); };
+    ipcRenderer.on('download:progress', handler);
+    return function() { ipcRenderer.removeListener('download:progress', handler); };
+  },
+  onSelfTestProgress: (callback) => {
+    var handler = function(_event, data) { callback(data); };
+    ipcRenderer.on('selftest:progress', handler);
+    return function() { ipcRenderer.removeListener('selftest:progress', handler); };
+  },
+  onInitProgress: (callback) => {
+    var handler = function(_event, data) { callback(data); };
+    ipcRenderer.on('init:progress', handler);
+    return function() { ipcRenderer.removeListener('init:progress', handler); };
+  },
 });

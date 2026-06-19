@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import {
   connectToDevice,
   disconnectDevice,
@@ -27,10 +27,14 @@ import {
   setLimpetSN as usbSetLimpetSN,
   setDeviceTime as usbSetDeviceTime,
   writeIntoFlash as usbWriteIntoFlash,
-  setInitParameters as usbSetInitParameters,
-  downloadOneSecondData,
+  downloadData as usbDownloadData,
+  onDownloadProgress,
   runSelfTest as usbRunSelfTest,
-  initializeLogger,
+  onSelfTestProgress,
+  initializeLogger as usbInitializeLogger,
+  onInitProgress,
+  launchDevice as usbLaunchDevice,
+  eraseMemory as usbEraseMemory,
   listDevices,
   isElectron,
   exportToCSV,
@@ -38,6 +42,11 @@ import {
   type DeviceInfo,
   type OneSecondRecord,
   type SelfTestResult,
+  type SelfTestSummary,
+  type DownloadProgress,
+  type InitProgress,
+  type SelfTestProgress,
+  type DownloadResult,
   type UsbDeviceInfo,
 } from '../usb/procyon';
 
@@ -88,34 +97,33 @@ interface DeviceContextType {
   // Flash write
   writeIntoFlash: () => Promise<boolean>;
 
-  // Batch parameter setting (sets all params with 50ms delays + flash write)
-  setInitParameters: (params: {
-    customer?: string;
-    country?: string;
-    district?: string;
-    ldap?: string;
-    toolType?: string;
-    toolPosition?: string;
-    toolSN?: string;
-    toolSize?: string;
-    uhConnectionType?: string;
-    dhConnectionType?: string;
-    intPressureSN?: string;
-    extPressureSN?: string;
-    limpetSN?: string;
-    configName?: string;
-    uniqueId?: string;
-  }) => Promise<boolean>;
+  // Initialize logger (full init flow: set params + check battery + erase + flash)
+  initializeLogger: (params: Record<string, string>, eraseMemory?: boolean) => Promise<{
+    success: boolean;
+    steps?: Array<{ name: string; success: boolean; detail?: string }>;
+    error?: string;
+  }>;
+  initProgress: InitProgress | null;
 
   // Data download
   downloadedData: OneSecondRecord[];
-  downloadData: (onProgress?: (progress: number) => void) => Promise<void>;
+  downloadResult: DownloadResult | null;
+  downloadProgress: DownloadProgress | null;
+  downloadData: () => Promise<DownloadResult>;
   clearData: () => void;
   exportData: () => string;
 
   // System test
   testResults: SelfTestResult[];
-  runSelfTest: () => Promise<void>;
+  testSummary: SelfTestSummary | null;
+  selfTestProgress: SelfTestProgress | null;
+  runSelfTest: (tests?: string[]) => Promise<void>;
+
+  // Launch device (delayed start)
+  launchDevice: () => Promise<{ success: boolean; detail?: string; error?: string }>;
+
+  // Erase memory
+  eraseMemory: (eraseAll: boolean) => Promise<{ success: boolean; error?: string }>;
 }
 
 const DeviceContext = createContext<DeviceContextType | null>(null);
@@ -127,8 +135,37 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [usbDevices, setUsbDevices] = useState<UsbDeviceInfo[]>([]);
   const [downloadedData, setDownloadedData] = useState<OneSecondRecord[]>([]);
+  const [downloadResult, setDownloadResult] = useState<DownloadResult | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [testResults, setTestResults] = useState<SelfTestResult[]>([]);
+  const [testSummary, setTestSummary] = useState<SelfTestSummary | null>(null);
+  const [selfTestProgress, setSelfTestProgress] = useState<SelfTestProgress | null>(null);
   const [deviceParams, setDeviceParams] = useState<Record<string, string>>({});
+  const [initProgress, setInitProgress] = useState<InitProgress | null>(null);
+
+  // Cleanup refs for event listeners
+  const cleanupDownloadRef = useRef<(() => void) | null>(null);
+  const cleanupSelfTestRef = useRef<(() => void) | null>(null);
+  const cleanupInitRef = useRef<(() => void) | null>(null);
+
+  // Setup progress listeners
+  useEffect(() => {
+    if (!isElectron()) return;
+    cleanupDownloadRef.current = onDownloadProgress((progress) => {
+      setDownloadProgress(progress);
+    });
+    cleanupSelfTestRef.current = onSelfTestProgress((progress) => {
+      setSelfTestProgress(progress);
+    });
+    cleanupInitRef.current = onInitProgress((progress) => {
+      setInitProgress(progress);
+    });
+    return () => {
+      cleanupDownloadRef.current?.();
+      cleanupSelfTestRef.current?.();
+      cleanupInitRef.current?.();
+    };
+  }, []);
 
   const clearError = useCallback(() => {
     setError(null);
@@ -185,7 +222,9 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       setConnected(false);
       setDeviceInfo(null);
       setDownloadedData([]);
+      setDownloadResult(null);
       setTestResults([]);
+      setTestSummary(null);
       setDeviceParams({});
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Disconnect failed');
@@ -203,204 +242,38 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const handleSetToolSN = useCallback(async (sn: string) => {
-    try {
-      const result = await usbSetToolSN(sn);
-      if (!result.success) {
-        setError(result.error || 'Set Tool SN failed');
+  // Helper to wrap USB setter with error handling
+  const createSetter = useCallback(<T extends unknown[]>(fn: (...args: T) => Promise<{ success: boolean; error?: string }>, label: string) => {
+    return async (...args: T) => {
+      try {
+        const result = await fn(...args);
+        if (!result.success) {
+          setError(result.error || label + ' failed');
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : label + ' failed');
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Tool SN failed');
-    }
+    };
   }, []);
 
-  const handleSetRunID = useCallback(async (runId: string) => {
-    try {
-      const result = await usbSetRunID(runId);
-      if (!result.success) {
-        setError(result.error || 'Set Run ID failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Run ID failed');
-    }
-  }, []);
-
-  const handleSetCustomer = useCallback(async (customer: string) => {
-    try {
-      const result = await usbSetCustomer(customer);
-      if (!result.success) {
-        setError(result.error || 'Set Customer failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Customer failed');
-    }
-  }, []);
-
-  const handleSetDistrict = useCallback(async (district: string) => {
-    try {
-      const result = await usbSetDistrict(district);
-      if (!result.success) {
-        setError(result.error || 'Set District failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set District failed');
-    }
-  }, []);
-
-  const handleSetCountry = useCallback(async (country: string) => {
-    try {
-      const result = await usbSetCountry(country);
-      if (!result.success) {
-        setError(result.error || 'Set Country failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Country failed');
-    }
-  }, []);
-
-  const handleSetDepthOut = useCallback(async (depth: number) => {
-    try {
-      const result = await usbSetDepthOut(depth);
-      if (!result.success) {
-        setError(result.error || 'Set Depth Out failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Depth Out failed');
-    }
-  }, []);
-
-  const handleSetLDAP = useCallback(async (ldap: string) => {
-    try {
-      const result = await usbSetLDAP(ldap);
-      if (!result.success) {
-        setError(result.error || 'Set LDAP failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set LDAP failed');
-    }
-  }, []);
-
-  const handleSetToolType = useCallback(async (toolType: string) => {
-    try {
-      const result = await usbSetToolType(toolType);
-      if (!result.success) {
-        setError(result.error || 'Set Tool Type failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Tool Type failed');
-    }
-  }, []);
-
-  const handleSetToolPosition = useCallback(async (position: string) => {
-    try {
-      const result = await usbSetToolPosition(position);
-      if (!result.success) {
-        setError(result.error || 'Set Tool Position failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Tool Position failed');
-    }
-  }, []);
-
-  const handleSetToolSize = useCallback(async (size: string) => {
-    try {
-      const result = await usbSetToolSize(size);
-      if (!result.success) {
-        setError(result.error || 'Set Tool Size failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Tool Size failed');
-    }
-  }, []);
-
-  const handleSetConfigName = useCallback(async (configName: string) => {
-    try {
-      const result = await usbSetConfigName(configName);
-      if (!result.success) {
-        setError(result.error || 'Set Config Name failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Config Name failed');
-    }
-  }, []);
-
-  const handleSetUniqueID = useCallback(async (uniqueId: string) => {
-    try {
-      const result = await usbSetUniqueID(uniqueId);
-      if (!result.success) {
-        setError(result.error || 'Set Unique ID failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Unique ID failed');
-    }
-  }, []);
-
-  const handleSetRunIDType = useCallback(async (runIdType: string) => {
-    try {
-      const result = await usbSetRunIDType(runIdType);
-      if (!result.success) {
-        setError(result.error || 'Set Run ID Type failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Run ID Type failed');
-    }
-  }, []);
-
-  const handleSetUHConnectionType = useCallback(async (connType: string) => {
-    try {
-      const result = await usbSetUHConnectionType(connType);
-      if (!result.success) {
-        setError(result.error || 'Set UH Connection Type failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set UH Connection Type failed');
-    }
-  }, []);
-
-  const handleSetDHConnectionType = useCallback(async (connType: string) => {
-    try {
-      const result = await usbSetDHConnectionType(connType);
-      if (!result.success) {
-        setError(result.error || 'Set DH Connection Type failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set DH Connection Type failed');
-    }
-  }, []);
-
-  const handleSetIntPressureSN = useCallback(async (sn: string) => {
-    try {
-      const result = await usbSetIntPressureSN(sn);
-      if (!result.success) {
-        setError(result.error || 'Set Int Pressure SN failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Int Pressure SN failed');
-    }
-  }, []);
-
-  const handleSetExtPressureSN = useCallback(async (sn: string) => {
-    try {
-      const result = await usbSetExtPressureSN(sn);
-      if (!result.success) {
-        setError(result.error || 'Set Ext Pressure SN failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Ext Pressure SN failed');
-    }
-  }, []);
-
-  const handleSetLimpetSN = useCallback(async (sn: string) => {
-    try {
-      const result = await usbSetLimpetSN(sn);
-      if (!result.success) {
-        setError(result.error || 'Set Limpet SN failed');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Limpet SN failed');
-    }
-  }, []);
-
+  const handleSetToolSN = useCallback((sn: string) => createSetter(usbSetToolSN, 'Set Tool SN')(sn), [createSetter]);
+  const handleSetRunID = useCallback((runId: string) => createSetter(usbSetRunID, 'Set Run ID')(runId), [createSetter]);
+  const handleSetCustomer = useCallback((customer: string) => createSetter(usbSetCustomer, 'Set Customer')(customer), [createSetter]);
+  const handleSetDistrict = useCallback((district: string) => createSetter(usbSetDistrict, 'Set District')(district), [createSetter]);
+  const handleSetCountry = useCallback((country: string) => createSetter(usbSetCountry, 'Set Country')(country), [createSetter]);
+  const handleSetDepthOut = useCallback((depth: number) => createSetter(usbSetDepthOut, 'Set Depth Out')(depth), [createSetter]);
+  const handleSetLDAP = useCallback((ldap: string) => createSetter(usbSetLDAP, 'Set LDAP')(ldap), [createSetter]);
+  const handleSetToolType = useCallback((toolType: string) => createSetter(usbSetToolType, 'Set Tool Type')(toolType), [createSetter]);
+  const handleSetToolPosition = useCallback((position: string) => createSetter(usbSetToolPosition, 'Set Tool Position')(position), [createSetter]);
+  const handleSetToolSize = useCallback((size: string) => createSetter(usbSetToolSize, 'Set Tool Size')(size), [createSetter]);
+  const handleSetConfigName = useCallback((configName: string) => createSetter(usbSetConfigName, 'Set Config Name')(configName), [createSetter]);
+  const handleSetUniqueID = useCallback((uniqueId: string) => createSetter(usbSetUniqueID, 'Set Unique ID')(uniqueId), [createSetter]);
+  const handleSetRunIDType = useCallback((runIdType: string) => createSetter(usbSetRunIDType, 'Set Run ID Type')(runIdType), [createSetter]);
+  const handleSetUHConnectionType = useCallback((connType: string) => createSetter(usbSetUHConnectionType, 'Set UH Connection Type')(connType), [createSetter]);
+  const handleSetDHConnectionType = useCallback((connType: string) => createSetter(usbSetDHConnectionType, 'Set DH Connection Type')(connType), [createSetter]);
+  const handleSetIntPressureSN = useCallback((sn: string) => createSetter(usbSetIntPressureSN, 'Set Int Pressure SN')(sn), [createSetter]);
+  const handleSetExtPressureSN = useCallback((sn: string) => createSetter(usbSetExtPressureSN, 'Set Ext Pressure SN')(sn), [createSetter]);
+  const handleSetLimpetSN = useCallback((sn: string) => createSetter(usbSetLimpetSN, 'Set Limpet SN')(sn), [createSetter]);
   const handleSetDeviceTime = useCallback(async () => {
     try {
       const result = await usbSetDeviceTime();
@@ -426,54 +299,48 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const handleSetInitParameters = useCallback(async (params: {
-    customer?: string;
-    country?: string;
-    district?: string;
-    ldap?: string;
-    toolType?: string;
-    toolPosition?: string;
-    toolSN?: string;
-    toolSize?: string;
-    configName?: string;
-    uniqueId?: string;
-  }): Promise<boolean> => {
+  const handleInitializeLogger = useCallback(async (params: Record<string, string>, eraseMem?: boolean) => {
+    setInitProgress({ step: 'Starting...', status: 'running' });
+    setError(null);
     try {
-      const result = await usbSetInitParameters(params);
+      const result = await usbInitializeLogger(params, eraseMem);
       if (!result.success) {
-        setError(result.error || 'Set Init Parameters failed');
-        return false;
+        setError(result.error || 'Initialize Logger failed');
       }
-      return result.success;
+      setInitProgress(null);
+      return result;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Set Init Parameters failed');
-      return false;
+      const errMsg = err instanceof Error ? err.message : 'Initialize Logger failed';
+      setError(errMsg);
+      setInitProgress(null);
+      return { success: false, error: errMsg };
     }
   }, []);
 
-  const downloadData = useCallback(async (onProgress?: (progress: number) => void) => {
+  const handleDownloadData = useCallback(async (): Promise<DownloadResult> => {
     setError(null);
+    setDownloadProgress({ partition: 0, totalPartitions: 0, chunk: 0, totalChunks: 0, percent: 0 });
     try {
-      // Report initial progress
-      onProgress?.(5);
-
-      const result = await downloadOneSecondData();
-
-      onProgress?.(90);
-
+      const result = await usbDownloadData();
       if (result.success) {
-        setDownloadedData(result.data);
-        onProgress?.(100);
+        setDownloadResult(result);
       } else {
         setError(result.error || 'Download failed');
       }
+      setDownloadProgress(null);
+      return result;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Download failed');
+      const errMsg = err instanceof Error ? err.message : 'Download failed';
+      setError(errMsg);
+      setDownloadProgress(null);
+      return { success: false, partitions: [], totalPartitions: 0, error: errMsg };
     }
   }, []);
 
   const clearData = useCallback(() => {
     setDownloadedData([]);
+    setDownloadResult(null);
+    setDownloadProgress(null);
   }, []);
 
   const exportData = useCallback(() => {
@@ -492,16 +359,41 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const handleRunSelfTest = useCallback(async () => {
+  const handleRunSelfTest = useCallback(async (tests?: string[]) => {
+    setError(null);
+    setSelfTestProgress({ current: 0, total: 0, testId: '', testName: '', status: 'starting' });
     try {
-      const result = await usbRunSelfTest();
+      const result = await usbRunSelfTest(tests);
       if (result.success && result.results) {
         setTestResults(result.results);
+        setTestSummary(result.summary || null);
       } else {
         setError(result.error || 'Self test failed');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Self test failed');
+    } finally {
+      setSelfTestProgress(null);
+    }
+  }, []);
+
+  const handleLaunchDevice = useCallback(async () => {
+    try {
+      return await usbLaunchDevice();
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Launch device failed';
+      setError(errMsg);
+      return { success: false, error: errMsg };
+    }
+  }, []);
+
+  const handleEraseMemory = useCallback(async (eraseAll: boolean) => {
+    try {
+      return await usbEraseMemory(eraseAll);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Erase memory failed';
+      setError(errMsg);
+      return { success: false, error: errMsg };
     }
   }, []);
 
@@ -566,13 +458,20 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     setLimpetSN: handleSetLimpetSN,
     setDeviceTime: handleSetDeviceTime,
     writeIntoFlash: handleWriteIntoFlash,
-    setInitParameters: handleSetInitParameters,
+    initializeLogger: handleInitializeLogger,
+    initProgress,
     downloadedData,
-    downloadData,
+    downloadResult,
+    downloadProgress,
+    downloadData: handleDownloadData,
     clearData,
     exportData,
     testResults,
+    testSummary,
+    selfTestProgress,
     runSelfTest: handleRunSelfTest,
+    launchDevice: handleLaunchDevice,
+    eraseMemory: handleEraseMemory,
   };
 
   return (

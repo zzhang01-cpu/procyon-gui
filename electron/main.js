@@ -183,12 +183,30 @@ function initUsbBridge() {
   });
 
   ipcMain.handle('device:download-data', async (_event, options) => {
-    return bridge.downloadOneSecondData(options);
+    return bridge.downloadData(function(progress) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('download:progress', progress);
+      }
+    });
   });
 
   // Test operations
-  ipcMain.handle('device:run-self-test', async () => {
-    return bridge.runSelfTest();
+  ipcMain.handle('device:run-self-test', async (_event, tests) => {
+    return bridge.runSelfTest(tests, function(progress) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('selftest:progress', progress);
+      }
+    });
+  });
+
+  // Launch device (delayed start)
+  ipcMain.handle('device:launch-device', async () => {
+    return bridge.launchDevice();
+  });
+
+  // Erase memory with progress
+  ipcMain.handle('device:erase-memory', async (_event, eraseAll) => {
+    return bridge.eraseMemory(eraseAll);
   });
 
   // Sensor readings
@@ -201,8 +219,12 @@ function initUsbBridge() {
   });
 
   // Logger initialization
-  ipcMain.handle('device:initialize-logger', async (_event, config) => {
-    return bridge.initializeLogger(config);
+  ipcMain.handle('device:initialize-logger', async (_event, params, eraseMemory) => {
+    return bridge.initializeLogger(params, eraseMemory, function(progress) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('init:progress', progress);
+      }
+    });
   });
 
   // Get all parameters at once

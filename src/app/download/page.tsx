@@ -17,7 +17,7 @@ const RUN_NUMBERS = ['1', '2', '3', '4', '5'];
 
 export default function DownloadPage({ onNavigate }: DownloadPageProps) {
   const { t } = useI18n();
-  const { connected, deviceInfo, downloadData, downloadedData, clearData, exportData } = useDevice();
+  const { connected, deviceInfo, downloadData, downloadResult, downloadProgress, clearData, exportData } = useDevice();
   const [activeTab, setActiveTab] = useState<Tab>('download');
   const [parseData, setParseData] = useState(true);
   const [showDumpConfig, setShowDumpConfig] = useState(false);
@@ -33,14 +33,12 @@ export default function DownloadPage({ onNavigate }: DownloadPageProps) {
   const [dumping, setDumping] = useState(false);
   const [dumpComplete, setDumpComplete] = useState(false);
   const [dumpLog, setDumpLog] = useState<string[]>([]);
-  const [dumpProgress, setDumpProgress] = useState(0);
 
   const handleStartDumping = useCallback(async () => {
     if (!connected) return;
     setDumping(true);
     setDumpComplete(false);
     setDumpLog([]);
-    setDumpProgress(0);
 
     setDumpLog((prev) => [
       ...prev,
@@ -48,33 +46,38 @@ export default function DownloadPage({ onNavigate }: DownloadPageProps) {
     ]);
 
     try {
-      await downloadData((progress: number) => {
-        setDumpProgress(Math.round(progress * 100));
-      });
+      const result = await downloadData();
 
-      setDumpLog((prev) => [
-        ...prev,
-        `[${new Date().toISOString()}] Data download complete.`,
-      ]);
-
-      if (parseData) {
+      if (result.success) {
         setDumpLog((prev) => [
           ...prev,
-          `[${new Date().toISOString()}] Starting MainParse conversion to .csv...`,
+          `[${new Date().toISOString()}] Data download complete. ${result.totalPartitions} partition(s) downloaded.`,
         ]);
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        if (parseData) {
+          setDumpLog((prev) => [
+            ...prev,
+            `[${new Date().toISOString()}] Starting MainParse conversion to .csv...`,
+          ]);
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          setDumpLog((prev) => [
+            ...prev,
+            `[${new Date().toISOString()}] Conversion MainParse Succeeded.`,
+          ]);
+        }
+
         setDumpLog((prev) => [
           ...prev,
-          `[${new Date().toISOString()}] Conversion MainParse Succeeded.`,
+          `[${new Date().toISOString()}] Dumping process completed. You can safely unplug the device.`,
+        ]);
+
+        setDumpComplete(true);
+      } else {
+        setDumpLog((prev) => [
+          ...prev,
+          `[${new Date().toISOString()}] ERROR: ${result.error || 'Download failed'}`,
         ]);
       }
-
-      setDumpLog((prev) => [
-        ...prev,
-        `[${new Date().toISOString()}] Dumping process completed. You can safely unplug the device.`,
-      ]);
-
-      setDumpComplete(true);
     } catch (err) {
       setDumpLog((prev) => [
         ...prev,
@@ -246,15 +249,17 @@ export default function DownloadPage({ onNavigate }: DownloadPageProps) {
           )}
 
           {/* Progress bar */}
-          {dumping && (
+          {dumping && downloadProgress && (
             <div className="mb-4">
               <div className="w-full bg-slate-200 rounded-full h-2">
                 <div
                   className="bg-green-500 h-2 rounded-full transition-all"
-                  style={{ width: `${dumpProgress}%` }}
+                  style={{ width: `${downloadProgress.percent}%` }}
                 />
               </div>
-              <p className="text-xs text-slate-500 mt-1">{dumpProgress}%</p>
+              <p className="text-xs text-slate-500 mt-1">
+                {downloadProgress.percent}% - Partition {downloadProgress.partition}/{downloadProgress.totalPartitions}, Chunk {downloadProgress.chunk}/{downloadProgress.totalChunks}
+              </p>
             </div>
           )}
 
@@ -271,7 +276,7 @@ export default function DownloadPage({ onNavigate }: DownloadPageProps) {
           )}
 
           {/* Export button */}
-          {dumpComplete && downloadedData.length > 0 && (
+          {dumpComplete && downloadResult && downloadResult.success && (
             <div className="mt-4 flex gap-2">
               <Button
                 onClick={() => {

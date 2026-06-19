@@ -52,9 +52,50 @@ export interface OneSecondRecord {
 }
 
 export interface SelfTestResult {
+  id: string;
   name: string;
-  status: 'pass' | 'fail' | 'warning' | 'skip';
-  duration: number;
+  pass: boolean;
+  detail: string;
+  value?: number | string;
+  unit?: string;
+}
+
+export interface SelfTestSummary {
+  total: number;
+  passed: number;
+  failed: number;
+  passRate: string;
+}
+
+export interface DownloadProgress {
+  partition: number;
+  totalPartitions: number;
+  chunk: number;
+  totalChunks: number;
+  percent: number;
+}
+
+export interface InitProgress {
+  step: string;
+  status: string;
+}
+
+export interface SelfTestProgress {
+  current: number;
+  total: number;
+  testId: string;
+  testName: string;
+  status: string;
+}
+
+export interface DownloadResult {
+  success: boolean;
+  partitions: Array<{
+    partition: number;
+    data: number[];
+    size: number;
+  }>;
+  totalPartitions: number;
   error?: string;
 }
 
@@ -426,27 +467,53 @@ export async function getMemoryPartitions(): Promise<{ success: boolean; count: 
 }
 
 /**
- * Download one second data
+ * Download data from device memory (raw partition dump)
  */
-export async function downloadOneSecondData(options?: {
-  maxPartitions?: number;
-}): Promise<{ success: boolean; data: OneSecondRecord[]; totalRecords: number; error?: string }> {
+export async function downloadData(): Promise<DownloadResult> {
   const api = getAPI();
   if (!api) {
     throw new Error('Not running in Electron environment');
   }
-  return api.downloadData(options || {}) as Promise<{ success: boolean; data: OneSecondRecord[]; totalRecords: number; error?: string }>;
+  return api.downloadData({}) as Promise<DownloadResult>;
+}
+
+/**
+ * Register a callback for download progress events
+ */
+export function onDownloadProgress(callback: (progress: DownloadProgress) => void): () => void {
+  const api = getAPI();
+  if (!api || !api.onDownloadProgress) return () => {};
+  return api.onDownloadProgress(callback) as unknown as () => void;
 }
 
 /**
  * Run self test
  */
-export async function runSelfTest(): Promise<{ success: boolean; results?: SelfTestResult[]; error?: string }> {
+export async function runSelfTest(tests?: string[]): Promise<{
+  success: boolean;
+  results?: SelfTestResult[];
+  summary?: SelfTestSummary;
+  error?: string;
+}> {
   const api = getAPI();
   if (!api) {
     throw new Error('Not running in Electron environment');
   }
-  return api.runSelfTest() as Promise<{ success: boolean; results?: SelfTestResult[]; error?: string }>;
+  return api.runSelfTest(tests || []) as Promise<{
+    success: boolean;
+    results?: SelfTestResult[];
+    summary?: SelfTestSummary;
+    error?: string;
+  }>;
+}
+
+/**
+ * Register a callback for self-test progress events
+ */
+export function onSelfTestProgress(callback: (progress: SelfTestProgress) => void): () => void {
+  const api = getAPI();
+  if (!api || !api.onSelfTestProgress) return () => {};
+  return api.onSelfTestProgress(callback) as unknown as () => void;
 }
 
 /**
@@ -472,19 +539,76 @@ export async function getTemperature(): Promise<{ success: boolean; temperature:
 }
 
 /**
- * Initialize logger
+ * Initialize logger with parameters
  */
-export async function initializeLogger(config: {
-  toolSN?: string;
-  runId?: string;
+export async function initializeLogger(params: {
   customer?: string;
+  country?: string;
   district?: string;
-}): Promise<{ success: boolean; error?: string }> {
+  runIdType?: string;
+  runId?: string;
+  deptOut?: string;
+  ldap?: string;
+  toolType?: string;
+  toolPosition?: string;
+  toolSize?: string;
+  toolSN?: string;
+  configName?: string;
+  uniqueId?: string;
+  housingNumber?: string;
+  bhaSerialNumber?: string;
+  axialPosition?: string;
+  sensorHeadSN?: string;
+  uhConnectionType?: string;
+  dhConnectionType?: string;
+  intPressureSN?: string;
+  extPressureSN?: string;
+  limpetSN?: string;
+}, eraseMemory?: boolean): Promise<{
+  success: boolean;
+  steps?: Array<{ name: string; success: boolean; detail?: string }>;
+  error?: string;
+}> {
   const api = getAPI();
   if (!api) {
     throw new Error('Not running in Electron environment');
   }
-  return api.initializeLogger(config) as Promise<{ success: boolean; error?: string }>;
+  return api.initializeLogger(params, !!eraseMemory) as Promise<{
+    success: boolean;
+    steps?: Array<{ name: string; success: boolean; detail?: string }>;
+    error?: string;
+  }>;
+}
+
+/**
+ * Register a callback for initialization progress events
+ */
+export function onInitProgress(callback: (progress: InitProgress) => void): () => void {
+  const api = getAPI();
+  if (!api || !api.onInitProgress) return () => {};
+  return api.onInitProgress(callback) as unknown as () => void;
+}
+
+/**
+ * Launch device (delayed start)
+ */
+export async function launchDevice(): Promise<{ success: boolean; detail?: string; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.launchDevice() as Promise<{ success: boolean; detail?: string; error?: string }>;
+}
+
+/**
+ * Erase memory with progress tracking
+ */
+export async function eraseMemory(eraseAll: boolean): Promise<{ success: boolean; error?: string }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.eraseMemory(eraseAll) as Promise<{ success: boolean; error?: string }>;
 }
 
 /**

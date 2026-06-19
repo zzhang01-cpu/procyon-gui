@@ -21,7 +21,7 @@ import {
 
 export default function SystemTestPage() {
   const { t, language } = useI18n();
-  const { connected, testResults, runSelfTest } = useDevice();
+  const { connected, testResults, runSelfTest, testSummary } = useDevice();
   
   const [testing, setTesting] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -64,15 +64,24 @@ export default function SystemTestPage() {
   const handleExportReport = () => {
     if (testResults.length === 0) return;
 
+    const passed = testResults.filter(r => r.pass).length;
+    const failed = testResults.filter(r => !r.pass).length;
+
     const report = {
       timestamp: new Date().toISOString(),
       device: 'Procyon CM',
-      results: testResults,
+      results: testResults.map(r => ({
+        id: r.id,
+        name: r.name,
+        pass: r.pass,
+        value: r.value,
+        unit: r.unit,
+      })),
       summary: {
         total: testResults.length,
-        passed: testResults.filter(r => r.status === 'pass').length,
-        failed: testResults.filter(r => r.status === 'fail').length,
-        warnings: testResults.filter(r => r.status === 'warning').length,
+        passed: passed,
+        failed: failed,
+        passRate: testResults.length > 0 ? Math.round((passed / testResults.length) * 100) : 0,
       },
     };
 
@@ -80,40 +89,23 @@ export default function SystemTestPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `procyon_test_report_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+    link.download = 'procyon_test_report_' + new Date().toISOString().slice(0, 19).replace(/:/g, '-') + '.json';
     link.click();
     URL.revokeObjectURL(url);
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'pass':
-        return <CheckCircle2 className="w-5 h-5 text-green-500" />;
-      case 'fail':
-        return <XCircle className="w-5 h-5 text-red-500" />;
-      case 'warning':
-        return <AlertTriangle className="w-5 h-5 text-yellow-500" />;
-      case 'skip':
-        return <SkipForward className="w-5 h-5 text-slate-400" />;
-      default:
-        return null;
-    }
+  const getStatusIcon = (pass: boolean) => {
+    return pass
+      ? <CheckCircle2 className="w-5 h-5 text-green-500" />
+      : <XCircle className="w-5 h-5 text-red-500" />;
   };
 
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case 'pass':
-        return t.systemTest.pass;
-      case 'fail':
-        return t.systemTest.fail;
-      case 'warning':
-        return t.systemTest.warning;
-      case 'skip':
-        return t.systemTest.skip;
-      default:
-        return status;
-    }
+  const getStatusText = (pass: boolean) => {
+    return pass ? t.systemTest.pass : t.systemTest.fail;
   };
+
+  const passed = testResults.filter(r => r.pass).length;
+  const failed = testResults.filter(r => !r.pass).length;
 
   return (
     <div className="space-y-6">
@@ -200,25 +192,19 @@ export default function SystemTestPage() {
                   className="flex items-center justify-between p-4 bg-slate-50 rounded-lg"
                 >
                   <div className="flex items-center gap-3">
-                    {getStatusIcon(result.status)}
+                    {getStatusIcon(result.pass)}
                     <div>
                       <p className="font-medium">{result.name}</p>
-                      {result.error && (
-                        <p className="text-sm text-slate-500">{result.error}</p>
+                      {result.value !== undefined && (
+                        <p className="text-sm text-slate-500">
+                          {result.value}{result.unit ? ' ' + result.unit : ''}
+                        </p>
                       )}
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className={`text-sm font-medium ${
-                      result.status === 'pass' ? 'text-green-600' :
-                      result.status === 'fail' ? 'text-red-600' :
-                      result.status === 'warning' ? 'text-yellow-600' :
-                      'text-slate-500'
-                    }`}>
-                      {getStatusText(result.status)}
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      {(result.duration / 1000).toFixed(1)}s
+                    <p className={'text-sm font-medium ' + (result.pass ? 'text-green-600' : 'text-red-600')}>
+                      {getStatusText(result.pass)}
                     </p>
                   </div>
                 </div>
@@ -227,30 +213,25 @@ export default function SystemTestPage() {
 
             {/* Summary */}
             <div className="mt-6 pt-6 border-t">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div className="text-center">
                   <p className="text-2xl font-bold">{testResults.length}</p>
                   <p className="text-sm text-slate-500">{t.systemTest.allTests}</p>
                 </div>
                 <div className="text-center">
-                  <p className="text-2xl font-bold text-green-600">
-                    {testResults.filter(r => r.status === 'pass').length}
-                  </p>
+                  <p className="text-2xl font-bold text-green-600">{passed}</p>
                   <p className="text-sm text-slate-500">{t.systemTest.pass}</p>
                 </div>
                 <div className="text-center">
-                  <p className="text-2xl font-bold text-red-600">
-                    {testResults.filter(r => r.status === 'fail').length}
-                  </p>
+                  <p className="text-2xl font-bold text-red-600">{failed}</p>
                   <p className="text-sm text-slate-500">{t.systemTest.fail}</p>
                 </div>
-                <div className="text-center">
-                  <p className="text-2xl font-bold text-yellow-600">
-                    {testResults.filter(r => r.status === 'warning').length}
-                  </p>
-                  <p className="text-sm text-slate-500">{t.systemTest.warning}</p>
-                </div>
               </div>
+              {testSummary && (
+                <div className="mt-4 text-center text-sm text-slate-500">
+                  Pass Rate: {testSummary.passRate}%
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

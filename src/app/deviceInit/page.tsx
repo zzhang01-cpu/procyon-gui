@@ -51,11 +51,12 @@ const TOOL_SIZE_OPTIONS = ['3.5', '4.5', '6.625', '7.625', '8.5', '9.5', '12.25'
 
 export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
   const { t } = useI18n();
-  const { connected, deviceInfo, setToolSN } = useDevice();
+  const { connected, deviceInfo, initializeLogger, initProgress } = useDevice();
   const [currentStep, setCurrentStep] = useState<Step>('jobInformation');
   const [initializing, setInitializing] = useState(false);
   const [initComplete, setInitComplete] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
+  const [eraseDeviceMemory, setEraseDeviceMemory] = useState(true);
 
   // Job Information
   const [customer, setCustomer] = useState('');
@@ -109,23 +110,30 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
     setInitError(null);
 
     try {
-      // Set Tool SN
-      if (toolSN) {
-        await setToolSN(toolSN);
+      const params: Record<string, string> = {};
+      if (customer) params.customer = customer;
+      if (country) params.country = country;
+      if (district) params.district = district;
+      if (toolType) params.toolType = toolType;
+      if (toolPosition) params.toolPosition = toolPosition;
+      if (axialPosition) params.axialPosition = axialPosition;
+      if (toolSize) params.toolSize = toolSize;
+      if (toolSN) params.toolSN = toolSN;
+      if (housingSN) params.housingNumber = housingSN;
+      if (bitSerial) params.bhaSerialNumber = bitSerial;
+
+      const result = await initializeLogger(params, eraseDeviceMemory);
+      if (result.success) {
+        setInitComplete(true);
+      } else {
+        setInitError(result.error || 'Initialization failed');
       }
-
-      // In a full implementation, this would send all parameters to the device
-      // and then call writeIntoFlash()
-      // For now, simulate with a delay
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      setInitComplete(true);
     } catch (err) {
       setInitError(err instanceof Error ? err.message : 'Initialization failed');
     } finally {
       setInitializing(false);
     }
-  }, [connected, toolSN, setToolSN]);
+  }, [connected, customer, country, district, toolType, toolPosition, axialPosition, toolSize, toolSN, housingSN, bitSerial, eraseDeviceMemory, initializeLogger]);
 
   if (initComplete) {
     return (
@@ -365,6 +373,20 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
                   <span>Position: <strong className="text-slate-700">{toolPosition}</strong></span>
                 </div>
               </div>
+
+              {/* Erase Memory Option */}
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="eraseMemory"
+                  checked={eraseDeviceMemory}
+                  onChange={(e) => setEraseDeviceMemory(e.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                <label htmlFor="eraseMemory" className="text-xs text-slate-600">
+                  Erase Device Memory
+                </label>
+              </div>
             </div>
           </div>
         )}
@@ -374,6 +396,16 @@ export default function DeviceInitPage({ onNavigate }: DeviceInitPageProps) {
       {initError && (
         <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
           {initError}
+        </div>
+      )}
+
+      {/* Initialization Progress */}
+      {initializing && initProgress && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded">
+          <div className="flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+            <span className="text-sm text-blue-700 font-medium">{initProgress.step}</span>
+          </div>
         </div>
       )}
 

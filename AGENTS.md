@@ -12,7 +12,7 @@ Procyon CM 随钻测量工具简化版上位机软件。支持设备连接、参
 - **Language**: TypeScript 5
 - **UI 组件**: shadcn/ui (基于 Radix UI)
 - **Styling**: Tailwind CSS 4
-- **Desktop**: Electron 37 + node-usb (USB bulk 通信)
+- **Desktop**: Electron 37 + koffi FFI (libusb0.dll 直接调用，USB bulk 通信)
 - **Package Manager**: pnpm (仅限 pnpm)
 
 ## 目录结构
@@ -21,7 +21,7 @@ Procyon CM 随钻测量工具简化版上位机软件。支持设备连接、参
 ├── electron/                    # Electron 主进程
 │   ├── main.js                  # Electron 入口，窗口创建 + IPC 注册
 │   ├── preload.js               # Preload 脚本，暴露 electronAPI
-│   └── usb-bridge.js            # USB 通信桥接（node-usb，VID=0x2269 PID=0xBEEF）
+│   └── usb-bridge.js            # USB 通信桥接（koffi FFI + libusb0.dll，VID=0x2269 PID=0xBEEF）
 ├── public/                      # 静态资源
 ├── scripts/                     # 构建与启动脚本
 │   ├── build.sh                 # Next.js 构建
@@ -35,10 +35,13 @@ Procyon CM 随钻测量工具简化版上位机软件。支持设备连接、参
 │   ├── app/                     # 页面路由
 │   │   ├── layout.tsx           # 根布局
 │   │   ├── page.tsx             # 首页（Dashboard）
-│   │   ├── connection/          # 设备连接页
-│   │   ├── parameters/          # 参数设置页
-│   │   ├── download/            # 数据下载页
-│   │   ├── systemTest/          # 系统测试页
+│   │   ├── home/                # 首页（6功能卡片）
+│   │   ├── deviceInit/          # 设备初始化（3步向导）
+│   │   ├── download/            # 数据下载/上传页
+│   │   ├── deviceMonitoring/    # 设备监控/自检页
+│   │   ├── systemTest/          # 系统测试页（兼容旧版）
+│   │   ├── workHistory/         # 工作历史页
+│   │   ├── configStatus/        # 配置状态页
 │   │   ├── settings/            # 系统设置页
 │   │   └── about/               # 关于页
 │   ├── components/
@@ -67,7 +70,7 @@ Procyon CM 随钻测量工具简化版上位机软件。支持设备连接、参
          → procyon.ts (IPC 调用)
          → window.electronAPI (preload.js 暴露)
          → ipcMain.handle (main.js)
-         → usb-bridge.js (node-usb USB bulk 传输)
+         → usb-bridge.js (koffi FFI → libusb0.dll USB bulk 传输)
          → Procyon CM 硬件 (VID=0x2269, PID=0xBEEF)
 ```
 
@@ -81,16 +84,37 @@ interface DeviceContextType {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   clearError: () => void;
+  deviceParams: Record<string, string>;
+  loadDeviceParams: () => Promise<void>;
   usbDevices: UsbDeviceInfo[];
   refreshDevices: () => Promise<void>;
   refreshDeviceInfo: () => Promise<void>;
+  // Parameter setters
   setToolSN / setRunID / setCustomer / setDistrict / setCountry / setDepthOut;
+  setLDAP / setToolType / setToolPosition / setToolSize / setConfigName;
+  setUniqueID / setRunIDType / setUHConnectionType / setDHConnectionType;
+  setIntPressureSN / setExtPressureSN / setLimpetSN / setDeviceTime;
+  // Flash write
+  writeIntoFlash: () => Promise<boolean>;
+  // Initialize logger (full init flow)
+  initializeLogger: (params, eraseMemory?) => Promise<InitResult>;
+  initProgress: InitProgress | null;
+  // Data download
   downloadedData: OneSecondRecord[];
-  downloadData: (onProgress?) => Promise<void>;
+  downloadResult: DownloadResult | null;
+  downloadProgress: DownloadProgress | null;
+  downloadData: () => Promise<DownloadResult>;
   clearData: () => void;
   exportData: () => string;
+  // System test
   testResults: SelfTestResult[];
-  runSelfTest: () => Promise<void>;
+  testSummary: SelfTestSummary | null;
+  selfTestProgress: SelfTestProgress | null;
+  runSelfTest: (tests?: string[]) => Promise<void>;
+  // Launch device (delayed start)
+  launchDevice: () => Promise<{ success: boolean; detail?: string; error?: string }>;
+  // Erase memory
+  eraseMemory: (eraseAll: boolean) => Promise<{ success: boolean; error?: string }>;
 }
 ```
 
@@ -176,6 +200,51 @@ interface DeviceContextType {
 | SET_INT_PRESSURE_SENSOR_SN | 362 | 0x016A | ASCII 字符串 |
 | SET_EXT_PRESSURE_SENSOR_SN | 366 | 0x016E | ASCII 字符串 |
 | SET_LIMPET_SENSOR_SN | 370 | 0x0172 | ASCII 字符串 |
+
+### 新增命令（从 DLL 逆向发现，已加入 usb-bridge.js）
+| 命令 | 枚举值 | Hex | 说明 |
+|------|--------|-----|------|
+| SET_HOUSING_NUMBER | 290 | 0x0122 | ASCII 字符串 |
+| SET_BHA_SERIAL_NUMBER | 294 | 0x0126 | ASCII 字符串 |
+| SET_TOOL_AXIAL_POSITION | 310 | 0x0136 | ASCII 字符串 |
+| SET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER | 320 | 0x0140 | ASCII 字符串 |
+| SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER | 322 | 0x0142 | ASCII 字符串 |
+| SET_DRILL_BIT_INFO_BIT_BOM | 324 | 0x0144 | ASCII 字符串 |
+| SET_AMPLIFIER_DAC_OFFSET | 338 | 0x0152 | ASCII 字符串 |
+| SET_AMPLIFIER_FIRST_STAGE_GAIN | 340 | 0x0154 | ASCII 字符串 |
+| SET_AMPLIFIER_SECOND_STAGE_GAIN | 342 | 0x0156 | ASCII 字符串 |
+| MEMORY_DUMP_START | 384 | 0x0180 | 通知设备开始数据转储 |
+| MEMORY_DUMP_END | 386 | 0x0182 | 通知设备结束数据转储 |
+| MEMORY_ERASE_ALL | 388 | 0x0184 | 擦除全部内存 |
+| MEMORY_ERASE_USED | 390 | 0x0186 | 擦除已用内存 |
+| GET_MEMORY_ERASE_PERCENT | 392 | 0x0188 | 获取擦除进度百分比 |
+| GET_NUMBER_MEMORY_PARTITIONS | 400 | 0x0190 | 获取内存分区数 |
+| GET_PARTITION_NUMBER_CHUNKS_WRITTEN | 402 | 0x0192 | 获取已写入块数 |
+| GET_PARTITION_TOTAL_NUMBER_CHUNKS | 404 | 0x0194 | 获取总块数 |
+| GET_PARTITION_WRITTEN_BYTE_COUNT | 406 | 0x0196 | 获取已写入字节数 |
+| GET_MEMORY_DUMP_CHUNK_SIZE | 408 | 0x0198 | 获取转储块大小 |
+| GET_MEMORY_DUMP_CHUNK_DATA | 410 | 0x019A | 获取转储块数据 |
+| START_VERIFICATION | 480 | 0x01E0 | 启动自检验证 |
+| VERIFY_STATUS | 482 | 0x01E2 | 查询验证状态 |
+| SET_SELF_TEST_MODE | 484 | 0x01E4 | 设置自检模式 |
+| LAUNCH_DEVICE | 512 | 0x0200 | 延时启动设备 |
+| GET_FLASH_TEST_DATA | 416 | 0x01A0 | 获取 Flash 测试数据 |
+| GET_HIGHSHOCK_DATA_CM | 418 | 0x01A2 | 获取高冲击数据 |
+| GET_LOWSHOCK_DATA_CM | 420 | 0x01A4 | 获取低冲击数据 CM |
+| GET_LOWSHOCK_DATA_EM | 422 | 0x01A6 | 获取低冲击数据 EM |
+| GET_PRESSURE_DATA_CM | 424 | 0x01A8 | 获取压力数据 CM |
+| GET_PRESSURE_DATA_EM | 426 | 0x01AA | 获取压力数据 EM |
+| GET_PRESSURRE_SELF_TEST_DATA | 428 | 0x01AC | 获取压力自检数据 |
+| GET_ROTATIONAL_DATA_CM | 430 | 0x01AE | 获取旋转数据 CM |
+| GET_ROTATIONAL_DATA_EM | 432 | 0x01B0 | 获取旋转数据 EM |
+| GET_TEMPERATURE_DATA_EM | 434 | 0x01B2 | 获取温度数据 EM |
+| GET_LIMPET_DATA_EM | 436 | 0x01B4 | 获取 Limpet 数据 EM |
+
+### 功能流程
+1. **初始化流程**: setMultipleParameters → checkBattery → eraseMemory → writeIntoFlash
+2. **数据下载流程**: MEMORY_DUMP_START → GET_NUMBER_MEMORY_PARTITIONS → 循环 GET_MEMORY_DUMP_CHUNK_DATA → MEMORY_DUMP_END
+3. **自检流程**: SET_SELF_TEST_MODE → 逐项 START_VERIFICATION → VERIFY_STATUS → SET_SELF_TEST_MODE(重置)
+4. **延时启动**: LAUNCH_DEVICE 命令
 
 ### SET 协议关键规则（从 DLL 确认）
 1. **ASCII 编码**: `ASCIIconversion()` 将字符串每个字符直接转 byte（无 null 终止符）

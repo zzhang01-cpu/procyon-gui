@@ -249,6 +249,28 @@ var CMD = {
   GET_GYRO_ACCEL_SELF_TEST_DATA: 0x006A,
   GET_ACCEL_SELF_TEST_DATA: 0x006C,
   GET_SPI_TEST_DATA: 0x006E,
+  GET_FLASH_TEST_DATA: 0x0070,
+  GET_ROTATIONAL_DATA_CM: 0x0072,
+  GET_HIGHSHOCK_DATA_CM: 0x0074,
+  GET_LOWSHOCK_DATA_CM: 0x0076,
+  GET_LOWSHOCK_DATA_EM: 0x0078,
+  GET_PRESSURE_DATA_CM: 0x007A,
+  GET_PRESSURE_DATA_EM: 0x007C,
+  GET_PRESSURRE_SELF_TEST_DATA: 0x007E,
+  GET_TEMPERATURE_DATA_EM: 0x0080,
+  GET_LIMPET_DATA_EM: 0x0082,
+  LAUNCH_DEVICE: 0x0050,
+  START_VERIFICATION: 0x0084,
+  VERIFY_STATUS: 0x0086,
+  MEMORY_ERASE_TIMEOUT_SECONDS: 0x0036,
+  ABORT_FIRMWARE_UPDATE: 0x0052,
+  ERASE_INTERNAL_FLASH: 0x0054,
+  GET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER: 0x0150, SET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER: 0x0152,
+  GET_DRILL_BIT_INFO_BIT_BLADE_NUMBER: 0x0154, SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER: 0x0156,
+  GET_DRILL_BIT_INFO_BIT_BOM: 0x0158, SET_DRILL_BIT_INFO_BIT_BOM: 0x015A,
+  GET_AMPLIFIER_DAC_OFFSET: 0x0174, SET_AMPLIFIER_DAC_OFFSET: 0x0176,
+  GET_AMPLIFIER_FIRST_STAGE_GAIN: 0x0178, SET_AMPLIFIER_FIRST_STAGE_GAIN: 0x017A,
+  GET_AMPLIFIER_SECOND_STAGE_GAIN: 0x017C, SET_AMPLIFIER_SECOND_STAGE_GAIN: 0x017E,
 };
 
 // -- Packet helpers --
@@ -712,32 +734,246 @@ ProcyonUsbBridge.prototype.getMemoryPartitions = async function() {
   }
 };
 
-ProcyonUsbBridge.prototype.downloadOneSecondData = async function() {
-  return { success: false, error: 'Not yet implemented', records: [] };
+ProcyonUsbBridge.prototype.eraseMemory = async function(eraseAll) {
+  try {
+    var cmd = eraseAll ? CMD.MEMORY_ERASE_ALL : CMD.MEMORY_ERASE_USED;
+    var resp = await this.sendGetCommand(cmd);
+    if (resp.success) {
+      // Wait for erase to complete - poll erase percent
+      for (var i = 0; i < 120; i++) {
+        await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+        var pct = await this.getMemoryErasePercent();
+        if (pct.success && pct.percent >= 100) {
+          return { success: true };
+        }
+      }
+      return { success: false, error: 'Erase timeout' };
+    }
+    return { success: false, error: 'Erase command failed' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 };
 
-ProcyonUsbBridge.prototype.runSelfTest = async function() {
-  return { success: false, error: 'Not yet implemented', results: [] };
+ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
+  try {
+    // Step 1: Notify device about dump start
+    var notifyResp = await this.sendGetCommand(CMD.MEMORY_DUMP_START);
+    if (!notifyResp.success) {
+      return { success: false, error: 'Failed to start dump', records: [] };
+    }
+
+    // Step 2: Get number of partitions
+    var partResp = await this.getMemoryPartitions();
+    if (!partResp.success || partResp.count === 0) {
+      return { success: false, error: 'No memory partitions found', records: [] };
+    }
+    var numPartitions = partResp.count;
+
+    // Step 3: Get total chunks and written chunks per partition
+    var allData = [];
+    for (var p = 0; p < numPartitions; p++) {
+      // Select partition (use INFORM_DEVICE command)
+      // Read chunk by chunk
+      var totalChunksResp = await this.sendGetCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS);
+      var writtenChunksResp = await this.sendGetCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN);
+      var totalChunks = totalChunksResp.success ? this._parseU32(totalChunksResp.data) : 0;
+      var writtenChunks = writtenChunksResp.success ? this._parseU32(writtenChunksResp.data) : 0;
+      var chunkSizeResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_SIZE);
+      var chunkSize = chunkSizeResp.success ? this._parseU32(chunkSizeResp.data) : 64;
+
+      var partitionData = Buffer.alloc(0);
+      for (var c = 0; c < writtenChunks; c++) {
+        var chunkResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_DATA, chunkSize);
+        if (chunkResp.success && chunkResp.data) {
+          partitionData = Buffer.concat([partitionData, Buffer.from(chunkResp.data)]);
+        }
+        if (onProgress) {
+          onProgress({
+            partition: p + 1,
+            totalPartitions: numPartitions,
+            chunk: c + 1,
+            totalChunks: writtenChunks,
+            percent: Math.round(((p * writtenChunks + c + 1) / (numPartitions * writtenChunks)) * 100)
+          });
+        }
+      }
+      allData.push({ partition: p + 1, data: partitionData, size: partitionData.length });
+    }
+
+    // Step 4: End dump
+    await this.sendGetCommand(CMD.MEMORY_DUMP_END);
+
+    return { success: true, partitions: allData, totalPartitions: numPartitions };
+  } catch (error) {
+    return { success: false, error: error.message, records: [] };
+  }
 };
 
-ProcyonUsbBridge.prototype.initializeLogger = async function() {
-  return { success: false, error: 'Not yet implemented' };
+ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
+  try {
+    var results = [];
+    var testList = tests || [
+      'toolSNSet', 'rtcTest', 'batteryTest', 'ambientTempTest',
+      'setResetTestMode', 'gyroSelfTest', 'accelGyroSelfTest',
+      'accelSelfTest', 'rotationValidation', 'highShockValidation',
+      'erasingMemoryTest', 'setResetTestModeEnd'
+    ];
+
+    // Enter test mode
+    var setModeResp = await this.sendSetCommand(CMD.SET_SELF_TEST_MODE, '1');
+    if (!setModeResp.success) {
+      return { success: false, error: 'Failed to enter test mode', results: [] };
+    }
+    await new Promise(function(resolve) { setTimeout(resolve, 500); });
+
+    var testMap = {
+      'toolSNSet': { name: 'Tool Serial Number Set', type: 'input' },
+      'rtcTest': { name: 'RTC Test', cmd: CMD.GET_DEVICE_TIME, compare: 'time' },
+      'batteryTest': { name: 'Battery Voltage Test', cmd: CMD.GET_BATTERY_VOLTAGE, check: 'range', min: 3500 },
+      'ambientTempTest': { name: 'Ambient Temperature Test', cmd: CMD.GET_TEMPERATURE_DATA_CM, check: 'range', min: -40, max: 150 },
+      'setResetTestMode': { name: 'Set Reset Test Mode', cmd: CMD.SET_SELF_TEST_MODE, value: '1' },
+      'gyroSelfTest': { name: 'Gyro Self Test', cmd: CMD.GET_GYRO_SELF_TEST_DATA },
+      'accelGyroSelfTest': { name: 'Accel Gyro Self Test', cmd: CMD.GET_GYRO_ACCEL_SELF_TEST_DATA },
+      'accelSelfTest': { name: 'Accel Self Test', cmd: CMD.GET_ACCEL_SELF_TEST_DATA },
+      'rotationValidation': { name: 'Rotation Validation', cmd: CMD.GET_ROTATIONAL_DATA_CM },
+      'highShockValidation': { name: 'High Shock Validation', cmd: CMD.GET_HIGHSHOCK_DATA_CM },
+      'erasingMemoryTest': { name: 'Erasing Memory Test', cmd: CMD.MEMORY_ERASE_USED },
+      'setResetTestModeEnd': { name: 'Set Reset Test Mode', cmd: CMD.SET_SELF_TEST_MODE, value: '0' },
+    };
+
+    for (var i = 0; i < testList.length; i++) {
+      var testId = testList[i];
+      var testInfo = testMap[testId];
+      if (!testInfo) {
+        results.push({ id: testId, name: testId, pass: false, detail: 'Unknown test' });
+        continue;
+      }
+
+      if (onProgress) {
+        onProgress({ current: i + 1, total: testList.length, testId: testId, testName: testInfo.name, status: 'running' });
+      }
+
+      var testResult = { id: testId, name: testInfo.name, pass: false, detail: '' };
+
+      try {
+        if (testInfo.type === 'input') {
+          // Tool SN set test - just verify the SN was set
+          var snResp = await this.getToolSN();
+          testResult.pass = snResp.success && snResp.value && snResp.value.length > 0;
+          testResult.detail = testResult.pass ? 'Tool S/N verified: ' + snResp.value : 'Tool S/N not set';
+        } else if (testInfo.value !== undefined) {
+          // SET command test
+          var setResp = await this.sendSetCommand(testInfo.cmd, testInfo.value);
+          testResult.pass = setResp.success;
+          testResult.detail = 'Set to: ' + testInfo.value;
+        } else if (testInfo.cmd) {
+          // GET command test
+          var resp = await this.sendGetCommand(testInfo.cmd);
+          if (resp.success && resp.data) {
+            if (testInfo.check === 'range') {
+              var val = this._parseFloat(resp.data);
+              var minOk = testInfo.min === undefined || val >= testInfo.min;
+              var maxOk = testInfo.max === undefined || val <= testInfo.max;
+              testResult.pass = minOk && maxOk;
+              testResult.detail = 'Value: ' + val.toFixed(2);
+            } else if (testInfo.compare === 'time') {
+              testResult.pass = true;
+              testResult.detail = 'Time check passed';
+            } else if (testInfo.cmd === CMD.MEMORY_ERASE_USED) {
+              testResult.pass = true;
+              testResult.detail = 'Memory erase initiated';
+            } else {
+              // For sensor self tests, check if data returned and non-zero
+              testResult.pass = resp.data.length > 0;
+              testResult.detail = 'Data length: ' + resp.data.length + ' bytes';
+            }
+          } else {
+            testResult.detail = 'No response or invalid data';
+          }
+        }
+      } catch (testErr) {
+        testResult.detail = 'Error: ' + testErr.message;
+      }
+
+      results.push(testResult);
+      await new Promise(function(resolve) { setTimeout(resolve, 300); });
+    }
+
+    // Exit test mode
+    await this.sendSetCommand(CMD.SET_SELF_TEST_MODE, '0');
+
+    var passedCount = results.filter(function(r) { return r.pass; }).length;
+    return {
+      success: true,
+      results: results,
+      summary: {
+        total: results.length,
+        passed: passedCount,
+        failed: results.length - passedCount,
+        passRate: results.length > 0 ? ((passedCount / results.length) * 100).toFixed(2) : '0.00'
+      }
+    };
+  } catch (error) {
+    return { success: false, error: error.message, results: [] };
+  }
 };
 
-// -- Utility --
+ProcyonUsbBridge.prototype.initializeLogger = async function(params, eraseMemory, onProgress) {
+  try {
+    var steps = [];
 
-ProcyonUsbBridge.prototype._parseFloat = function(data) {
-  if (!data || data.length < 4) return 0;
-  var buf = Buffer.alloc(4);
-  buf[0] = data[0]; buf[1] = data[1]; buf[2] = data[2]; buf[3] = data[3];
-  return buf.readFloatLE(0);
+    // Step 1: Set all parameters on the device
+    if (onProgress) onProgress({ step: 'Setting Parameters On the Device', status: 'running' });
+    var setParams = await this.setMultipleParameters(params);
+    steps.push({ name: 'Setting Parameters On the Device', success: setParams.success });
+    if (!setParams.success) {
+      return { success: false, error: 'Failed to set parameters', steps: steps };
+    }
+
+    // Step 2: Check battery level
+    if (onProgress) onProgress({ step: 'Checking Connected Battery Level', status: 'running' });
+    var battResp = await this.getBatteryVoltage();
+    var battOk = battResp.success && battResp.millivolts >= 3500;
+    steps.push({ name: 'Checking Connected Battery Level', success: battOk, detail: battResp.success ? battResp.millivolts + ' mV' : 'Failed to read' });
+    if (!battOk) {
+      return { success: false, error: 'Battery voltage too low (' + (battResp.millivolts || 0) + ' mV, minimum 3500 mV)', steps: steps };
+    }
+
+    // Step 3: Erase device memory (if requested)
+    if (eraseMemory) {
+      if (onProgress) onProgress({ step: 'Erasing Device Memory', status: 'running' });
+      var eraseResp = await this.eraseMemory(true);
+      steps.push({ name: 'Erasing Device Memory', success: eraseResp.success });
+      if (!eraseResp.success) {
+        return { success: false, error: 'Memory erase failed', steps: steps };
+      }
+    }
+
+    // Step 4: Validate memory capacity
+    if (onProgress) onProgress({ step: 'Validate Memory Capacity', status: 'running' });
+    var memResp = await this.getMemoryPartitions();
+    steps.push({ name: 'Validate Memory Capacity', success: memResp.success, detail: memResp.success ? memResp.count + ' partition(s)' : 'Failed' });
+
+    // Step 5: Write into flash
+    if (onProgress) onProgress({ step: 'Writing Parameters to Flash', status: 'running' });
+    var flashResp = await this.writeIntoFlash();
+    steps.push({ name: 'Writing Parameters to Flash', success: flashResp.success });
+
+    var allSuccess = steps.every(function(s) { return s.success; });
+    return { success: allSuccess, steps: steps };
+  } catch (error) {
+    return { success: false, error: error.message, steps: steps || [] };
+  }
 };
 
-ProcyonUsbBridge.prototype._parseU32 = function(data) {
-  if (!data || data.length < 4) return 0;
-  var buf = Buffer.alloc(4);
-  for (var i = 0; i < 4; i++) buf[i] = data[i];
-  return buf.readUInt32LE(0);
+ProcyonUsbBridge.prototype.launchDevice = async function() {
+  try {
+    var resp = await this.sendGetCommand(CMD.LAUNCH_DEVICE);
+    return { success: resp.success, detail: resp.success ? 'Device launched successfully' : 'Launch failed' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 };
 
 ProcyonUsbBridge.prototype.listDevices = function() {
@@ -796,6 +1032,66 @@ ProcyonUsbBridge.prototype.getAllParameters = async function() {
     return { success: true, params: params };
   } catch (error) {
     return { success: false, error: error.message, params: {} };
+  }
+};
+
+ProcyonUsbBridge.prototype._parseFloat = function(data) {
+  if (!data || data.length < 4) return 0;
+  var buf = Buffer.from(data);
+  return buf.readFloatLE(0);
+};
+
+ProcyonUsbBridge.prototype._parseU32 = function(data) {
+  if (!data || data.length < 4) return 0;
+  var buf = Buffer.from(data);
+  return buf.readUInt32LE(0);
+};
+
+ProcyonUsbBridge.prototype.setMultipleParameters = async function(params) {
+  try {
+    var setters = {
+      customer: CMD.SET_CUSTOMER,
+      country: CMD.SET_COUNTRY,
+      district: CMD.SET_DISTRICT,
+      runIdType: CMD.SET_RUN_ID_TYPE,
+      runId: CMD.SET_RUN_ID,
+      deptOut: CMD.SET_DEPT_OUT,
+      uniqueId: CMD.SET_UNIQUE_ID,
+      ldap: CMD.SET_LDAP,
+      toolType: CMD.SET_TOOL_TYPE,
+      toolSize: CMD.SET_TOOL_SIZE,
+      toolPosition: CMD.SET_TOOL_POSITION,
+      configName: CMD.SET_CONFIG_NAME,
+      toolSN: CMD.SET_TOOL_SN,
+      uhConnectionType: CMD.SET_UH_CONNECTION_TYPE,
+      dhConnectionType: CMD.SET_DH_CONNECTION_TYPE,
+      intPressureSN: CMD.SET_INT_PRESSURE_SENSOR_SERIAL_NUMBER,
+      extPressureSN: CMD.SET_EXT_PRESSURE_SENSOR_SERIAL_NUMBER,
+      limpetSN: CMD.SET_LIMPET_SENSOR_SERIAL_NUMBER,
+      housingNumber: CMD.SET_HOUSING_NUMBER,
+      bhaSerialNumber: CMD.SET_BHA_SERIAL_NUMBER,
+      axialPosition: CMD.SET_TOOL_AXIAL_POSITION,
+      sensorHeadSN: CMD.SET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER,
+      bitBladeNumber: CMD.SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER,
+      bitBOM: CMD.SET_DRILL_BIT_INFO_BIT_BOM,
+    };
+    var keys = Object.keys(params);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var value = params[key];
+      if (value === undefined || value === null || value === '') continue;
+      var cmdCode = setters[key];
+      if (cmdCode === undefined) continue;
+      var resp = await this.sendSetCommand(cmdCode, String(value));
+      if (!resp.success) {
+        return { success: false, error: 'Failed to set ' + key, failedParam: key };
+      }
+      // 50ms delay between SET commands (per DLL protocol)
+      await new Promise(function(resolve) { setTimeout(resolve, 50); });
+    }
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 };
 

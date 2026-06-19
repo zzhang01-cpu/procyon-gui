@@ -31,13 +31,12 @@ type TestStatus = 'pending' | 'running' | 'pass' | 'fail';
 
 export default function DeviceMonitoringPage({ onNavigate }: DeviceMonitoringPageProps) {
   const { t } = useI18n();
-  const { connected, deviceInfo, setToolSN } = useDevice();
+  const { connected, deviceInfo, setToolSN, runSelfTest, testResults: usbTestResults, testSummary, selfTestProgress, launchDevice } = useDevice();
   const [activeTab, setActiveTab] = useState<Tab>('system');
   const [eraseMemory, setEraseMemory] = useState(true);
   const [toolSNInput, setToolSNInput] = useState(deviceInfo?.serialNumber || '');
   const [showToolSNDialog, setShowToolSNDialog] = useState(false);
   const [testRunning, setTestRunning] = useState(false);
-  const [testResults, setTestResults] = useState<Record<string, TestStatus>>({});
   const [overallResult, setOverallResult] = useState<'idle' | 'running' | 'success' | 'fail'>('idle');
   const [testLog, setTestLog] = useState<string[]>([]);
   const [showTestResults, setShowTestResults] = useState(false);
@@ -46,57 +45,33 @@ export default function DeviceMonitoringPage({ onNavigate }: DeviceMonitoringPag
     if (!connected) return;
     setTestRunning(true);
     setOverallResult('running');
-    setTestResults({});
     setTestLog([]);
-    setShowTestResults(false);
 
-    const results: Record<string, TestStatus> = {};
+    try {
+      const selectedTests = TEST_ITEMS.map((item) => item.id);
+      await runSelfTest(selectedTests);
 
-    for (let i = 0; i < TEST_ITEMS.length; i++) {
-      const item = TEST_ITEMS[i];
-      results[item.id] = 'running';
-      setTestResults({ ...results });
+      // After runSelfTest completes, results are in context (usbTestResults)
+      const allPassed = usbTestResults.length > 0 && usbTestResults.every((r) => r.pass);
+      setOverallResult(allPassed ? 'success' : 'fail');
 
-      // If this is the Tool SN set step, show dialog
-      if ('requiresInput' in item && item.requiresInput && !toolSNInput) {
-        setShowToolSNDialog(true);
-        // Wait for user to set SN
-        await new Promise<void>((resolve) => {
-          const check = setInterval(() => {
-            if (!showToolSNDialog) {
-              clearInterval(check);
-              resolve();
-            }
-          }, 500);
-        });
-      }
-
-      // Simulate test execution
       setTestLog((prev) => [
         ...prev,
-        `[${new Date().toISOString()}] Running: ${item.label}...`,
+        '\n=== System Test Summary ===',
+        testSummary ? `Overall Result: ${allPassed ? 'Success' : 'Failed'}` : 'No summary available',
+        testSummary ? `Tests Passed: ${testSummary.passed} out of ${testSummary.total}` : '',
+        testSummary ? `Pass Rate: ${testSummary.passRate}%` : '',
       ]);
-
-      await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 1200));
-
-      results[item.id] = 'pass';
-      setTestResults({ ...results });
+    } catch (err) {
+      setOverallResult('fail');
       setTestLog((prev) => [
         ...prev,
-        `[${new Date().toISOString()}] ${item.label}: PASS`,
+        `Error: ${err instanceof Error ? err.message : 'Unknown error'}`,
       ]);
+    } finally {
+      setTestRunning(false);
     }
-
-    setTestRunning(false);
-    setOverallResult('success');
-    setTestLog((prev) => [
-      ...prev,
-      `\n=== System Test Summary ===`,
-      `Overall Result: Success`,
-      `Tests Passed: ${TEST_ITEMS.length} out of ${TEST_ITEMS.length}`,
-      `Pass Rate: 100.00%`,
-    ]);
-  }, [connected, toolSNInput, showToolSNDialog, setToolSN]);
+  }, [connected, runSelfTest, usbTestResults, testSummary]);
 
   const handleSetToolSN = useCallback(async () => {
     if (toolSNInput) {
@@ -284,7 +259,12 @@ export default function DeviceMonitoringPage({ onNavigate }: DeviceMonitoringPag
               </h4>
               <div className="space-y-2">
                 {TEST_ITEMS.map((item) => {
-                  const status = testResults[item.id] || 'pending';
+                  const result = usbTestResults.find((r) => r.id === item.id);
+                  const status: TestStatus = selfTestProgress?.testId === item.id
+                    ? 'running'
+                    : result
+                    ? (result.pass ? 'pass' : 'fail')
+                    : 'pending';
                   return (
                     <div key={item.id} className="flex items-center gap-2">
                       <div
@@ -311,6 +291,9 @@ export default function DeviceMonitoringPage({ onNavigate }: DeviceMonitoringPag
                       >
                         {item.label}
                       </span>
+                      {result?.detail && (
+                        <span className="text-[10px] text-slate-400 ml-auto">{result.detail}</span>
+                      )}
                     </div>
                   );
                 })}
