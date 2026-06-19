@@ -49,6 +49,7 @@ import {
   type SelfTestProgress,
   type DownloadResult,
   type UsbDeviceInfo,
+  parseBinaryRecords,
 } from '../usb/procyon';
 
 interface DeviceContextType {
@@ -328,6 +329,11 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       const result = await usbDownloadData();
       if (result.success) {
         setDownloadResult(result);
+        // Parse binary data into OneSecondRecord[]
+        if (result.partitions && result.partitions.length > 0) {
+          const parsed = parseBinaryRecords(result.partitions);
+          setDownloadedData(parsed);
+        }
       } else {
         setError(result.error || 'Download failed');
       }

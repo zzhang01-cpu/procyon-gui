@@ -792,7 +792,10 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       console.log('[USB] MEMORY_DUMP_START not ACKed, proceeding anyway...');
     }
 
-    // Step 2: Get number of partitions
+    // Wait for device to prepare dump data (firmware needs time)
+    await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+
+    // Step 2: Get number of partitions (try with longer timeout)
     var numPartitions = 0;
     var partResp = await this.getMemoryPartitions();
     if (partResp.success && partResp.count > 0) {
@@ -800,43 +803,102 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       console.log('[USB] Found ' + numPartitions + ' memory partitions');
     } else {
       // Firmware may not support GET_NUMBER_MEMORY_PARTITIONS
-      // Try alternative: read GET_PARTITION_WRITTEN_BYTE_COUNT to check if data exists
+      // Try alternative approaches with extended timeout
       console.log('[USB] GET_NUMBER_MEMORY_PARTITIONS failed, trying alternative approach...');
-      var byteCountResp = await this.sendGetCommand(CMD.GET_PARTITION_WRITTEN_BYTE_COUNT);
-      if (byteCountResp.success && byteCountResp.data && byteCountResp.data.length >= 4) {
-        var writtenBytes = this._parseU32(byteCountResp.data);
-        if (writtenBytes > 0) {
-          numPartitions = 1;
-          console.log('[USB] Alternative: found written bytes = ' + writtenBytes + ', assuming 1 partition');
-        }
-      }
-      // Also try GET_PARTITION_NUMBER_CHUNKS_WRITTEN
-      if (numPartitions === 0) {
-        var writtenChunksResp2 = await this.sendGetCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN);
-        if (writtenChunksResp2.success && writtenChunksResp2.data && writtenChunksResp2.data.length >= 4) {
-          var wc = this._parseU32(writtenChunksResp2.data);
-          if (wc > 0) {
+
+      // Alt 1: GET_PARTITION_WRITTEN_BYTE_COUNT (with extended read timeout)
+      var savedTimeout = READ_TIMEOUT;
+      READ_TIMEOUT = 2000; // extend to 2s for memory operations
+      try {
+        var byteCountResp = await this.sendGetCommand(CMD.GET_PARTITION_WRITTEN_BYTE_COUNT);
+        console.log('[USB] GET_PARTITION_WRITTEN_BYTE_COUNT: success=' + byteCountResp.success + ', dataLen=' + (byteCountResp.data ? byteCountResp.data.length : 0));
+        if (byteCountResp.success && byteCountResp.data && byteCountResp.data.length >= 1) {
+          var writtenBytes = this._parseU32(byteCountResp.data);
+          if (writtenBytes > 0) {
             numPartitions = 1;
-            console.log('[USB] Alternative: found written chunks = ' + wc + ', assuming 1 partition');
+            console.log('[USB] Alternative: found written bytes = ' + writtenBytes + ', assuming 1 partition');
           }
         }
+      } catch(e) {
+        console.log('[USB] GET_PARTITION_WRITTEN_BYTE_COUNT error: ' + e.message);
       }
-      // Last resort: try reading chunk data directly
+
+      // Alt 2: GET_PARTITION_NUMBER_CHUNKS_WRITTEN
       if (numPartitions === 0) {
-        var testChunkResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_DATA, 64);
-        if (testChunkResp.success && testChunkResp.data && testChunkResp.data.length > 0) {
-          numPartitions = 1;
-          console.log('[USB] Alternative: chunk data readable, assuming 1 partition with unknown size');
+        try {
+          var writtenChunksResp2 = await this.sendGetCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN);
+          console.log('[USB] GET_PARTITION_NUMBER_CHUNKS_WRITTEN: success=' + writtenChunksResp2.success + ', dataLen=' + (writtenChunksResp2.data ? writtenChunksResp2.data.length : 0));
+          if (writtenChunksResp2.success && writtenChunksResp2.data && writtenChunksResp2.data.length >= 1) {
+            var wc = this._parseU32(writtenChunksResp2.data);
+            if (wc > 0) {
+              numPartitions = 1;
+              console.log('[USB] Alternative: found written chunks = ' + wc + ', assuming 1 partition');
+            }
+          }
+        } catch(e) {
+          console.log('[USB] GET_PARTITION_NUMBER_CHUNKS_WRITTEN error: ' + e.message);
         }
       }
+
+      // Alt 3: GET_PARTITION_TOTAL_NUMBER_CHUNKS
       if (numPartitions === 0) {
-        try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
-        return { success: false, error: 'No memory partitions found and no data available', records: [] };
+        try {
+          var totalChunksResp = await this.sendGetCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS);
+          console.log('[USB] GET_PARTITION_TOTAL_NUMBER_CHUNKS: success=' + totalChunksResp.success + ', dataLen=' + (totalChunksResp.data ? totalChunksResp.data.length : 0));
+          if (totalChunksResp.success && totalChunksResp.data && totalChunksResp.data.length >= 1) {
+            var tc = this._parseU32(totalChunksResp.data);
+            if (tc > 0) {
+              numPartitions = 1;
+              console.log('[USB] Alternative: found total chunks = ' + tc + ', assuming 1 partition');
+            }
+          }
+        } catch(e) {
+          console.log('[USB] GET_PARTITION_TOTAL_NUMBER_CHUNKS error: ' + e.message);
+        }
       }
+
+      // Alt 4: try reading chunk data directly
+      if (numPartitions === 0) {
+        try {
+          var testChunkResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_DATA);
+          console.log('[USB] GET_MEMORY_DUMP_CHUNK_DATA test: success=' + testChunkResp.success + ', dataLen=' + (testChunkResp.data ? testChunkResp.data.length : 0));
+          if (testChunkResp.success && testChunkResp.data && testChunkResp.data.length > 0) {
+            numPartitions = 1;
+            console.log('[USB] Alternative: chunk data readable, assuming 1 partition with unknown size');
+          }
+        } catch(e) {
+          console.log('[USB] GET_MEMORY_DUMP_CHUNK_DATA test error: ' + e.message);
+        }
+      }
+
+      // Alt 5: check GET_MEMORY_DUMP_CHUNK_SIZE for availability
+      if (numPartitions === 0) {
+        try {
+          var chunkSizeResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_SIZE);
+          console.log('[USB] GET_MEMORY_DUMP_CHUNK_SIZE: success=' + chunkSizeResp.success + ', dataLen=' + (chunkSizeResp.data ? chunkSizeResp.data.length : 0));
+          if (chunkSizeResp.success && chunkSizeResp.data && chunkSizeResp.data.length >= 1) {
+            numPartitions = 1;
+            console.log('[USB] Alternative: chunk size available, assuming 1 partition');
+          }
+        } catch(e) {
+          console.log('[USB] GET_MEMORY_DUMP_CHUNK_SIZE error: ' + e.message);
+        }
+      }
+
+      // Alt 6: Force assume 1 partition and try direct chunk reading
+      // Some firmware versions don't support partition queries but support chunk data
+      if (numPartitions === 0) {
+        console.log('[USB] All partition queries failed, force assuming 1 partition with direct chunk reading');
+        numPartitions = 1;
+      }
+
+      READ_TIMEOUT = savedTimeout; // restore original timeout
     }
 
-    // Step 3: Get chunk info and download per partition
+    // Step 3: Get chunk info and download per partition (use extended timeout)
     var allData = [];
+    var savedTimeout2 = READ_TIMEOUT;
+    READ_TIMEOUT = 2000; // 2s for memory read operations
     for (var p = 0; p < numPartitions; p++) {
       var totalChunksResp = await this.sendGetCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS);
       var writtenChunksResp = await this.sendGetCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN);
@@ -879,6 +941,8 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       allData.push({ partition: p + 1, data: partitionData, size: partitionData.length });
     }
 
+    READ_TIMEOUT = savedTimeout2; // restore original timeout
+
     // Step 4: End dump
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {
       console.log('[USB] MEMORY_DUMP_END not ACKed');
@@ -886,6 +950,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
 
     return { success: true, partitions: allData, totalPartitions: numPartitions };
   } catch (error) {
+    READ_TIMEOUT = savedTimeout2; // restore on error too
     return { success: false, error: error.message, records: [] };
   }
 };

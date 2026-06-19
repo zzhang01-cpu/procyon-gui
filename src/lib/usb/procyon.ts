@@ -707,3 +707,126 @@ export const USB_CONFIG = {
   VENDOR_ID: 0x2269,
   PRODUCT_ID: 0xBEEF,
 };
+
+/**
+ * Parse raw binary data from device download into OneSecondRecord[]
+ * Binary format based on RecordFormatFiles.json - OneSecondData (0xA0)
+ */
+export function parseBinaryRecords(partitions: { partition: number; data: number[]; size: number }[]): OneSecondRecord[] {
+  const records: OneSecondRecord[] = [];
+
+  for (const part of partitions) {
+    const buf = Buffer.from(part.data);
+    let offset = 0;
+
+    while (offset + 4 <= buf.length) {
+      // Check for record header: record type byte
+      const recordType = buf[offset];
+
+      // OneSecondData record type = 0xA0
+      if (recordType === 0xA0) {
+        // Need at least 84 bytes for a complete OneSecondData record
+        if (offset + 84 > buf.length) break;
+
+        // Skip record type byte and read s16 values
+        // Format: [type(1)] [s16 x 42] but we need to find the actual offset
+        // Actually, the record format from DLL shows the data starts directly after the record marker
+        // Let's try reading starting from offset+1 (after type byte)
+        const dataOffset = offset + 1;
+
+        // Parse s16 values with scales from RecordFormatFiles.json
+        const temp = buf.readInt16LE(dataOffset) * 0.03125;
+        const batt = buf.readInt16LE(dataOffset + 2) * 0.001027;
+
+        // RpmMinX/Y/Z x 4 each (Min/Max/Avg/Rms) at scale 0.02333
+        const rpmMinX = buf.readInt16LE(dataOffset + 4) * 0.02333;
+        const rpmMaxX = buf.readInt16LE(dataOffset + 6) * 0.02333;
+        const rpmAvgX = buf.readInt16LE(dataOffset + 8) * 0.02333;
+        const rpmRmsX = buf.readInt16LE(dataOffset + 10) * 0.02333;
+        const rpmMinY = buf.readInt16LE(dataOffset + 12) * 0.02333;
+        const rpmMaxY = buf.readInt16LE(dataOffset + 14) * 0.02333;
+        const rpmAvgY = buf.readInt16LE(dataOffset + 16) * 0.02333;
+        const rpmRmsY = buf.readInt16LE(dataOffset + 18) * 0.02333;
+        const rpmMinZ = buf.readInt16LE(dataOffset + 20) * 0.02333;
+        const rpmMaxZ = buf.readInt16LE(dataOffset + 22) * 0.02333;
+        const rpmAvgZ = buf.readInt16LE(dataOffset + 24) * 0.02333;
+        const rpmRmsZ = buf.readInt16LE(dataOffset + 26) * 0.02333;
+
+        // ShockLowMinX/Y/Z x 4 each at scale 0.000244
+        const shockLowMinX = buf.readInt16LE(dataOffset + 28) * 0.000244;
+        const shockLowMaxX = buf.readInt16LE(dataOffset + 30) * 0.000244;
+        const shockLowAvgX = buf.readInt16LE(dataOffset + 32) * 0.000244;
+        const shockLowRmsX = buf.readInt16LE(dataOffset + 34) * 0.000244;
+        const shockLowMinY = buf.readInt16LE(dataOffset + 36) * 0.000244;
+        const shockLowMaxY = buf.readInt16LE(dataOffset + 38) * 0.000244;
+        const shockLowAvgY = buf.readInt16LE(dataOffset + 40) * 0.000244;
+        const shockLowRmsY = buf.readInt16LE(dataOffset + 42) * 0.000244;
+        const shockLowMinZ = buf.readInt16LE(dataOffset + 44) * 0.000244;
+        const shockLowMaxZ = buf.readInt16LE(dataOffset + 46) * 0.000244;
+        const shockLowAvgZ = buf.readInt16LE(dataOffset + 48) * 0.000244;
+        const shockLowRmsZ = buf.readInt16LE(dataOffset + 50) * 0.000244;
+
+        // ShockMinX/Y/Z x 4 each at scale 0.2
+        const shockMinX = buf.readInt16LE(dataOffset + 52) * 0.2;
+        const shockMaxX = buf.readInt16LE(dataOffset + 54) * 0.2;
+        const shockAvgX = buf.readInt16LE(dataOffset + 56) * 0.2;
+        const shockRmsX = buf.readInt16LE(dataOffset + 58) * 0.2;
+        const shockMinY = buf.readInt16LE(dataOffset + 60) * 0.2;
+        const shockMaxY = buf.readInt16LE(dataOffset + 62) * 0.2;
+        const shockAvgY = buf.readInt16LE(dataOffset + 64) * 0.2;
+        const shockRmsY = buf.readInt16LE(dataOffset + 66) * 0.2;
+        const shockMinZ = buf.readInt16LE(dataOffset + 68) * 0.2;
+        const shockMaxZ = buf.readInt16LE(dataOffset + 70) * 0.2;
+        const shockAvgZ = buf.readInt16LE(dataOffset + 72) * 0.2;
+        const shockRmsZ = buf.readInt16LE(dataOffset + 74) * 0.2;
+
+        // ShockLateral Max/Rms at scale 0.2
+        const shockLateralMax = buf.readInt16LE(dataOffset + 76) * 0.2;
+        const shockLateralRms = buf.readInt16LE(dataOffset + 78) * 0.2;
+
+        records.push({
+          timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
+          temperature: temp,
+          batteryVoltage: batt,
+          rpmMinX, rpmMaxX, rpmAvgX, rpmRmsX,
+          rpmMinY, rpmMaxY, rpmAvgY, rpmRmsY,
+          rpmMinZ, rpmMaxZ, rpmAvgZ, rpmRmsZ,
+          shockLowMinX, shockLowMaxX, shockLowAvgX, shockLowRmsX,
+          shockLowMinY, shockLowMaxY, shockLowAvgY, shockLowRmsY,
+          shockLowMinZ, shockLowMaxZ, shockLowAvgZ, shockLowRmsZ,
+          shockMinX, shockMaxX, shockAvgX, shockRmsX,
+          shockMinY, shockMaxY, shockAvgY, shockRmsY,
+          shockMinZ, shockMaxZ, shockAvgZ, shockRmsZ,
+          shockLateralMax, shockLateralRms,
+          pressure: 0,
+        });
+
+        offset += 84; // 1 type byte + 83 data bytes ≈ move forward
+      } else if (recordType === 0x01) {
+        // FirmwareVersion record - skip
+        offset += 8;
+      } else if (recordType === 0x02) {
+        // Reset record - skip
+        offset += 8;
+      } else if (recordType === 0x0D) {
+        // FlashDeviceID record - skip
+        offset += 8;
+      } else if (recordType === 0xFF) {
+        // Flush record - skip
+        offset += 4;
+      } else {
+        // Unknown record type - skip 1 byte and try to resync
+        offset += 1;
+      }
+    }
+  }
+
+  // Assign incremental timestamps (1 second apart)
+  const now = new Date();
+  for (let i = records.length - 1; i >= 0; i--) {
+    const t = new Date(now.getTime() - (records.length - 1 - i) * 1000);
+    records[i].timestamp = t.toISOString().replace('T', ' ').substring(0, 19);
+  }
+
+  return records;
+}
