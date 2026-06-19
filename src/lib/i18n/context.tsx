@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { zh } from './zh';
 import { en } from './en';
-import type { TranslationType } from './zh';
+import type { TranslationType } from './types';
 
 type Language = 'zh' | 'en';
 

@@ -1,9 +1,9 @@
-import type { TranslationType } from './zh';
+import type { TranslationType } from './types';
 
 export const en: TranslationType = {
   // Common
   common: {
-    appTitle: 'Procyon CM Control Software',
+    appTitle: 'Unified Data Logger',
     save: 'Save',
     cancel: 'Cancel',
     confirm: 'Confirm',
@@ -44,16 +44,98 @@ export const en: TranslationType = {
 
   // Navigation
   nav: {
-    dashboard: 'Dashboard',
-    connection: 'Connection',
-    parameters: 'Parameters',
-    download: 'Download',
-    systemTest: 'System Test',
+    home: 'Home',
+    deviceInit: 'Device Init',
+    downloadUpload: 'Download/Upload',
+    workHistory: 'Work History',
+    configStatus: 'Config Status',
+    deviceMonitoring: 'Device Monitoring',
     settings: 'Settings',
-    about: 'About',
   },
 
-  // Connection
+  // Left Panel
+  leftPanel: {
+    ldapLoginInfo: 'LDAP Login Information',
+    userId: 'UserID',
+    access: 'Access',
+    connectionStatus: 'General Connection Status',
+    internetConnection: 'Internet Connection',
+    deviceConnection: 'Device Connection',
+    connectedDevice: 'Connected Device',
+    deviceName: 'Device Name',
+    firmwareVersion: 'Firmware Version',
+    toolSN: 'Tool S/N',
+    deviceState: 'Device State',
+    batteryVoltage: 'Battery Voltage',
+    admin: 'Admin',
+    user: 'User',
+    idle: 'Idle',
+    system: 'System',
+    initializing: 'Initializing',
+    downloading: 'Downloading',
+  },
+
+  // Home
+  home: {
+    deviceInit: 'Device Initialization',
+    deviceInitDesc: 'Initialize Unified Logger Process',
+    downloadUpload: 'Download / Upload',
+    downloadUploadDesc: 'Dump Unified Logger',
+    workHistory: 'Work History',
+    workHistoryDesc: 'Unified Logger Dump/Init History',
+    configStatus: 'Config Status',
+    configStatusDesc: 'Monitor Device Config Status',
+    deviceMonitoring: 'Device Monitoring',
+    deviceMonitoringDesc: 'Monitor All Sensors',
+    settings: 'Settings',
+    settingsDesc: 'Unified Logger Settings',
+  },
+
+  // Device Initialization
+  deviceInit: {
+    title: 'Device Initialization',
+    stepJobInfo: 'Job Information',
+    stepToolInfo: 'Tool Information',
+    stepDeviceInfo: 'Device Information',
+    jobInformation: 'Job Information',
+    customer: 'Customer',
+    country: 'Country',
+    district: 'District',
+    toolInformation: 'Tool Information',
+    toolType: 'Tool Type',
+    toolPosition: 'Tool Position',
+    axialPosition: 'Axial Position',
+    toolSize: 'Tool Size',
+    deviceInformation: 'Device Information',
+    bitSerial: 'Bit Serial',
+    housingSN: 'Procyon-CM Housing SN',
+    toolSN: 'Procyon-CM Tool SN',
+    initializeLogger: 'Initialize Logger',
+    initializing: 'Initializing...',
+    initComplete: 'Initialization Complete',
+    initSuccess: 'Initialization Completed Successfully',
+    settingParams: 'Setting Parameters On the Device',
+    checkingBattery: 'Checking Connected Battery Level',
+    erasingMemory: 'Erasing Device Memory',
+    validatingMemory: 'Validate Memory Capacity',
+    preDefinedJobOn: 'Pre-Defined Job On',
+    selectCustomer: 'Select Customer',
+    selectCountry: 'Select Country',
+    selectDistrict: 'Select District',
+    selectToolType: 'Select Tool Type',
+    selectToolPosition: 'Select Tool Position',
+    selectAxialPosition: 'Select Axial Position',
+    selectToolSize: 'Select Tool Size',
+    initializationComplete: 'Initialization Complete',
+    initSuccessMessage: 'Initialization Completed Successfully',
+    returnHome: 'Return Home',
+    preDefinedJobOff: 'Pre-Defined Job Off',
+    summary: 'Summary',
+    back: 'Back',
+    next: 'Next',
+  },
+
+  // Connection (kept for compatibility)
   connection: {
     title: 'Device Connection',
     subtitle: 'Connect and manage Procyon CM devices',
@@ -134,6 +216,26 @@ export const en: TranslationType = {
   download: {
     title: 'Data Download',
     subtitle: 'Download recorded data from device',
+    fileDownload: 'File Download',
+    fileUpload: 'File Upload',
+    downloadPath: 'Download Path',
+    parseData: 'Parse Data',
+    startDumping: 'Start Dumping',
+    dumping: 'Dumping...',
+    dumpProgressLog: 'Dump Progress Log',
+    dumpConfig: 'Dump Configuration',
+    runIdType: 'Run ID Type',
+    runId: 'Run ID',
+    runNumber: 'Run Number',
+    findSapITT: 'Find SapITT ID',
+    testingOn: 'Testing On',
+    testingOff: 'Testing Off',
+    showConfig: 'Show Config',
+    hideConfig: 'Hide Config',
+    exportCSV: 'Export CSV',
+    clearData: 'Clear Data',
+    uploadTitle: 'File Upload',
+    uploadDescription: 'Upload data to device',
     startDownload: 'Start Download',
     stopDownload: 'Stop Download',
     pauseDownload: 'Pause',
@@ -146,10 +248,8 @@ export const en: TranslationType = {
     dataSize: 'Data Size',
     recordCount: 'Record Count',
     timeRange: 'Time Range',
-    exportCSV: 'Export CSV',
     exportJSON: 'Export JSON',
     exportExcel: 'Export Excel',
-    clearData: 'Clear Data',
     viewData: 'View Data',
     realtime: 'Realtime Data',
     historical: 'Historical Data',
@@ -174,6 +274,38 @@ export const en: TranslationType = {
     lateral: 'Lateral',
     axial: 'Axial',
     temperature: 'Temperature',
+  },
+
+  // Device Monitoring
+  deviceMonitoring: {
+    title: 'Device Monitoring',
+    realtime: 'Real-Time',
+    system: 'System',
+    realtimeTitle: 'Real-Time Sensor Data',
+    batteryVoltage: 'Battery Voltage',
+    temperature: 'Temperature',
+    deviceState: 'Device State',
+    eraseMemoryData: 'Erase Memory Data',
+    notInitiated: 'Not Initiated',
+    running: 'Running...',
+    successViewDetails: 'Success - View Test Details',
+    testFailed: 'Test Failed',
+    testSequence: 'Test Sequence',
+    systemTestSummary: 'System Test Summary',
+    pleaseEnterToolSN: 'Please Enter Tool Serial Number and click Set button',
+  },
+
+  // Work History
+  workHistory: {
+    title: 'Work History',
+    noHistory: 'No History',
+    noHistoryDescription: 'Device initialization and data dump history will appear here',
+  },
+
+  // Config Status
+  configStatus: {
+    title: 'Config Status',
+    noDeviceConnected: 'No device connected. Cannot view configuration status.',
   },
 
   // System Test
@@ -217,7 +349,7 @@ export const en: TranslationType = {
 
   // Settings
   settings: {
-    title: 'System Settings',
+    title: 'Settings',
     subtitle: 'Configure system parameters',
     general: 'General',
     display: 'Display',

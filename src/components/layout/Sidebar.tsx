@@ -5,14 +5,15 @@ import { useI18n } from '@/lib/i18n/context';
 import { useDevice } from '@/lib/device/context';
 import {
   LayoutDashboard,
-  Usb,
   Settings2,
   Download,
-  TestTube,
-  Settings,
+  Clock,
   Info,
+  Activity,
+  Settings,
   Wifi,
   WifiOff,
+  Usb,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -26,13 +27,13 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   const { connected } = useDevice();
 
   const menuItems = [
-    { id: 'dashboard', label: t.nav.dashboard, icon: LayoutDashboard },
-    { id: 'connection', label: t.nav.connection, icon: Usb },
-    { id: 'parameters', label: t.nav.parameters, icon: Settings2 },
-    { id: 'download', label: t.nav.download, icon: Download },
-    { id: 'systemTest', label: t.nav.systemTest, icon: TestTube },
+    { id: 'home', label: t.nav.home, icon: LayoutDashboard },
+    { id: 'deviceInit', label: t.nav.deviceInit, icon: Settings2 },
+    { id: 'downloadUpload', label: t.nav.downloadUpload, icon: Download },
+    { id: 'workHistory', label: t.nav.workHistory, icon: Clock },
+    { id: 'configStatus', label: t.nav.configStatus, icon: Info },
+    { id: 'deviceMonitoring', label: t.nav.deviceMonitoring, icon: Activity },
     { id: 'settings', label: t.nav.settings, icon: Settings },
-    { id: 'about', label: t.nav.about, icon: Info },
   ];
 
   return (
