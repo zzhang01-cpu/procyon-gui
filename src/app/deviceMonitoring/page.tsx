@@ -20,6 +20,7 @@ export default function DeviceMonitoringPage() {
   const [erasing, setErasing] = useState(false);
   const [sensorData, setSensorData] = useState<Record<string, string>>({});
   const [sensorPolling, setSensorPolling] = useState(false);
+  const [pollError, setPollError] = useState<string | null>(null);
 
   // Poll sensor data for real-time monitoring
   useEffect(() => {
@@ -29,11 +30,20 @@ export default function DeviceMonitoringPage() {
       while (!cancelled && sensorPolling) {
         try {
           const data = await getSensorData();
-          if (!cancelled) setSensorData(data);
-        } catch {
-          // ignore polling errors
+          if (!cancelled) {
+            if (data && data.error) {
+              setPollError(data.error);
+            } else {
+              setPollError(null);
+              setSensorData(data || {});
+            }
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setPollError(err instanceof Error ? err.message : 'Polling failed');
+          }
         }
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 3000));
       }
     };
     poll();
@@ -188,7 +198,15 @@ export default function DeviceMonitoringPage() {
             {/* Polling Control */}
             <div className="flex items-center gap-4">
               <button
-                onClick={() => setSensorPolling(!sensorPolling)}
+                onClick={() => {
+                  if (sensorPolling) {
+                    setSensorPolling(false);
+                    setSensorData({});
+                    setPollError(null);
+                  } else {
+                    setSensorPolling(true);
+                  }
+                }}
                 disabled={!connected}
                 className={`px-6 py-2 rounded-md text-sm font-medium transition-colors ${
                   sensorPolling
@@ -199,8 +217,13 @@ export default function DeviceMonitoringPage() {
                 {sensorPolling ? 'Stop Monitoring' : 'Start Monitoring'}
               </button>
               <span className="text-sm text-gray-500">
-                {!connected ? 'Device not connected' : sensorPolling ? 'Polling every 2 seconds...' : 'Click to start real-time monitoring'}
+                {!connected ? 'Device not connected' : sensorPolling ? 'Polling every 3 seconds...' : 'Click to start real-time monitoring'}
               </span>
+              {pollError && (
+                <span className="text-sm text-red-500">
+                  Error: {pollError}
+                </span>
+              )}
             </div>
 
             {/* Launch Device Section */}

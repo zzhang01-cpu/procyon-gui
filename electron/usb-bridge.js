@@ -1109,51 +1109,62 @@ ProcyonUsbBridge.prototype.getSensorData = async function() {
   try {
     var sensorData = {};
     var sensorGetters = {
-      temperatureCM: { fn: this.getTemperature.bind(this), unit: 'C' },
-      batteryVoltage: { fn: this.getBatteryVoltage.bind(this), unit: 'mV' },
-      highShockCM: { fn: this.sendGetCommand.bind(this, CMD.GET_HIGHSHOCK_DATA_CM), unit: 'g' },
-      lowShockCM: { fn: this.sendGetCommand.bind(this, CMD.GET_LOWSHOCK_DATA_CM), unit: 'g' },
-      lowShockEM: { fn: this.sendGetCommand.bind(this, CMD.GET_LOWSHOCK_DATA_EM), unit: 'g' },
-      pressureCM: { fn: this.sendGetCommand.bind(this, CMD.GET_PRESSURE_DATA_CM), unit: 'psi' },
-      pressureEM: { fn: this.sendGetCommand.bind(this, CMD.GET_PRESSURE_DATA_EM), unit: 'psi' },
-      pressureSelfTest: { fn: this.sendGetCommand.bind(this, CMD.GET_PRESSURRE_SELF_TEST_DATA), unit: '' },
-      rotationalCM: { fn: this.sendGetCommand.bind(this, CMD.GET_ROTATIONAL_DATA_CM), unit: 'rpm' },
-      rotationalEM: { fn: this.sendGetCommand.bind(this, CMD.GET_ROTATIONAL_DATA_EM), unit: 'rpm' },
-      temperatureEM: { fn: this.sendGetCommand.bind(this, CMD.GET_TEMPERATURE_DATA_EM), unit: 'C' },
-      limpetEM: { fn: this.sendGetCommand.bind(this, CMD.GET_LIMPET_DATA_EM), unit: '' },
-      flashTest: { fn: this.sendGetCommand.bind(this, CMD.GET_FLASH_TEST_DATA), unit: '' },
+      temperatureCM: { fn: this.getTemperature.bind(this), type: 'custom' },
+      batteryVoltage: { fn: this.getBatteryVoltage.bind(this), type: 'custom' },
+      highShockCM: { cmd: CMD.GET_HIGHSHOCK_DATA_CM, type: 'float32' },
+      lowShockCM: { cmd: CMD.GET_LOWSHOCK_DATA_CM, type: 'float32' },
+      lowShockEM: { cmd: CMD.GET_LOWSHOCK_DATA_EM, type: 'float32' },
+      pressureCM: { cmd: CMD.GET_PRESSURE_DATA_CM, type: 'float32' },
+      pressureEM: { cmd: CMD.GET_PRESSURE_DATA_EM, type: 'float32' },
+      pressureSelfTest: { cmd: CMD.GET_PRESSURRE_SELF_TEST_DATA, type: 'float32' },
+      rotationalCM: { cmd: CMD.GET_ROTATIONAL_DATA_CM, type: 'float32' },
+      rotationalEM: { cmd: CMD.GET_ROTATIONAL_DATA_EM, type: 'float32' },
+      temperatureEM: { cmd: CMD.GET_TEMPERATURE_DATA_EM, type: 'float32' },
+      limpetEM: { cmd: CMD.GET_LIMPET_DATA_EM, type: 'float32' },
+      flashTest: { cmd: CMD.GET_FLASH_TEST_DATA, type: 'float32' },
     };
     var keys = Object.keys(sensorGetters);
     for (var i = 0; i < keys.length; i++) {
       var key = keys[i];
       var getter = sensorGetters[key];
       try {
-        var result = await getter.fn();
-        if (result && result.success) {
-          var val = result.value;
-          // getBatteryVoltage returns { voltage, rawMv }
-          if (val === undefined && result.rawMv !== undefined) {
-            val = result.rawMv;
+        if (getter.type === 'custom') {
+          // getBatteryVoltage / getTemperature - use their own parsing
+          var result = await getter.fn();
+          if (result && result.success) {
+            var val = result.value;
+            if (val === undefined && result.rawMv !== undefined) val = result.rawMv;
+            if (val === undefined && result.temperature !== undefined) val = result.temperature;
+            if (typeof val === 'number') val = val.toFixed(3);
+            if (val === undefined || val === null) val = '';
+            sensorData[key] = String(val);
+          } else {
+            sensorData[key] = 'N/A';
           }
-          // getTemperature returns { temperature }
-          if (val === undefined && result.temperature !== undefined) {
-            val = result.temperature;
-          }
-          if (typeof val === 'number') {
-            val = val.toFixed(3);
-          }
-          if (val === undefined || val === null) {
-            val = '';
-          }
-          sensorData[key] = String(val);
-          sensorData[key + '_unit'] = getter.unit;
         } else {
-          sensorData[key] = 'N/A';
-          sensorData[key + '_unit'] = getter.unit;
+          // float32 binary sensor data
+          var resp = await this.sendGetCommand(getter.cmd);
+          if (resp && resp.success && resp.data && resp.data.length >= 4) {
+            // Try ASCII first, then float32 binary
+            var asciiVal = resp.value ? resp.value.trim() : '';
+            var parsed = parseFloat(asciiVal);
+            if (!isNaN(parsed) && asciiVal.length > 0 && parsed !== 0) {
+              sensorData[key] = parsed.toFixed(3);
+            } else {
+              // Try float32 binary parsing
+              var fval = this._parseFloat(resp.data);
+              if (fval !== 0 && !isNaN(fval)) {
+                sensorData[key] = fval.toFixed(3);
+              } else {
+                sensorData[key] = 'N/A';
+              }
+            }
+          } else {
+            sensorData[key] = 'N/A';
+          }
         }
       } catch (e) {
         sensorData[key] = 'N/A';
-        sensorData[key + '_unit'] = getter.unit;
       }
     }
     return sensorData;
