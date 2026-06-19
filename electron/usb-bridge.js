@@ -789,24 +789,55 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     // Step 1: Notify device about dump start
     var notifyResp = await this.sendAckCommand(CMD.MEMORY_DUMP_START);
     if (!notifyResp.success) {
-      // Some firmware versions don't ACK MEMORY_DUMP_START but still accept it
       console.log('[USB] MEMORY_DUMP_START not ACKed, proceeding anyway...');
     }
 
     // Step 2: Get number of partitions
+    var numPartitions = 0;
     var partResp = await this.getMemoryPartitions();
-    if (!partResp.success || partResp.count === 0) {
-      // Try to end dump gracefully
-      try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
-      return { success: false, error: 'No memory partitions found (firmware may not support dump)', records: [] };
+    if (partResp.success && partResp.count > 0) {
+      numPartitions = partResp.count;
+      console.log('[USB] Found ' + numPartitions + ' memory partitions');
+    } else {
+      // Firmware may not support GET_NUMBER_MEMORY_PARTITIONS
+      // Try alternative: read GET_PARTITION_WRITTEN_BYTE_COUNT to check if data exists
+      console.log('[USB] GET_NUMBER_MEMORY_PARTITIONS failed, trying alternative approach...');
+      var byteCountResp = await this.sendGetCommand(CMD.GET_PARTITION_WRITTEN_BYTE_COUNT);
+      if (byteCountResp.success && byteCountResp.data && byteCountResp.data.length >= 4) {
+        var writtenBytes = this._parseU32(byteCountResp.data);
+        if (writtenBytes > 0) {
+          numPartitions = 1;
+          console.log('[USB] Alternative: found written bytes = ' + writtenBytes + ', assuming 1 partition');
+        }
+      }
+      // Also try GET_PARTITION_NUMBER_CHUNKS_WRITTEN
+      if (numPartitions === 0) {
+        var writtenChunksResp2 = await this.sendGetCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN);
+        if (writtenChunksResp2.success && writtenChunksResp2.data && writtenChunksResp2.data.length >= 4) {
+          var wc = this._parseU32(writtenChunksResp2.data);
+          if (wc > 0) {
+            numPartitions = 1;
+            console.log('[USB] Alternative: found written chunks = ' + wc + ', assuming 1 partition');
+          }
+        }
+      }
+      // Last resort: try reading chunk data directly
+      if (numPartitions === 0) {
+        var testChunkResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_DATA, 64);
+        if (testChunkResp.success && testChunkResp.data && testChunkResp.data.length > 0) {
+          numPartitions = 1;
+          console.log('[USB] Alternative: chunk data readable, assuming 1 partition with unknown size');
+        }
+      }
+      if (numPartitions === 0) {
+        try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
+        return { success: false, error: 'No memory partitions found and no data available', records: [] };
+      }
     }
-    var numPartitions = partResp.count;
 
-    // Step 3: Get total chunks and written chunks per partition
+    // Step 3: Get chunk info and download per partition
     var allData = [];
     for (var p = 0; p < numPartitions; p++) {
-      // Select partition (use INFORM_DEVICE command)
-      // Read chunk by chunk
       var totalChunksResp = await this.sendGetCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS);
       var writtenChunksResp = await this.sendGetCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN);
       var totalChunks = totalChunksResp.success ? this._parseU32(totalChunksResp.data) : 0;
@@ -814,19 +845,34 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       var chunkSizeResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_SIZE);
       var chunkSize = chunkSizeResp.success ? this._parseU32(chunkSizeResp.data) : 64;
 
+      console.log('[USB] Partition ' + (p + 1) + ': totalChunks=' + totalChunks + ', writtenChunks=' + writtenChunks + ', chunkSize=' + chunkSize);
+
       var partitionData = Buffer.alloc(0);
-      for (var c = 0; c < writtenChunks; c++) {
+      var chunksToRead = writtenChunks > 0 ? writtenChunks : totalChunks;
+
+      // If we still don't know how many chunks, try reading until failure
+      if (chunksToRead === 0) {
+        console.log('[USB] Unknown chunk count, reading until device stops responding...');
+        chunksToRead = 99999; // will break on read failure
+      }
+
+      for (var c = 0; c < chunksToRead; c++) {
         var chunkResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_DATA, chunkSize);
-        if (chunkResp.success && chunkResp.data) {
-          partitionData = Buffer.concat([partitionData, Buffer.from(chunkResp.data)]);
+        if (!chunkResp.success || !chunkResp.data || chunkResp.data.length === 0) {
+          console.log('[USB] Chunk read failed at chunk ' + (c + 1) + ', stopping partition read');
+          break;
         }
+        partitionData = Buffer.concat([partitionData, Buffer.from(chunkResp.data)]);
         if (onProgress) {
+          var pct = chunksToRead < 99999
+            ? Math.round(((p * chunksToRead + c + 1) / (numPartitions * chunksToRead)) * 100)
+            : Math.round((c + 1) / ((c + 1) + 10) * 100); // rough estimate
           onProgress({
             partition: p + 1,
             totalPartitions: numPartitions,
             chunk: c + 1,
-            totalChunks: writtenChunks,
-            percent: Math.round(((p * writtenChunks + c + 1) / (numPartitions * writtenChunks)) * 100)
+            totalChunks: writtenChunks > 0 ? writtenChunks : (c + 1),
+            percent: pct
           });
         }
       }
@@ -834,7 +880,9 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     }
 
     // Step 4: End dump
-    await this.sendAckCommand(CMD.MEMORY_DUMP_END);
+    try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {
+      console.log('[USB] MEMORY_DUMP_END not ACKed');
+    }
 
     return { success: true, partitions: allData, totalPartitions: numPartitions };
   } catch (error) {

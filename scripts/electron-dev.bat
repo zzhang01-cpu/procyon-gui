@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
 set PORT=5000
 
@@ -16,8 +16,8 @@ set READY=0
 for /L %%i in (1,1,30) do (
     if !READY!==0 (
         timeout /t 2 /nobreak >nul 2>&1
-        powershell -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:%PORT%' -UseBasicParsing -TimeoutSec 3; exit 0 } catch { exit 1 }" >nul 2>&1
-        if !errorlevel!==0 (
+        powershell -Command "try { Invoke-WebRequest -Uri 'http://localhost:%PORT%' -UseBasicParsing -TimeoutSec 3 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+        if !ERRORLEVEL!==0 (
             set READY=1
             echo Next.js is ready!
         ) else (
@@ -26,7 +26,7 @@ for /L %%i in (1,1,30) do (
     )
 )
 
-if %READY%==0 (
+if !READY!==0 (
     echo.
     echo WARNING: Next.js may not be ready yet, starting Electron anyway...
     echo If the app shows errors, wait a moment and reload.
