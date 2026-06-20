@@ -1,5 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
+ * VERSION: 2024-06-20-v19 (DLL IL decompiled CMD values)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.

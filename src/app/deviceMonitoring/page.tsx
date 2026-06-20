@@ -34,6 +34,13 @@ export default function DeviceMonitoringPage() {
   // Download state
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [debugLog, setDebugLog] = useState<string[]>([]);
+
+  const addLog = (msg: string) => {
+    const ts = new Date().toLocaleTimeString();
+    setDebugLog(prev => [...prev.slice(-15), `[${ts}] ${msg}`]);
+    console.log('[MonitorPage]', msg);
+  };
 
   // Visible sensor groups (for downloaded data view)
   const [visibleGroups, setVisibleGroups] = useState({
@@ -132,12 +139,20 @@ export default function DeviceMonitoringPage() {
     }
     setIsDownloading(true);
     setDownloadError(null);
+    setDebugLog([]);
     try {
+      addLog('开始下载数据...');
       const result = await downloadData();
+      addLog('下载完成: success=' + String(result?.success) + ', error=' + String(result?.error) + ', partitions=' + String(result?.partitions?.length) + ', totalPartitions=' + String(result?.totalPartitions));
       if (!result?.success) {
-        setDownloadError(result?.error || String(dm.downloadFailed || '下载失败'));
+        const errMsg = result?.error || String(dm.downloadFailed || '下载失败');
+        addLog('下载失败: ' + errMsg);
+        setDownloadError(errMsg);
+      } else {
+        addLog('下载成功, downloadedData长度=' + String(downloadedData?.length));
       }
     } catch (err) {
+      addLog('下载异常: ' + (err instanceof Error ? err.message : String(err)));
       setDownloadError(err instanceof Error ? err.message : String(dm.downloadFailed || '下载失败'));
     } finally {
       setIsDownloading(false);
@@ -404,6 +419,16 @@ export default function DeviceMonitoringPage() {
             <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg max-w-lg text-center">
               <p className="text-sm font-semibold text-red-700 mb-1">下载失败</p>
               <p className="text-xs text-red-600 break-all">{downloadError}</p>
+            </div>
+          )}
+          {debugLog.length > 0 && (
+            <div className="mt-4 p-3 bg-gray-100 border border-gray-200 rounded-lg max-w-lg w-full">
+              <p className="text-xs font-semibold text-gray-600 mb-1">调试日志:</p>
+              <div className="text-xs text-gray-500 font-mono space-y-0.5 max-h-40 overflow-y-auto">
+                {debugLog.map((log, i) => (
+                  <div key={i}>{log}</div>
+                ))}
+              </div>
             </div>
           )}
           {!connected && (
