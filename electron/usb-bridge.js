@@ -865,9 +865,18 @@ ProcyonUsbBridge.prototype.getWrittenChunksForPartition = async function(partiti
   try {
     var resp = await this.sendCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN, [partition & 0xFF]);
     if (resp.success && resp.data && resp.data.length >= 1) {
-      var val = resp.value ? parseInt(resp.value, 10) : 0;
-      if (isNaN(val) || val < 0) val = 0;
-      return { success: true, count: val };
+      var d = resp.data;
+      // Response is UInt32 binary - try both byte orders
+      if (d.length >= 4) {
+        var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
+        var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
+        var count = be > 0 ? be : le;
+        console.log('[USB] WrittenChunks P' + partition + ': BE=' + be + ' LE=' + le + ' raw=[' + hexStr(d) + ']');
+        return { success: true, count: count };
+      }
+      if (d.length >= 1 && d[0] > 0) {
+        return { success: true, count: d[0] };
+      }
     }
     return { success: false, count: 0 };
   } catch (error) {
@@ -875,15 +884,21 @@ ProcyonUsbBridge.prototype.getWrittenChunksForPartition = async function(partiti
   }
 };
 
-// Get total chunk count for a specific partition
-// DLL: GetPartitionTotalChunks(partition) -> GetValueFromResponse((Command)29, [partition_u8])
 ProcyonUsbBridge.prototype.getPartitionTotalChunks = async function(partition) {
   try {
     var resp = await this.sendCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS, [partition & 0xFF]);
     if (resp.success && resp.data && resp.data.length >= 1) {
-      var val = resp.value ? parseInt(resp.value, 10) : 0;
-      if (isNaN(val) || val < 0) val = 0;
-      return { success: true, count: val };
+      var d = resp.data;
+      if (d.length >= 4) {
+        var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
+        var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
+        var count = be > 0 ? be : le;
+        console.log('[USB] TotalChunks P' + partition + ': BE=' + be + ' LE=' + le + ' raw=[' + hexStr(d) + ']');
+        return { success: true, count: count };
+      }
+      if (d.length >= 1 && d[0] > 0) {
+        return { success: true, count: d[0] };
+      }
     }
     return { success: false, count: 0 };
   } catch (error) {
@@ -891,15 +906,21 @@ ProcyonUsbBridge.prototype.getPartitionTotalChunks = async function(partition) {
   }
 };
 
-// Get written byte count for a specific partition
-// DLL: GetPartitionWrittenByteCount(partition) -> GetValueFromResponse((Command)25, [partition_u8])
 ProcyonUsbBridge.prototype.getPartitionWrittenByteCount = async function(partition) {
   try {
     var resp = await this.sendCommand(CMD.GET_PARTITION_WRITTEN_BYTE_COUNT, [partition & 0xFF]);
     if (resp.success && resp.data && resp.data.length >= 1) {
-      var val = resp.value ? parseInt(resp.value, 10) : 0;
-      if (isNaN(val) || val < 0) val = 0;
-      return { success: true, count: val };
+      var d = resp.data;
+      if (d.length >= 4) {
+        var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
+        var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
+        var count = be > 0 ? be : le;
+        console.log('[USB] WrittenBytes P' + partition + ': BE=' + be + ' LE=' + le + ' raw=[' + hexStr(d) + ']');
+        return { success: true, count: count };
+      }
+      if (d.length >= 1 && d[0] > 0) {
+        return { success: true, count: d[0] };
+      }
     }
     return { success: false, count: 0 };
   } catch (error) {
@@ -907,8 +928,6 @@ ProcyonUsbBridge.prototype.getPartitionWrittenByteCount = async function(partiti
   }
 };
 
-// Get dump chunk data for a specific partition and chunk index
-// DLL: DumpChunkData(partition, chunkNumber) -> CommandDeviceAsync(16, 0, 5, 0, [partition_u8, chunk_b0, chunk_b1, chunk_b2, chunk_b3])
 // DLL response: ResponseLength=8062, format: [cmdheader(4B), PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
 // IsWordNeeded=True (sends partition+chunk as data), IsLengthPreDetermined=True
 ProcyonUsbBridge.prototype.getDumpChunkData = async function(partition, chunkNumber) {
