@@ -144,12 +144,30 @@ export default function DeviceMonitoringPage() {
       addLog('开始下载数据...');
       const result = await downloadData();
       addLog('下载完成: success=' + String(result?.success) + ', error=' + String(result?.error) + ', partitions=' + String(result?.partitions?.length) + ', totalPartitions=' + String(result?.totalPartitions));
+      // Log partition details
+      if (result?.partitions) {
+        for (let pi = 0; pi < result.partitions.length; pi++) {
+          const p = result.partitions[pi] as Record<string, unknown>;
+          const pData = p?.data as unknown;
+          const dataSize = pData ? (Array.isArray(pData) ? (pData as unknown[]).length : ((pData as Record<string, unknown>)?.length as number || 0)) : 0;
+          const bufSize = (p?.size as number) || 0;
+          addLog('  分区' + String(p?.partition || pi) + ': size=' + String(bufSize) + ', dataLen=' + String(dataSize) + ', dataType=' + typeof pData);
+        }
+      }
       if (!result?.success) {
         const errMsg = result?.error || String(dm.downloadFailed || '下载失败');
         addLog('下载失败: ' + errMsg);
         setDownloadError(errMsg);
       } else {
-        addLog('下载成功, downloadedData长度=' + String(downloadedData?.length));
+        addLog('下载成功, downloadedData长度=' + String(downloadedData?.length) + ' (注意: 此值可能延迟更新)');
+        // Log partition details
+        if (result.partitions) {
+          result.partitions.forEach((p: any, i: number) => {
+            const dataType = typeof p.data;
+            const dataLen = p.data ? (Array.isArray(p.data) ? p.data.length : Buffer.isBuffer(p.data) ? p.data.length : (p.data as any).type === 'Buffer' ? (p.data as any).data?.length : '?') : 0;
+            addLog('  分区' + (i+1) + ': partition=' + p.partition + ', size=' + p.size + ', data type=' + dataType + ', data len=' + dataLen);
+          });
+        }
       }
     } catch (err) {
       addLog('下载异常: ' + (err instanceof Error ? err.message : String(err)));

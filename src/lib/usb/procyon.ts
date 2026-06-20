@@ -712,16 +712,41 @@ export const USB_CONFIG = {
  * Parse raw binary data from device download into OneSecondRecord[]
  * Binary format based on RecordFormatFiles.json - OneSecondData (0xA0)
  */
-export function parseBinaryRecords(partitions: { partition: number; data: number[]; size: number }[]): OneSecondRecord[] {
+export function parseBinaryRecords(partitions: { partition: number; data: Buffer | number[]; size: number }[]): OneSecondRecord[] {
   const records: OneSecondRecord[] = [];
 
+  console.log('[parseBinaryRecords] Called with', partitions.length, 'partitions');
   for (const part of partitions) {
-    const buf = Buffer.from(part.data);
+    console.log('[parseBinaryRecords] Partition', part.partition, ': size=', part.size, 'data type=', typeof part.data, Array.isArray(part.data) ? 'array[' + (part.data as any).length + ']' : Buffer.isBuffer(part.data) ? 'buffer' : part.data && typeof part.data === 'object' && (part.data as any).type === 'Buffer' ? 'serialized-buffer[' + (part.data as any).data?.length + ']' : typeof part.data);
+    // Handle IPC-serialized Buffer
+    let buf: Buffer;
+    if (Buffer.isBuffer(part.data)) {
+      buf = part.data;
+    } else if (Array.isArray(part.data)) {
+      buf = Buffer.from(part.data);
+    } else if (part.data && typeof part.data === 'object' && (part.data as any).type === 'Buffer' && Array.isArray((part.data as any).data)) {
+      buf = Buffer.from((part.data as any).data);
+    } else {
+      console.log('[parseBinaryRecords] Partition', part.partition, ': unknown data type', typeof part.data, '- skipping');
+      continue;
+    }
+
+    console.log('[parseBinaryRecords] Partition', part.partition, ': buffer size=', buf.length, 'first 20 bytes=', Array.from(buf.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+
+    if (buf.length === 0) {
+      console.log('[parseBinaryRecords] Partition', part.partition, ': empty buffer, skipping');
+      continue;
+    }
+
     let offset = 0;
+    let recordTypeCounts: Record<number, number> = {};
+    const firstBytes = buf.slice(0, Math.min(32, buf.length)).toString('hex');
+    console.log('[parseBinaryRecords] Partition', part.partition, ': first 32 bytes hex:', firstBytes);
 
     while (offset + 4 <= buf.length) {
       // Check for record header: record type byte
       const recordType = buf[offset];
+      recordTypeCounts[recordType] = (recordTypeCounts[recordType] || 0) + 1;
 
       // OneSecondData record type = 0xA0
       if (recordType === 0xA0) {
@@ -819,6 +844,8 @@ export function parseBinaryRecords(partitions: { partition: number; data: number
         offset += 1;
       }
     }
+
+    console.log('[parseBinaryRecords] Partition', part.partition, ': found', records.length, 'total records so far, scanned', buf.length, 'bytes, record types:', JSON.stringify(recordTypeCounts));
   }
 
   // Assign incremental timestamps (1 second apart)
