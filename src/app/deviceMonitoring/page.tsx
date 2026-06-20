@@ -364,6 +364,27 @@ export default function DeviceMonitoringPage() {
 
   // Render OneSecondRecord data table
   const renderDownloadedTable = () => {
+    if (isDownloading) {
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center py-16">
+          <div className="animate-spin w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full mb-4" />
+          <p className="text-sm font-medium text-blue-600 mb-2">{dm.downloading || '正在下载数据...'}</p>
+          {downloadProgress ? (
+            <div className="w-64">
+              <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+                <div className="bg-blue-600 h-3 rounded-full transition-all duration-300" style={{ width: `${downloadProgress.percent || 0}%` }} />
+              </div>
+              <p className="text-xs text-gray-500 text-center">
+                Partition {downloadProgress.partition}/{downloadProgress.totalPartitions}, Chunk {downloadProgress.chunk}/{downloadProgress.totalChunks} ({downloadProgress.percent || 0}%)
+              </p>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400">正在连接设备，请稍候...</p>
+          )}
+        </div>
+      );
+    }
+
     if (downloadedData.length === 0) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center py-16 text-gray-400">
@@ -375,17 +396,15 @@ export default function DeviceMonitoringPage() {
           <button
             onClick={handleDownload}
             disabled={!connected || isDownloading}
-            className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            className="px-6 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isDownloading ? (dm.downloading || '下载中...') : (dm.startDownload || '下载数据')}
+            {dm.startDownload || '下载数据'}
           </button>
           {downloadError && (
             <p className="text-xs text-red-500 mt-3 max-w-md text-center">{downloadError}</p>
           )}
-          {isDownloading && downloadProgress && (
-            <p className="text-xs text-blue-500 mt-2">
-              {dm.chunkProgress || '进度'}: Partition {downloadProgress.partition}/{downloadProgress.totalPartitions}, Chunk {downloadProgress.chunk}/{downloadProgress.totalChunks}
-            </p>
+          {!connected && (
+            <p className="text-xs text-amber-500 mt-2">请先连接设备</p>
           )}
         </div>
       );
@@ -636,8 +655,9 @@ export default function DeviceMonitoringPage() {
                   <button
                     onClick={handleDownload}
                     disabled={!connected || isDownloading}
-                    className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                   >
+                    {isDownloading && <span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
                     {isDownloading ? (dm.downloading || '下载中...') : (dm.startDownload || '下载数据')}
                   </button>
                   {downloadProgress && (
