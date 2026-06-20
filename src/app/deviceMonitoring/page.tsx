@@ -401,7 +401,10 @@ export default function DeviceMonitoringPage() {
             {dm.startDownload || '下载数据'}
           </button>
           {downloadError && (
-            <p className="text-xs text-red-500 mt-3 max-w-md text-center">{downloadError}</p>
+            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg max-w-lg text-center">
+              <p className="text-sm font-semibold text-red-700 mb-1">下载失败</p>
+              <p className="text-xs text-red-600 break-all">{downloadError}</p>
+            </div>
           )}
           {!connected && (
             <p className="text-xs text-amber-500 mt-2">请先连接设备</p>
@@ -726,7 +729,7 @@ export default function DeviceMonitoringPage() {
               )}
 
               {pollError && <span className="text-xs text-red-500 ml-2">{pollError}</span>}
-              {downloadError && <span className="text-xs text-red-500 ml-2">{downloadError}</span>}
+              {downloadError && <span className="text-xs text-red-600 font-medium ml-2">⚠ 下载失败: {downloadError}</span>}
             </div>
 
             {/* Data Table */}

@@ -483,15 +483,21 @@ ProcyonUsbBridge.prototype._writeToDevice = function(buffer) {
 ProcyonUsbBridge.prototype._readFromDevice = function(expectedLength, timeout) {
   if (!expectedLength) expectedLength = 64;
   if (!timeout) timeout = READ_TIMEOUT;
-  if (!this.handle) return Promise.reject(new Error('USB handle not available'));
-  try {
-    var readBuf = Buffer.alloc(expectedLength);
-    var bytesRead = fn_usb_bulk_read(this.handle, EP_IN, readBuf, expectedLength, timeout);
-    if (bytesRead <= 0) return Promise.resolve(null);
-    return Promise.resolve(readBuf.slice(0, bytesRead));
-  } catch (e) {
-    return Promise.reject(new Error('USB read error: ' + e.message));
-  }
+  var self = this;
+  if (!self.handle) return Promise.reject(new Error('USB handle not available'));
+  return new Promise(function(resolve, reject) {
+    try {
+      var readBuf = Buffer.alloc(expectedLength);
+      var bytesRead = fn_usb_bulk_read(self.handle, EP_IN, readBuf, expectedLength, timeout);
+      if (bytesRead <= 0) {
+        resolve(null);
+      } else {
+        resolve(readBuf.slice(0, bytesRead));
+      }
+    } catch (e) {
+      reject(new Error('USB read error: ' + e.message));
+    }
+  });
 };
 
 ProcyonUsbBridge.prototype.sendCommand = async function(commandCode, dataBytes) {
