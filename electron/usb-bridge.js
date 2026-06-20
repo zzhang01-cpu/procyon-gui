@@ -564,7 +564,7 @@ ProcyonUsbBridge.prototype.sendCommandWithExpectedLength = async function(comman
     if (!this.connected) return { success: false, error: 'Device not connected' };
 
     var packet = buildCommandPacket(commandCode, dataBytes);
-    console.log('[USB] TX CMD ' + hex4(commandCode) + ' (expect ' + expectedTotalLength + 'B): [' + hexStr(packet) + ']');
+    if (expectedTotalLength <= 100) console.log('[USB] TX CMD ' + hex4(commandCode) + ' (expect ' + expectedTotalLength + 'B): [' + hexStr(packet) + ']');
 
     await this._writeToDevice(packet);
 
@@ -605,7 +605,8 @@ ProcyonUsbBridge.prototype.sendCommandWithExpectedLength = async function(comman
       return { success: false, error: 'No response from device (timeout)' };
     }
 
-    console.log('[USB] RX: collected ' + collected.length + ' bytes total');
+    // Only log for small responses (skip for chunk data to reduce overhead)
+    if (expectedTotalLength <= 100) console.log('[USB] RX: collected ' + collected.length + ' bytes total');
 
     var parsed = parseResponse(collected);
     if (!parsed) return { success: false, error: 'Invalid response format' };
@@ -979,76 +980,39 @@ ProcyonUsbBridge.prototype.eraseMemory = async function(eraseAll) {
 ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   var savedTimeout = READ_TIMEOUT;
   var startTime = Date.now();
-  var MAX_DOWNLOAD_TIME = 180000; // 180s overall timeout for large data
+  var MAX_DOWNLOAD_TIME = 600000; // 10 minutes for large data
 
   function elapsed() { return Date.now() - startTime; }
   function timeLeft() { return MAX_DOWNLOAD_TIME - elapsed(); }
   function checkTimeout() {
-    if (timeLeft() <= 0) throw new Error('Download timed out after ' + MAX_DOWNLOAD_TIME + 'ms');
+    if (timeLeft() <= 0) throw new Error('Download timed out after ' + Math.round(elapsed()/1000) + 's');
   }
 
   try {
     // === Step 1: Notify device about dump start ===
-    // DLL: UsbDeviceDumper.InformDeviceAsync -> AckResponseAsync(MEMORY_DUMP_START)
-    // MEMORY_DUMP_START (0x000C): RL=4, IsWordNeeded=False, IsLengthPreDetermined=True
-    READ_TIMEOUT = 2000;
+    READ_TIMEOUT = 3000;
     try {
       var notifyResp = await this.sendAckCommand(CMD.MEMORY_DUMP_START);
-      if (notifyResp.success) {
-        console.log('[USB] MEMORY_DUMP_START ACKed');
-      } else {
-        console.log('[USB] MEMORY_DUMP_START not ACKed, proceeding anyway...');
-      }
+      console.log('[USB] MEMORY_DUMP_START: ' + (notifyResp.success ? 'ACKed' : 'not ACKed'));
     } catch(e) {
-      console.log('[USB] MEMORY_DUMP_START send failed: ' + e.message);
+      console.log('[USB] MEMORY_DUMP_START failed: ' + e.message);
     }
-
-    // Wait for device to prepare dump data
     await new Promise(function(resolve) { setTimeout(resolve, 500); });
 
-    // === Step 2: Get memory info (partition count, chunk counts) ===
-    // DLL: GetMemoryDetailForComputingAsync -> GetNumberOfMemoryPartition -> loop GetWrittenChunksForPartition/GetPartitionTotalChunks
-    READ_TIMEOUT = 1000;
+    // === Step 2: Get memory info ===
+    READ_TIMEOUT = 2000;
     var numPartitions = 0;
     var partitionInfo = [];
 
     // 2a: Get number of partitions
-    // GET_NUMBER_MEMORY_PARTITIONS (0x000A): RL=5, IsWordNeeded=False, IsLengthPreDetermined=True
-    // Response: [cmdheader(4B), PartitionNumber(1B)]
     var partResp = await this.getMemoryPartitions();
     if (partResp.success && partResp.count > 0) {
       numPartitions = partResp.count;
-      console.log('[USB] Found ' + numPartitions + ' memory partitions');
+      console.log('[USB] Partitions: ' + numPartitions);
     }
 
-    if (numPartitions === 0) {
-      // Fallback: try to read partition info with partition=0
-      console.log('[USB] getMemoryPartitions returned 0, trying partition 0 directly...');
-      var wc0 = await this.getWrittenChunksForPartition(0);
-      var tc0 = await this.getPartitionTotalChunks(0);
-      var bc0 = await this.getPartitionWrittenByteCount(0);
-      if (wc0.success && wc0.count > 0) {
-        numPartitions = 1;
-        partitionInfo.push({ writtenChunks: wc0.count, totalChunks: tc0.success ? tc0.count : wc0.count, writtenBytes: bc0.success ? bc0.count : 0 });
-        console.log('[USB] Partition 0: writtenChunks=' + wc0.count + ', totalChunks=' + (tc0.success ? tc0.count : '?') + ', writtenBytes=' + (bc0.success ? bc0.count : '?'));
-      }
-    }
-
-    // If still no partitions, device doesn't support memory dump
-    if (numPartitions === 0) {
-      console.log('[USB] No memory partitions found (' + elapsed() + 'ms) - firmware may not support dump');
-      READ_TIMEOUT = savedTimeout;
-      try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
-      return {
-        success: false,
-        error: 'No memory partitions found. Possible reasons: (1) Device firmware does not support dump commands, (2) Device has no recorded data, (3) USB command codes need verification. CMD.GET_NUMBER_MEMORY_PARTITIONS=' + CMD.GET_NUMBER_MEMORY_PARTITIONS,
-        partitions: [],
-        totalPartitions: 0
-      };
-    }
-
-    // 2b: Get per-partition info if we only know partition count
-    if (partitionInfo.length === 0) {
+    // 2b: Get per-partition info
+    if (numPartitions > 0) {
       for (var p = 0; p < numPartitions; p++) {
         checkTimeout();
         var wc = await this.getWrittenChunksForPartition(p);
@@ -1059,113 +1023,132 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
           totalChunks: tc.success ? tc.count : 0,
           writtenBytes: bc.success ? bc.count : 0
         });
-        console.log('[USB] Partition ' + p + ': writtenChunks=' + (wc.success ? wc.count : '?') + ', totalChunks=' + (tc.success ? tc.count : '?') + ', writtenBytes=' + (bc.success ? bc.count : '?'));
+        console.log('[USB] P' + p + ': writtenChunks=' + (wc.success ? wc.count : '?') +
+          ', totalChunks=' + (tc.success ? tc.count : '?') +
+          ', writtenBytes=' + (bc.success ? bc.count : '?'));
       }
     }
 
+    // If no partitions found, try partition 0 directly
+    if (numPartitions === 0) {
+      var wc0 = await this.getWrittenChunksForPartition(0);
+      if (wc0.success && wc0.count > 0) {
+        numPartitions = 1;
+        partitionInfo.push({ writtenChunks: wc0.count, totalChunks: wc0.count, writtenBytes: 0 });
+      }
+    }
+
+    if (numPartitions === 0) {
+      READ_TIMEOUT = savedTimeout;
+      try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
+      return {
+        success: false,
+        error: 'No memory partitions found. CMD=' + CMD.GET_NUMBER_MEMORY_PARTITIONS,
+        partitions: [], totalPartitions: 0, partitionInfo: []
+      };
+    }
+
     // === Step 3: Download data per partition ===
-    // DLL: DumpDataFromDeviceAsync -> loop DumpChunkData(partition, chunkNumber)
-    // DumpChunkData: CommandDeviceAsync(16, 0, 5, 0, [partition_u8, chunkNumber_bytes_i32])
-    // ResponseLength=8062: [cmdheader(4B), PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
-    // Status=0 means no data, non-zero means data present
+    READ_TIMEOUT = 5000; // 5s per read for chunk data
+    var CHUNK_SIZE = 8052;
     var allData = [];
 
     for (var p = 0; p < numPartitions; p++) {
       checkTimeout();
       var pInfo = partitionInfo[p];
-      var chunksToRead = pInfo.writtenChunks > 0 ? pInfo.writtenChunks : pInfo.totalChunks;
-      var partitionData = [];
 
-      // If we don't know chunk count, try reading chunks until we get empty response
-      // DLL: DumpDataFromDeviceAsync reads all chunks for each partition
-      // Status=0 in chunk response means no more data
-      if (chunksToRead === 0) {
-        console.log('[USB] Partition ' + p + ': no chunk count info, will probe chunks until empty...');
-        chunksToRead = -1; // -1 means "read until empty"
+      // Determine how many chunks to read
+      var chunksToRead = pInfo.writtenChunks > 0 ? pInfo.writtenChunks : pInfo.totalChunks;
+      var isProbeMode = (chunksToRead === 0);
+
+      // Probe mode: estimate from written bytes, or use reasonable limit
+      if (isProbeMode && pInfo.writtenBytes > 0) {
+        chunksToRead = Math.ceil(pInfo.writtenBytes / CHUNK_SIZE);
+        isProbeMode = false;
+      }
+      if (isProbeMode) {
+        chunksToRead = 50000; // max probe limit
       }
 
-      console.log('[USB] Partition ' + p + ': reading ' + chunksToRead + ' chunks...');
+      var partitionData = [];
+      var consecutiveEmpty = 0;
+      var consecutiveFail = 0;
+      var chunksRead = 0;
+      var MAX_CONSECUTIVE_EMPTY = 5;
+      var MAX_CONSECUTIVE_FAIL = 3;
 
-      var consecutiveFailures = 0;
-      var MAX_PROBE_CHUNKS = 10000; // max chunks when probing without count info
-      var isProbing = (chunksToRead === -1);
-      var maxChunks = isProbing ? MAX_PROBE_CHUNKS : chunksToRead;
-      var emptyChunkCount = 0;
-      for (var c = 0; c < maxChunks; c++) {
+      console.log('[USB] P' + (p+1) + ': reading up to ' + chunksToRead + ' chunks (probe=' + isProbeMode + ')');
+
+      for (var c = 0; c < chunksToRead; c++) {
         checkTimeout();
         try {
           var chunkResp = await this.getDumpChunkData(p, c);
+
           if (chunkResp.success) {
+            consecutiveFail = 0;
+
             if (chunkResp.data && chunkResp.data.length > 0) {
-              // Chunk data already has sub-header stripped by getDumpChunkData
               partitionData.push(Buffer.from(chunkResp.data));
-              consecutiveFailures = 0;
-              emptyChunkCount = 0;
+              consecutiveEmpty = 0;
+              chunksRead++;
             } else if (chunkResp.status === 0) {
-              // Status=0 means no data for this chunk
-              emptyChunkCount++;
-              // When probing, 3 consecutive empty chunks means we're done
-              if (isProbing && emptyChunkCount >= 3) {
-                console.log('[USB] Partition ' + p + ': ' + emptyChunkCount + ' empty chunks, done probing at chunk ' + c);
+              // Empty chunk (not written yet)
+              consecutiveEmpty++;
+              if (isProbeMode && consecutiveEmpty >= MAX_CONSECUTIVE_EMPTY) {
+                console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty chunks, stopping probe');
                 break;
               }
             } else {
-              consecutiveFailures++;
+              // Has status but no data
+              consecutiveEmpty++;
+              if (consecutiveEmpty >= MAX_CONSECUTIVE_EMPTY) break;
             }
 
-            if (onProgress) {
-              var pct = isProbing ? Math.round(((c + 1) / MAX_PROBE_CHUNKS) * 100) : Math.round(((c + 1) / chunksToRead) * 100);
+            if (onProgress && (c % 50 === 0 || c === chunksToRead - 1)) {
               onProgress({
                 partition: p + 1,
                 totalPartitions: numPartitions,
                 chunk: c + 1,
-                totalChunks: isProbing ? MAX_PROBE_CHUNKS : chunksToRead,
-                percent: pct
+                totalChunks: chunksToRead,
+                percent: Math.round(((c + 1) / chunksToRead) * 100)
               });
             }
           } else {
-            consecutiveFailures++;
-            console.log('[USB] Chunk ' + c + ' read failed (' + consecutiveFailures + ' consecutive failures)');
-            // When probing, a read failure might mean we've reached the end
-            if (isProbing && consecutiveFailures >= 2) {
-              console.log('[USB] Partition ' + p + ': probe failed, stopping at chunk ' + c);
-              break;
-            }
-            if (consecutiveFailures >= 5) {
-              console.log('[USB] Too many consecutive failures, stopping partition ' + p);
+            consecutiveFail++;
+            consecutiveEmpty++;
+            if (consecutiveFail >= MAX_CONSECUTIVE_FAIL || consecutiveEmpty >= MAX_CONSECUTIVE_EMPTY) {
+              console.log('[USB] P' + (p+1) + ': stopping at chunk ' + c + ' (fail=' + consecutiveFail + ', empty=' + consecutiveEmpty + ')');
               break;
             }
           }
         } catch (chunkErr) {
-          consecutiveFailures++;
-          console.log('[USB] Chunk ' + c + ' error: ' + chunkErr.message);
-          if (isProbing && consecutiveFailures >= 2) break;
-          if (consecutiveFailures >= 5) break;
+          consecutiveFail++;
+          if (consecutiveFail >= MAX_CONSECUTIVE_FAIL) break;
         }
       }
 
       var finalData = partitionData.length > 0 ? Buffer.concat(partitionData) : Buffer.alloc(0);
-      allData.push({ partition: p + 1, data: finalData, size: finalData.length, writtenChunks: pInfo.writtenChunks, totalChunks: pInfo.totalChunks, chunksRead: partitionData.length });
-      console.log('[USB] Partition ' + (p + 1) + ' done: ' + partitionData.length + ' chunks read, ' + finalData.length + ' bytes (info: writtenChunks=' + pInfo.writtenChunks + ', totalChunks=' + pInfo.totalChunks + ')');
+      allData.push({
+        partition: p + 1,
+        data: finalData,
+        size: finalData.length,
+        chunksRead: chunksRead,
+        writtenChunks: pInfo.writtenChunks,
+        totalChunks: pInfo.totalChunks,
+        writtenBytes: pInfo.writtenBytes
+      });
+      console.log('[USB] P' + (p+1) + ' done: ' + chunksRead + ' chunks, ' + finalData.length + ' bytes, ' + Math.round(elapsed()/1000) + 's');
     }
 
     READ_TIMEOUT = savedTimeout;
-
-    // === Step 4: End dump ===
-    // DLL: UsbDeviceDumper.InformDeviceAsync(MEMORY_DUMP_END)
-    // MEMORY_DUMP_END (0x000E): RL=4, IsWordNeeded=False, IsLengthPreDetermined=True
-    try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {
-      console.log('[USB] MEMORY_DUMP_END not ACKed');
-    }
-
-    return { success: true, partitions: allData, totalPartitions: numPartitions };
+    try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
+    return { success: true, partitions: allData, totalPartitions: numPartitions, partitionInfo: partitionInfo };
   } catch (error) {
     READ_TIMEOUT = savedTimeout;
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
-    return { success: false, error: error.message, partitions: [], totalPartitions: 0 };
+    return { success: false, error: error.message, partitions: [], totalPartitions: 0, partitionInfo: [] };
   }
 };
-
 
 ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
   try {
