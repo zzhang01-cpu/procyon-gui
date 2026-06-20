@@ -379,6 +379,14 @@ export default function DeviceMonitoringPage() {
           >
             {isDownloading ? (dm.downloading || '下载中...') : (dm.startDownload || '下载数据')}
           </button>
+          {downloadError && (
+            <p className="text-xs text-red-500 mt-3 max-w-md text-center">{downloadError}</p>
+          )}
+          {isDownloading && downloadProgress && (
+            <p className="text-xs text-blue-500 mt-2">
+              {dm.chunkProgress || '进度'}: Partition {downloadProgress.partition}/{downloadProgress.totalPartitions}, Chunk {downloadProgress.chunk}/{downloadProgress.totalChunks}
+            </p>
+          )}
         </div>
       );
     }

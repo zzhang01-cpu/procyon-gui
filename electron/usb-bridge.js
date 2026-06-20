@@ -1034,7 +1034,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
       return {
         success: false,
-        error: 'Device does not support memory dump commands. Use the original Procyon software to download data.',
+        error: 'No memory partitions found. Possible reasons: (1) Device firmware does not support dump commands, (2) Device has no recorded data, (3) USB command codes need verification. CMD.GET_NUMBER_MEMORY_PARTITIONS=' + CMD.GET_NUMBER_MEMORY_PARTITIONS,
         partitions: [],
         totalPartitions: 0
       };
