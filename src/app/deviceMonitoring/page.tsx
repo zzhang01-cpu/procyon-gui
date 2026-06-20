@@ -151,7 +151,10 @@ export default function DeviceMonitoringPage() {
           const pData = p?.data as unknown;
           const dataSize = pData ? (Array.isArray(pData) ? (pData as unknown[]).length : ((pData as Record<string, unknown>)?.length as number || 0)) : 0;
           const bufSize = (p?.size as number) || 0;
-          addLog('  分区' + String(p?.partition || pi) + ': size=' + String(bufSize) + ', dataLen=' + String(dataSize) + ', dataType=' + typeof pData);
+          const wc = (p?.writtenChunks as number) ?? '?';
+          const tc = (p?.totalChunks as number) ?? '?';
+          const cr = (p?.chunksRead as number) ?? '?';
+          addLog('  分区' + String(p?.partition || pi) + ': size=' + String(bufSize) + ', writtenChunks=' + String(wc) + ', totalChunks=' + String(tc) + ', chunksRead=' + String(cr));
         }
       }
       if (!result?.success) {

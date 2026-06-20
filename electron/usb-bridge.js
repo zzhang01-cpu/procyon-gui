@@ -1076,16 +1076,22 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       var chunksToRead = pInfo.writtenChunks > 0 ? pInfo.writtenChunks : pInfo.totalChunks;
       var partitionData = [];
 
+      // If we don't know chunk count, try reading chunks until we get empty response
+      // DLL: DumpDataFromDeviceAsync reads all chunks for each partition
+      // Status=0 in chunk response means no more data
       if (chunksToRead === 0) {
-        console.log('[USB] Partition ' + p + ': no chunks to read, skipping');
-        allData.push({ partition: p + 1, data: Buffer.alloc(0), size: 0 });
-        continue;
+        console.log('[USB] Partition ' + p + ': no chunk count info, will probe chunks until empty...');
+        chunksToRead = -1; // -1 means "read until empty"
       }
 
       console.log('[USB] Partition ' + p + ': reading ' + chunksToRead + ' chunks...');
 
       var consecutiveFailures = 0;
-      for (var c = 0; c < chunksToRead; c++) {
+      var MAX_PROBE_CHUNKS = 10000; // max chunks when probing without count info
+      var isProbing = (chunksToRead === -1);
+      var maxChunks = isProbing ? MAX_PROBE_CHUNKS : chunksToRead;
+      var emptyChunkCount = 0;
+      for (var c = 0; c < maxChunks; c++) {
         checkTimeout();
         try {
           var chunkResp = await this.getDumpChunkData(p, c);
@@ -1094,26 +1100,37 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
               // Chunk data already has sub-header stripped by getDumpChunkData
               partitionData.push(Buffer.from(chunkResp.data));
               consecutiveFailures = 0;
+              emptyChunkCount = 0;
             } else if (chunkResp.status === 0) {
-              // Status=0 means no data for this chunk - normal, skip
-              console.log('[USB] Chunk ' + c + ' status=0 (no data), skipping');
+              // Status=0 means no data for this chunk
+              emptyChunkCount++;
+              // When probing, 3 consecutive empty chunks means we're done
+              if (isProbing && emptyChunkCount >= 3) {
+                console.log('[USB] Partition ' + p + ': ' + emptyChunkCount + ' empty chunks, done probing at chunk ' + c);
+                break;
+              }
             } else {
               consecutiveFailures++;
             }
 
             if (onProgress) {
-              var pct = Math.round(((c + 1) / chunksToRead) * 100);
+              var pct = isProbing ? Math.round(((c + 1) / MAX_PROBE_CHUNKS) * 100) : Math.round(((c + 1) / chunksToRead) * 100);
               onProgress({
                 partition: p + 1,
                 totalPartitions: numPartitions,
                 chunk: c + 1,
-                totalChunks: chunksToRead,
+                totalChunks: isProbing ? MAX_PROBE_CHUNKS : chunksToRead,
                 percent: pct
               });
             }
           } else {
             consecutiveFailures++;
             console.log('[USB] Chunk ' + c + ' read failed (' + consecutiveFailures + ' consecutive failures)');
+            // When probing, a read failure might mean we've reached the end
+            if (isProbing && consecutiveFailures >= 2) {
+              console.log('[USB] Partition ' + p + ': probe failed, stopping at chunk ' + c);
+              break;
+            }
             if (consecutiveFailures >= 5) {
               console.log('[USB] Too many consecutive failures, stopping partition ' + p);
               break;
@@ -1122,13 +1139,14 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         } catch (chunkErr) {
           consecutiveFailures++;
           console.log('[USB] Chunk ' + c + ' error: ' + chunkErr.message);
+          if (isProbing && consecutiveFailures >= 2) break;
           if (consecutiveFailures >= 5) break;
         }
       }
 
       var finalData = partitionData.length > 0 ? Buffer.concat(partitionData) : Buffer.alloc(0);
-      allData.push({ partition: p + 1, data: finalData, size: finalData.length });
-      console.log('[USB] Partition ' + (p + 1) + ' done: ' + partitionData.length + ' chunks, ' + finalData.length + ' bytes');
+      allData.push({ partition: p + 1, data: finalData, size: finalData.length, writtenChunks: pInfo.writtenChunks, totalChunks: pInfo.totalChunks, chunksRead: partitionData.length });
+      console.log('[USB] Partition ' + (p + 1) + ' done: ' + partitionData.length + ' chunks read, ' + finalData.length + ' bytes (info: writtenChunks=' + pInfo.writtenChunks + ', totalChunks=' + pInfo.totalChunks + ')');
     }
 
     READ_TIMEOUT = savedTimeout;
