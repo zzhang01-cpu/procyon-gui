@@ -92,6 +92,17 @@ export default function DeviceMonitoringPage() {
               timestamp: ts,
               temperature: data.temperatureCM != null ? String(data.temperatureCM) : 'N/A',
               batteryVoltage: data.batteryVoltage != null ? String(data.batteryVoltage) : 'N/A',
+              // Multi-axis sensor data from getSensorData (Float32 values)
+              rpmX_min: data.rpmX_min || 'N/A', rpmX_max: data.rpmX_max || 'N/A', rpmX_avg: data.rpmX_avg || 'N/A', rpmX_rms: data.rpmX_rms || 'N/A',
+              rpmY_min: data.rpmY_min || 'N/A', rpmY_max: data.rpmY_max || 'N/A', rpmY_avg: data.rpmY_avg || 'N/A', rpmY_rms: data.rpmY_rms || 'N/A',
+              rpmZ_min: data.rpmZ_min || 'N/A', rpmZ_max: data.rpmZ_max || 'N/A', rpmZ_avg: data.rpmZ_avg || 'N/A', rpmZ_rms: data.rpmZ_rms || 'N/A',
+              highShockX_min: data.highShockX_min || 'N/A', highShockX_max: data.highShockX_max || 'N/A', highShockX_avg: data.highShockX_avg || 'N/A', highShockX_rms: data.highShockX_rms || 'N/A',
+              highShockY_min: data.highShockY_min || 'N/A', highShockY_max: data.highShockY_max || 'N/A', highShockY_avg: data.highShockY_avg || 'N/A', highShockY_rms: data.highShockY_rms || 'N/A',
+              highShockZ_min: data.highShockZ_min || 'N/A', highShockZ_max: data.highShockZ_max || 'N/A', highShockZ_avg: data.highShockZ_avg || 'N/A', highShockZ_rms: data.highShockZ_rms || 'N/A',
+              lowShockX_min: data.lowShockX_min || 'N/A', lowShockX_max: data.lowShockX_max || 'N/A', lowShockX_avg: data.lowShockX_avg || 'N/A', lowShockX_rms: data.lowShockX_rms || 'N/A',
+              lowShockY_min: data.lowShockY_min || 'N/A', lowShockY_max: data.lowShockY_max || 'N/A', lowShockY_avg: data.lowShockY_avg || 'N/A', lowShockY_rms: data.lowShockY_rms || 'N/A',
+              lowShockZ_min: data.lowShockZ_min || 'N/A', lowShockZ_max: data.lowShockZ_max || 'N/A', lowShockZ_avg: data.lowShockZ_avg || 'N/A', lowShockZ_rms: data.lowShockZ_rms || 'N/A',
+              psi_min: data.psi_min || 'N/A', psi_max: data.psi_max || 'N/A', psi_avg: data.psi_avg || 'N/A',
             };
             const updated = [newRecord, ...prev];
             return updated.slice(0, 200);

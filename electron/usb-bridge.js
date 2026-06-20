@@ -203,25 +203,65 @@ function findProcyonDevice() {
   return null;
 }
 
-// -- Command codes --
+// -- Command codes (from Procyon.dll Command enum, verified via ILSpy decompilation) --
 var CMD = {
+  // Basic GET commands
   GET_FIRMWARE_VERSION: 0x0005,
-  GET_NUMBER_MEMORY_PARTITIONS: 0x0190,
-  GET_MEMORY_DUMP_CHUNK_DATA: 0x019A,
-  GET_PARTITION_WRITTEN_BYTE_COUNT: 0x0196,
-  GET_PARTITION_NUMBER_CHUNKS_WRITTEN: 0x0192,
-  GET_PARTITION_TOTAL_NUMBER_CHUNKS: 0x0194,
-  GET_MEMORY_DUMP_CHUNK_SIZE: 0x0198,
-  MEMORY_ERASE_USED: 0x0186,
-  MEMORY_ERASE_ALL: 0x0184,
-  GET_MEMORY_ERASE_PERCENT: 0x0188,
-  MEMORY_DUMP_START: 0x0180,
-  MEMORY_DUMP_END: 0x0182,
+  GET_NUMBER_MEMORY_PARTITIONS: 0x000A,
+  GET_MEMORY_DUMP_CHUNK_DATA: 0x0010,
+  GET_PARTITION_WRITTEN_BYTE_COUNT: 0x0019,
+  GET_PARTITION_NUMBER_CHUNKS_WRITTEN: 0x001B,
+  GET_PARTITION_TOTAL_NUMBER_CHUNKS: 0x001D,
+  GET_MEMORY_DUMP_CHUNK_SIZE: 0x001F,
+  MEMORY_ERASE_USED: 0x0030,
+  MEMORY_ERASE_ALL: 0x0032,
+  GET_MEMORY_ERASE_PERCENT: 0x0034,
+  MEMORY_DUMP_START: 0x000C,
+  MEMORY_DUMP_END: 0x000E,
+  // Battery / Temperature / Time
   GET_BATTERY_VOLTAGE: 0x0040,
   GET_DEVICE_TIME: 0x0042,
   SET_DEVICE_TIME: 0x0044,
   GET_TEMPERATURE_DATA_CM: 0x0046,
+  // Firmware update
+  ERASE_INTERNAL_FLASH: 0x0050,
+  FIRMWARE_UPDATE_BUFFER: 0x0052,
+  // Self test / Verification / Launch
+  START_VERIFICATION: 0x0054,
+  VERIFY_STATUS: 0x0056,
+  LAUNCH_DEVICE: 0x0058,
+  UPDATE_STATE: 0x005A,
+  ABORT_FIRMWARE_UPDATE: 0x005C,
+  // Amplifier
+  GET_AMPLIFIER_FIRST_STAGE_GAIN: 0x0060,
+  SET_AMPLIFIER_FIRST_STAGE_GAIN: 0x0062,
+  GET_AMPLIFIER_SECOND_STAGE_GAIN: 0x0064,
+  SET_AMPLIFIER_SECOND_STAGE_GAIN: 0x0066,
+  GET_AMPLIFIER_DAC_OFFSET: 0x0068,
+  SET_AMPLIFIER_DAC_OFFSET: 0x006A,
+  // Sensor GET commands (CM)
+  GET_ROTATIONAL_DATA_CM: 0x0090,
+  GET_LOWSHOCK_DATA_CM: 0x0092,
+  GET_HIGHSHOCK_DATA_CM: 0x0094,
+  GET_PRESSURE_DATA_CM: 0x0096,
+  // Sensor GET commands (EM)
+  GET_TEMPERATURE_DATA_EM: 0x00A0,
+  GET_ROTATIONAL_DATA_EM: 0x00A2,
+  GET_LOWSHOCK_DATA_EM: 0x00A4,
+  GET_PRESSURE_DATA_EM: 0x00A6,
+  GET_LIMPET_DATA_EM: 0x00A8,
+  // Flash test
+  GET_FLASH_TEST_DATA: 0x00A7,
+  // Self test mode (high values)
+  SET_SELF_TEST_MODE: 0x0504,
+  GET_SELF_TEST_MODE_STATUS: 0x0506,
+  GET_ACCEL_SELF_TEST_DATA: 0x0508,
+  GET_GYRO_SELF_TEST_DATA: 0x050A,
+  GET_GYRO_ACCEL_SELF_TEST_DATA: 0x050C,
+  GET_PRESSURRE_SELF_TEST_DATA: 0x050E,
+  // Flash / Parameters
   SET_PARAMETERS_INTO_FLASH: 0x0100,
+  // Job Info
   GET_CUSTOMER: 0x0102, SET_CUSTOMER: 0x0104,
   GET_COUNTRY: 0x0106, SET_COUNTRY: 0x0108,
   GET_DISTRICT: 0x010A, SET_DISTRICT: 0x010C,
@@ -230,41 +270,29 @@ var CMD = {
   GET_DEPT_OUT: 0x0116, SET_DEPT_OUT: 0x0118,
   GET_UNIQUE_ID: 0x011A, SET_UNIQUE_ID: 0x011C,
   GET_LDAP: 0x011E, SET_LDAP: 0x0120,
-  SET_HOUSING_NUMBER: 0x0122,
-  SET_BHA_SERIAL_NUMBER: 0x0126,
+  // Housing / BHA
+  GET_HOUSING_NUMBER: 0x0140, SET_HOUSING_NUMBER: 0x0142,
+  GET_BHA_SERIAL_NUMBER: 0x0144, SET_BHA_SERIAL_NUMBER: 0x0146,
+  // Tool Info
+  GET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER: 0x012C,
+  SET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER: 0x012E,
   GET_TOOL_TYPE: 0x0130, SET_TOOL_TYPE: 0x0132,
   GET_TOOL_AXIAL_POSITION: 0x0134, SET_TOOL_AXIAL_POSITION: 0x0136,
   GET_TOOL_SIZE: 0x0138, SET_TOOL_SIZE: 0x013A,
   GET_TOOL_POSITION: 0x013C, SET_TOOL_POSITION: 0x013E,
-  SET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER: 0x0140,
-  SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER: 0x0142,
-  SET_DRILL_BIT_INFO_BIT_BOM: 0x0144,
+  // Drill Bit Info
+  GET_DRILL_BIT_INFO_BIT_BLADE_NUMBER: 0x0154, SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER: 0x0156,
+  GET_DRILL_BIT_INFO_BIT_BOM: 0x0150, SET_DRILL_BIT_INFO_BIT_BOM: 0x0152,
+  // Config / Tool SN
   GET_CONFIG_NAME: 0x0148, SET_CONFIG_NAME: 0x014A,
   GET_TOOL_SN: 0x014C, SET_TOOL_SN: 0x014E,
-  // amplifierDACOffset is SET-only (no GET in firmware, 0x0150 is fictional)
-  SET_AMPLIFIER_DAC_OFFSET: 0x0152,
-  SET_AMPLIFIER_FIRST_STAGE_GAIN: 0x0154,
-  SET_AMPLIFIER_SECOND_STAGE_GAIN: 0x0156,
-  // UH/DH connection type and sensor SNs are SET-only (no GET in firmware)
-  SET_UH_CONNECTION_TYPE: 0x0162,
-  SET_DH_CONNECTION_TYPE: 0x0166,
-  SET_INT_PRESSURE_SENSOR_SN: 0x016A,
-  SET_EXT_PRESSURE_SENSOR_SN: 0x016E,
-  SET_LIMPET_SENSOR_SN: 0x0172,
-  GET_FLASH_TEST_DATA: 0x01A0,
-  GET_HIGHSHOCK_DATA_CM: 0x01A2,
-  GET_LOWSHOCK_DATA_CM: 0x01A4,
-  GET_LOWSHOCK_DATA_EM: 0x01A6,
-  GET_PRESSURE_DATA_CM: 0x01A8,
-  GET_PRESSURE_DATA_EM: 0x01AA,
-  GET_PRESSURRE_SELF_TEST_DATA: 0x01AC,
-  GET_ROTATIONAL_DATA_CM: 0x01AE,
-  GET_ROTATIONAL_DATA_EM: 0x01B0,
-  GET_TEMPERATURE_DATA_EM: 0x01B2,
-  GET_LIMPET_DATA_EM: 0x01B4,
-  LAUNCH_DEVICE: 0x0200,
-  START_VERIFICATION: 0x01E0,
-  VERIFY_STATUS: 0x01E2,
+  // Connection types (GET+SET)
+  GET_UH_CONNECTION_TYPE: 0x0160, SET_UH_CONNECTION_TYPE: 0x0162,
+  GET_DH_CONNECTION_TYPE: 0x0164, SET_DH_CONNECTION_TYPE: 0x0166,
+  // Pressure sensor SNs (GET+SET)
+  GET_INT_PRESSURE_SENSOR_SERIAL_NUMBER: 0x0168, SET_INT_PRESSURE_SENSOR_SN: 0x016A,
+  GET_EXT_PRESSURE_SENSOR_SERIAL_NUMBER: 0x016C, SET_EXT_PRESSURE_SENSOR_SN: 0x016E,
+  GET_LIMPET_SENSOR_SERIAL_NUMBER: 0x0170, SET_LIMPET_SENSOR_SN: 0x0172,
 };
 
 // -- Packet helpers --
@@ -521,6 +549,73 @@ ProcyonUsbBridge.prototype.sendAckCommand = async function(commandCode, dataByte
   return { success: true };
 };
 
+// Send command with a known expected response length (for large responses like chunk data)
+// Performs multiple bulk reads to collect the full response
+ProcyonUsbBridge.prototype.sendCommandWithExpectedLength = async function(commandCode, dataBytes, expectedTotalLength) {
+  if (!dataBytes) dataBytes = [];
+  try {
+    if (!this.connected) return { success: false, error: 'Device not connected' };
+
+    var packet = buildCommandPacket(commandCode, dataBytes);
+    console.log('[USB] TX CMD ' + hex4(commandCode) + ' (expect ' + expectedTotalLength + 'B): [' + hexStr(packet) + ']');
+
+    await this._writeToDevice(packet);
+
+    // Read the full response in multiple bulk transfers
+    // USB bulk max packet = 64 bytes, but libusb may buffer more
+    var collected = Buffer.alloc(0);
+    var maxReads = Math.ceil(expectedTotalLength / 512) + 5; // extra reads for safety
+    var savedTimeout = READ_TIMEOUT;
+    READ_TIMEOUT = 3000; // 3s per read for data transfer
+
+    for (var r = 0; r < maxReads; r++) {
+      try {
+        var chunk = await this._readFromDevice(4096, READ_TIMEOUT);
+        if (!chunk || chunk.length === 0) {
+          // No more data available
+          if (collected.length >= expectedTotalLength) break;
+          // If we haven't got enough yet, try once more with longer timeout
+          if (r === 0) {
+            READ_TIMEOUT = 5000;
+            chunk = await this._readFromDevice(4096, READ_TIMEOUT);
+            if (!chunk || chunk.length === 0) break;
+          } else {
+            break;
+          }
+        }
+        collected = Buffer.concat([collected, chunk]);
+        if (collected.length >= expectedTotalLength) break;
+      } catch (readErr) {
+        console.log('[USB] Read error during multi-read: ' + readErr.message);
+        break;
+      }
+    }
+
+    READ_TIMEOUT = savedTimeout;
+
+    if (collected.length < 4) {
+      console.log('[USB] RX: no response or too short (' + collected.length + ' bytes)');
+      return { success: false, error: 'No response from device (timeout)' };
+    }
+
+    console.log('[USB] RX: collected ' + collected.length + ' bytes total');
+
+    var parsed = parseResponse(collected);
+    if (!parsed) return { success: false, error: 'Invalid response format' };
+
+    var expectedRespCode = commandCode + 1;
+    if (parsed.commandCode !== expectedRespCode) {
+      console.log('[USB] Response code ' + hex4(parsed.commandCode) + ' != expected ' + hex4(expectedRespCode));
+    }
+
+    var value = bytesToAscii(parsed.data);
+    return { success: true, data: parsed.data, value: value, commandCode: parsed.commandCode, length: parsed.length, raw: collected };
+  } catch (error) {
+    console.error('[USB] sendCommandWithExpectedLength error: ' + error.message);
+    return { success: false, error: error.message };
+  }
+};
+
 // -- GET commands --
 
 ProcyonUsbBridge.prototype.getFirmwareVersion = async function() {
@@ -739,11 +834,101 @@ ProcyonUsbBridge.prototype.getMemoryPartitions = async function() {
   try {
     var resp = await this.sendGetCommand(CMD.GET_NUMBER_MEMORY_PARTITIONS);
     if (resp.success && resp.data && resp.data.length >= 1) {
-      return { success: true, count: resp.data[0] };
+      // DLL: parses response string as integer
+      // Try parsing as integer from the value string first, then as raw byte
+      var count = 0;
+      if (resp.value && resp.value.length > 0) {
+        count = parseInt(resp.value, 10);
+      }
+      if (isNaN(count) || count <= 0) {
+        count = resp.data[0];
+      }
+      return { success: true, count: count };
     }
     return { success: false, count: 0 };
   } catch (error) {
     return { success: false, count: 0, error: error.message };
+  }
+};
+
+// Get written chunk count for a specific partition
+// DLL: GetWrittenChunksForPartition(partition) -> GetValueFromResponse((Command)27, [partition_u8])
+ProcyonUsbBridge.prototype.getWrittenChunksForPartition = async function(partition) {
+  try {
+    var resp = await this.sendCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN, [partition & 0xFF]);
+    if (resp.success && resp.data && resp.data.length >= 1) {
+      var val = resp.value ? parseInt(resp.value, 10) : 0;
+      if (isNaN(val) || val < 0) val = 0;
+      return { success: true, count: val };
+    }
+    return { success: false, count: 0 };
+  } catch (error) {
+    return { success: false, count: 0, error: error.message };
+  }
+};
+
+// Get total chunk count for a specific partition
+// DLL: GetPartitionTotalChunks(partition) -> GetValueFromResponse((Command)29, [partition_u8])
+ProcyonUsbBridge.prototype.getPartitionTotalChunks = async function(partition) {
+  try {
+    var resp = await this.sendCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS, [partition & 0xFF]);
+    if (resp.success && resp.data && resp.data.length >= 1) {
+      var val = resp.value ? parseInt(resp.value, 10) : 0;
+      if (isNaN(val) || val < 0) val = 0;
+      return { success: true, count: val };
+    }
+    return { success: false, count: 0 };
+  } catch (error) {
+    return { success: false, count: 0, error: error.message };
+  }
+};
+
+// Get written byte count for a specific partition
+// DLL: GetPartitionWrittenByteCount(partition) -> GetValueFromResponse((Command)25, [partition_u8])
+ProcyonUsbBridge.prototype.getPartitionWrittenByteCount = async function(partition) {
+  try {
+    var resp = await this.sendCommand(CMD.GET_PARTITION_WRITTEN_BYTE_COUNT, [partition & 0xFF]);
+    if (resp.success && resp.data && resp.data.length >= 1) {
+      var val = resp.value ? parseInt(resp.value, 10) : 0;
+      if (isNaN(val) || val < 0) val = 0;
+      return { success: true, count: val };
+    }
+    return { success: false, count: 0 };
+  } catch (error) {
+    return { success: false, count: 0, error: error.message };
+  }
+};
+
+// Get dump chunk data for a specific partition and chunk index
+// DLL: DumpChunkData(partition, chunkNumber) -> CommandDeviceAsync(16, 0, 5, 0, [partition_u8, chunk_b0, chunk_b1, chunk_b2, chunk_b3])
+// DLL response: ResponseLength=8062, format: [cmdheader(4B), PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
+// IsWordNeeded=True (sends partition+chunk as data), IsLengthPreDetermined=True
+ProcyonUsbBridge.prototype.getDumpChunkData = async function(partition, chunkNumber) {
+  try {
+    var data = [
+      partition & 0xFF,
+      chunkNumber & 0xFF,
+      (chunkNumber >> 8) & 0xFF,
+      (chunkNumber >> 16) & 0xFF,
+      (chunkNumber >> 24) & 0xFF
+    ];
+    // DLL says ResponseLength=8062 (4 header + 1 partition + 1 status + 4 chunkNum + 8052 data)
+    var resp = await this.sendCommandWithExpectedLength(CMD.GET_MEMORY_DUMP_CHUNK_DATA, data, 8062);
+    if (resp.success && resp.data && resp.data.length > 6) {
+      // resp.data is parsed.data which is after 4-byte cmd header
+      // Format: [PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
+      var status = resp.data[1];
+      if (status === 0) {
+        // Status 0 = no data for this chunk (partition/chunk not written)
+        return { success: true, data: null, status: status };
+      }
+      // Skip 6-byte sub-header (partition + status + chunkNumber)
+      var chunkData = resp.data.slice(6);
+      return { success: true, data: chunkData, status: status };
+    }
+    return { success: false, data: null };
+  } catch (error) {
+    return { success: false, data: null, error: error.message };
   }
 };
 
@@ -787,7 +972,7 @@ ProcyonUsbBridge.prototype.eraseMemory = async function(eraseAll) {
 ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   var savedTimeout = READ_TIMEOUT;
   var startTime = Date.now();
-  var MAX_DOWNLOAD_TIME = 60000; // 60s overall timeout
+  var MAX_DOWNLOAD_TIME = 180000; // 180s overall timeout for large data
 
   function elapsed() { return Date.now() - startTime; }
   function timeLeft() { return MAX_DOWNLOAD_TIME - elapsed(); }
@@ -796,8 +981,10 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   }
 
   try {
-    // Step 1: Notify device about dump start (quick 500ms timeout)
-    READ_TIMEOUT = 500;
+    // === Step 1: Notify device about dump start ===
+    // DLL: UsbDeviceDumper.InformDeviceAsync -> AckResponseAsync(MEMORY_DUMP_START)
+    // MEMORY_DUMP_START (0x000C): RL=4, IsWordNeeded=False, IsLengthPreDetermined=True
+    READ_TIMEOUT = 2000;
     try {
       var notifyResp = await this.sendAckCommand(CMD.MEMORY_DUMP_START);
       if (notifyResp.success) {
@@ -810,79 +997,39 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     }
 
     // Wait for device to prepare dump data
-    await new Promise(function(resolve) { setTimeout(resolve, 300); });
+    await new Promise(function(resolve) { setTimeout(resolve, 500); });
 
-    // Step 2: Quick probe - try to detect if device supports memory dump
-    // Use short timeouts to fail fast (500ms each)
-    READ_TIMEOUT = 500;
+    // === Step 2: Get memory info (partition count, chunk counts) ===
+    // DLL: GetMemoryDetailForComputingAsync -> GetNumberOfMemoryPartition -> loop GetWrittenChunksForPartition/GetPartitionTotalChunks
+    READ_TIMEOUT = 1000;
     var numPartitions = 0;
-    var chunksToRead = 0;
-    var chunkSize = 64;
-    var firstChunkData = null;
+    var partitionInfo = [];
 
-    // Try 1: GET_NUMBER_MEMORY_PARTITIONS
+    // 2a: Get number of partitions
+    // GET_NUMBER_MEMORY_PARTITIONS (0x000A): RL=5, IsWordNeeded=False, IsLengthPreDetermined=True
+    // Response: [cmdheader(4B), PartitionNumber(1B)]
     var partResp = await this.getMemoryPartitions();
     if (partResp.success && partResp.count > 0) {
       numPartitions = partResp.count;
       console.log('[USB] Found ' + numPartitions + ' memory partitions');
     }
 
-    // Try 2: GET_PARTITION_WRITTEN_BYTE_COUNT
     if (numPartitions === 0) {
-      var byteCountResp = await this.sendGetCommand(CMD.GET_PARTITION_WRITTEN_BYTE_COUNT);
-      if (byteCountResp.success && byteCountResp.data && byteCountResp.data.length >= 4) {
-        var writtenBytes = this._parseU32(byteCountResp.data);
-        if (writtenBytes > 0) {
-          numPartitions = 1;
-          chunksToRead = Math.ceil(writtenBytes / chunkSize);
-          console.log('[USB] Found ' + writtenBytes + ' written bytes, ' + chunksToRead + ' chunks');
-        }
-      }
-    }
-
-    // Try 3: GET_PARTITION_NUMBER_CHUNKS_WRITTEN
-    if (numPartitions === 0) {
-      var writtenChunksResp = await this.sendGetCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN);
-      if (writtenChunksResp.success && writtenChunksResp.data && writtenChunksResp.data.length >= 4) {
-        var wc = this._parseU32(writtenChunksResp.data);
-        if (wc > 0) {
-          numPartitions = 1;
-          chunksToRead = wc;
-          console.log('[USB] Found ' + wc + ' written chunks');
-        }
-      }
-    }
-
-    // Try 4: Try reading first chunk directly
-    if (numPartitions === 0) {
-      var testChunkResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_DATA);
-      if (testChunkResp.success && testChunkResp.data && testChunkResp.data.length > 0) {
+      // Fallback: try to read partition info with partition=0
+      console.log('[USB] getMemoryPartitions returned 0, trying partition 0 directly...');
+      var wc0 = await this.getWrittenChunksForPartition(0);
+      var tc0 = await this.getPartitionTotalChunks(0);
+      var bc0 = await this.getPartitionWrittenByteCount(0);
+      if (wc0.success && wc0.count > 0) {
         numPartitions = 1;
-        firstChunkData = Buffer.from(testChunkResp.data);
-        chunksToRead = 0; // unknown, read until failure
-        console.log('[USB] First chunk readable (' + firstChunkData.length + ' bytes), will read until device stops');
+        partitionInfo.push({ writtenChunks: wc0.count, totalChunks: tc0.success ? tc0.count : wc0.count, writtenBytes: bc0.success ? bc0.count : 0 });
+        console.log('[USB] Partition 0: writtenChunks=' + wc0.count + ', totalChunks=' + (tc0.success ? tc0.count : '?') + ', writtenBytes=' + (bc0.success ? bc0.count : '?'));
       }
     }
 
-    // Try 5: Re-send MEMORY_DUMP_START, wait, try direct bulk read (1s timeout)
+    // If still no partitions, device doesn't support memory dump
     if (numPartitions === 0) {
-      console.log('[USB] Trying direct bulk read mode...');
-      try { await this.sendAckCommand(CMD.MEMORY_DUMP_START); } catch(e) {}
-      await new Promise(function(resolve) { setTimeout(resolve, 500); });
-
-      // Direct bulk read with 1s timeout
-      var rawBuf = this._readFromDevice(4096, 1000);
-      if (rawBuf && rawBuf.length > 4) {
-        numPartitions = 1;
-        chunksToRead = 0;
-        firstChunkData = Buffer.from(rawBuf);
-        console.log('[USB] Direct bulk read got ' + rawBuf.length + ' bytes');
-      }
-    }
-
-    // If all quick probes failed, device doesn't support memory dump
-    if (numPartitions === 0) {
-      console.log('[USB] All memory dump queries failed (' + elapsed() + 'ms) - firmware may not support dump');
+      console.log('[USB] No memory partitions found (' + elapsed() + 'ms) - firmware may not support dump');
       READ_TIMEOUT = savedTimeout;
       try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
       return {
@@ -893,93 +1040,82 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       };
     }
 
-    // Step 3: Download data per partition
-    READ_TIMEOUT = 1500; // 1.5s for data reads
+    // 2b: Get per-partition info if we only know partition count
+    if (partitionInfo.length === 0) {
+      for (var p = 0; p < numPartitions; p++) {
+        checkTimeout();
+        var wc = await this.getWrittenChunksForPartition(p);
+        var tc = await this.getPartitionTotalChunks(p);
+        var bc = await this.getPartitionWrittenByteCount(p);
+        partitionInfo.push({
+          writtenChunks: wc.success ? wc.count : 0,
+          totalChunks: tc.success ? tc.count : 0,
+          writtenBytes: bc.success ? bc.count : 0
+        });
+        console.log('[USB] Partition ' + p + ': writtenChunks=' + (wc.success ? wc.count : '?') + ', totalChunks=' + (tc.success ? tc.count : '?') + ', writtenBytes=' + (bc.success ? bc.count : '?'));
+      }
+    }
+
+    // === Step 3: Download data per partition ===
+    // DLL: DumpDataFromDeviceAsync -> loop DumpChunkData(partition, chunkNumber)
+    // DumpChunkData: CommandDeviceAsync(16, 0, 5, 0, [partition_u8, chunkNumber_bytes_i32])
+    // ResponseLength=8062: [cmdheader(4B), PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
+    // Status=0 means no data, non-zero means data present
     var allData = [];
 
     for (var p = 0; p < numPartitions; p++) {
       checkTimeout();
+      var pInfo = partitionInfo[p];
+      var chunksToRead = pInfo.writtenChunks > 0 ? pInfo.writtenChunks : pInfo.totalChunks;
       var partitionData = [];
 
-      // Use preloaded first chunk if available
-      if (firstChunkData) {
-        partitionData.push(firstChunkData);
-        firstChunkData = null;
+      if (chunksToRead === 0) {
+        console.log('[USB] Partition ' + p + ': no chunks to read, skipping');
+        allData.push({ partition: p + 1, data: Buffer.alloc(0), size: 0 });
+        continue;
       }
 
-      // Get chunk info if not already known
-      if (chunksToRead === 0 && partitionData.length === 0) {
-        // Try to get chunk counts
-        var tcr = await this.sendGetCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS);
-        var wcr = await this.sendGetCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN);
-        var t = tcr.success ? this._parseU32(tcr.data) : 0;
-        var w = wcr.success ? this._parseU32(wcr.data) : 0;
-        chunksToRead = w > 0 ? w : t;
-      }
+      console.log('[USB] Partition ' + p + ': reading ' + chunksToRead + ' chunks...');
 
-      // Get chunk size
-      var csResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_SIZE);
-      if (csResp.success && csResp.data && csResp.data.length >= 4) {
-        var csVal = this._parseU32(csResp.data);
-        if (csVal > 0) chunkSize = csVal;
-      }
-
-      var useBulkMode = partitionData.length > 0 && chunksToRead === 0;
-      var readLimit = chunksToRead > 0 ? chunksToRead : 10000;
       var consecutiveFailures = 0;
-
-      console.log('[USB] Partition ' + (p + 1) + ': chunks=' + chunksToRead + ', chunkSize=' + chunkSize + ', bulk=' + useBulkMode);
-
-      for (var c = partitionData.length; c < readLimit; c++) {
+      for (var c = 0; c < chunksToRead; c++) {
         checkTimeout();
         try {
-          var chunkData = null;
+          var chunkResp = await this.getDumpChunkData(p, c);
+          if (chunkResp.success) {
+            if (chunkResp.data && chunkResp.data.length > 0) {
+              // Chunk data already has sub-header stripped by getDumpChunkData
+              partitionData.push(Buffer.from(chunkResp.data));
+              consecutiveFailures = 0;
+            } else if (chunkResp.status === 0) {
+              // Status=0 means no data for this chunk - normal, skip
+              console.log('[USB] Chunk ' + c + ' status=0 (no data), skipping');
+            } else {
+              consecutiveFailures++;
+            }
 
-          if (useBulkMode) {
-            var br = this._readFromDevice(4096, 2000);
-            if (br && br.length > 4) {
-              chunkData = Buffer.from(br);
+            if (onProgress) {
+              var pct = Math.round(((c + 1) / chunksToRead) * 100);
+              onProgress({
+                partition: p + 1,
+                totalPartitions: numPartitions,
+                chunk: c + 1,
+                totalChunks: chunksToRead,
+                percent: pct
+              });
             }
           } else {
-            var chunkResp = await this.sendGetCommand(CMD.GET_MEMORY_DUMP_CHUNK_DATA);
-            if (chunkResp.success && chunkResp.data && chunkResp.data.length > 0) {
-              chunkData = Buffer.from(chunkResp.data);
-            } else {
-              // Fallback: try bulk read once
-              var br2 = this._readFromDevice(4096, 1500);
-              if (br2 && br2.length > 4) {
-                chunkData = Buffer.from(br2);
-                useBulkMode = true;
-              }
-            }
-          }
-
-          if (!chunkData) {
             consecutiveFailures++;
-            if (consecutiveFailures >= 3 || (consecutiveFailures >= 1 && chunksToRead > 0)) {
-              console.log('[USB] Chunk read failed at ' + (c + 1) + ', stopping');
+            console.log('[USB] Chunk ' + c + ' read failed (' + consecutiveFailures + ' consecutive failures)');
+            if (consecutiveFailures >= 5) {
+              console.log('[USB] Too many consecutive failures, stopping partition ' + p);
               break;
             }
-            continue;
           }
-          consecutiveFailures = 0;
-          partitionData.push(chunkData);
-
-          if (onProgress) {
-            var pct = chunksToRead > 0
-              ? Math.round(((c + 1) / chunksToRead) * 100)
-              : Math.min(99, Math.round((c + 1) / ((c + 1) + 10) * 100));
-            onProgress({
-              partition: p + 1,
-              totalPartitions: numPartitions,
-              chunk: c + 1,
-              totalChunks: chunksToRead > 0 ? chunksToRead : (c + 1),
-              percent: pct
-            });
-          }
-        } catch(chunkErr) {
-          console.log('[USB] Chunk read error at ' + (c + 1) + ': ' + chunkErr.message);
-          break;
+        } catch (chunkErr) {
+          consecutiveFailures++;
+          console.log('[USB] Chunk ' + c + ' error: ' + chunkErr.message);
+          if (consecutiveFailures >= 5) break;
         }
       }
 
@@ -990,7 +1126,9 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
 
     READ_TIMEOUT = savedTimeout;
 
-    // Step 4: End dump
+    // === Step 4: End dump ===
+    // DLL: UsbDeviceDumper.InformDeviceAsync(MEMORY_DUMP_END)
+    // MEMORY_DUMP_END (0x000E): RL=4, IsWordNeeded=False, IsLengthPreDetermined=True
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {
       console.log('[USB] MEMORY_DUMP_END not ACKed');
     }
@@ -1003,6 +1141,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   }
 };
 
+
 ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
   try {
     var results = [];
@@ -1013,8 +1152,8 @@ ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
       'pressureTest', 'erasingMemoryTest'
     ];
 
-    // Enter test mode
-    var setModeResp = await this.sendSetCommand(CMD.SET_SELF_TEST_MODE, '1');
+    // Enter test mode - use raw byte 0x01, not ASCII '1'
+    var setModeResp = await this.sendCommand(CMD.SET_SELF_TEST_MODE, [0x01]);
     if (!setModeResp.success) {
       return { success: false, error: 'Failed to enter test mode', results: [] };
     }
@@ -1058,8 +1197,8 @@ ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
 
         } else if (testInfo.type === 'verify') {
           // Use START_VERIFICATION + VERIFY_STATUS protocol
-          // Send verification ID as data
-          var startResp = await this.sendCommand(CMD.START_VERIFICATION, [], true);
+          // DLL: StartVerificationAsync -> GetValueFromResponseAsync((Command)84, null) - no data
+          var startResp = await this.sendCommand(CMD.START_VERIFICATION);
           if (startResp.success) {
             // Wait for verification to complete (up to 10 seconds)
             var verifyPass = false;
@@ -1129,7 +1268,7 @@ ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
     }
 
     // Exit test mode
-    await this.sendSetCommand(CMD.SET_SELF_TEST_MODE, '0');
+    await this.sendCommand(CMD.SET_SELF_TEST_MODE, [0x00]);
 
     var passedCount = results.filter(function(r) { return r.pass; }).length;
     return {
@@ -1144,7 +1283,7 @@ ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {
     };
   } catch (error) {
     // Try to exit test mode on error
-    try { await this.sendSetCommand(CMD.SET_SELF_TEST_MODE, '0'); } catch(e) {}
+    try { await this.sendCommand(CMD.SET_SELF_TEST_MODE, [0x00]); } catch(e) {}
     return { success: false, error: error.message, results: [] };
   }
 };
@@ -1303,59 +1442,72 @@ ProcyonUsbBridge.prototype.getAllParameters = async function() {
 ProcyonUsbBridge.prototype.getSensorData = async function() {
   try {
     var sensorData = {};
-    // Only query sensors that the device firmware supports
+    
     // Temperature and Battery use dedicated functions that work
-    // HighShock/LowShock/Pressure/Rotational GET commands are NOT supported
-    // by Procyon CM firmware v2.x - these sensors are only available in
-    // downloaded OneSecondData records (binary memory dump)
-    var sensorGetters = {
-      temperatureCM: { fn: this.getTemperature.bind(this), type: 'custom' },
-      batteryVoltage: { fn: this.getBatteryVoltage.bind(this), type: 'custom' },
+    var tempResult = await this.getTemperature();
+    if (tempResult && tempResult.success) {
+      sensorData.temperatureCM = String(tempResult.temperature !== undefined ? tempResult.temperature.toFixed(3) : '');
+    } else {
+      sensorData.temperatureCM = 'N/A';
+    }
+    
+    var battResult = await this.getBatteryVoltage();
+    if (battResult && battResult.success) {
+      sensorData.batteryVoltage = String(battResult.rawMv !== undefined ? battResult.rawMv : (battResult.voltage !== undefined ? battResult.voltage : ''));
+    } else {
+      sensorData.batteryVoltage = 'N/A';
+    }
+
+    // Multi-value sensor GET commands (DLL-confirmed CMD codes and response formats)
+    // All use IsLengthPreDetermined=True, so response length is known
+    var multiSensors = {
+      rotational: { cmd: CMD.GET_ROTATIONAL_DATA_CM, rl: 52, type: 'f32x12',
+        fields: ['rpmX_min','rpmX_max','rpmX_avg','rpmX_rms','rpmY_min','rpmY_max','rpmY_avg','rpmY_rms','rpmZ_min','rpmZ_max','rpmZ_avg','rpmZ_rms'] },
+      lowShock: { cmd: CMD.GET_LOWSHOCK_DATA_CM, rl: 52, type: 'f32x12',
+        fields: ['lowShockX_min','lowShockX_max','lowShockX_avg','lowShockX_rms','lowShockY_min','lowShockY_max','lowShockY_avg','lowShockY_rms','lowShockZ_min','lowShockZ_max','lowShockZ_avg','lowShockZ_rms'] },
+      highShock: { cmd: CMD.GET_HIGHSHOCK_DATA_CM, rl: 52, type: 'f32x12',
+        fields: ['highShockX_min','highShockX_max','highShockX_avg','highShockX_rms','highShockY_min','highShockY_max','highShockY_avg','highShockY_rms','highShockZ_min','highShockZ_max','highShockZ_avg','highShockZ_rms'] },
+      pressure: { cmd: CMD.GET_PRESSURE_DATA_CM, rl: 16, type: 'f32x3',
+        fields: ['psi_min','psi_max','psi_avg'] },
     };
-    var keys = Object.keys(sensorGetters);
-    for (var i = 0; i < keys.length; i++) {
-      var key = keys[i];
-      var getter = sensorGetters[key];
+
+    var sensorKeys = Object.keys(multiSensors);
+    for (var i = 0; i < sensorKeys.length; i++) {
+      var sKey = sensorKeys[i];
+      var sInfo = multiSensors[sKey];
       try {
-        if (getter.type === 'custom') {
-          // getBatteryVoltage / getTemperature - use their own parsing
-          var result = await getter.fn();
-          if (result && result.success) {
-            var val = result.value;
-            if (val === undefined && result.rawMv !== undefined) val = result.rawMv;
-            if (val === undefined && result.temperature !== undefined) val = result.temperature;
-            if (typeof val === 'number') val = val.toFixed(3);
-            if (val === undefined || val === null) val = '';
-            sensorData[key] = String(val);
-          } else {
-            sensorData[key] = 'N/A';
+        var resp = await this.sendCommand(sInfo.cmd, []);
+        if (resp && resp.success && resp.data && resp.data.length >= 4) {
+          // Parse Float32 values from response data (after 4-byte cmd header already stripped)
+          var values = [];
+          var numFloats = sInfo.fields.length;
+          for (var fi = 0; fi < numFloats; fi++) {
+            var offset = fi * 4;
+            if (offset + 4 <= resp.data.length) {
+              var buf = Buffer.from(resp.data.slice(offset, offset + 4));
+              values.push(buf.readFloatLE(0));
+            } else {
+              values.push(NaN);
+            }
+          }
+          // Store each field individually
+          for (var vi = 0; vi < sInfo.fields.length; vi++) {
+            var fieldName = sInfo.fields[vi];
+            sensorData[fieldName] = isNaN(values[vi]) ? 'N/A' : values[vi].toFixed(3);
           }
         } else {
-          // float32 binary sensor data
-          var resp = await this.sendGetCommand(getter.cmd);
-          if (resp && resp.success && resp.data && resp.data.length >= 4) {
-            // Try ASCII first, then float32 binary
-            var asciiVal = resp.value ? resp.value.trim() : '';
-            var parsed = parseFloat(asciiVal);
-            if (!isNaN(parsed) && asciiVal.length > 0 && parsed !== 0) {
-              sensorData[key] = parsed.toFixed(3);
-            } else {
-              // Try float32 binary parsing
-              var fval = this._parseFloat(resp.data);
-              if (fval !== 0 && !isNaN(fval)) {
-                sensorData[key] = fval.toFixed(3);
-              } else {
-                sensorData[key] = 'N/A';
-              }
-            }
-          } else {
-            sensorData[key] = 'N/A';
+          // Mark all fields as N/A
+          for (var ni = 0; ni < sInfo.fields.length; ni++) {
+            sensorData[sInfo.fields[ni]] = 'N/A';
           }
         }
       } catch (e) {
-        sensorData[key] = 'N/A';
+        for (var ei = 0; ei < sInfo.fields.length; ei++) {
+          sensorData[sInfo.fields[ei]] = 'N/A';
+        }
       }
     }
+
     return sensorData;
   } catch (error) {
     return { error: error.message };

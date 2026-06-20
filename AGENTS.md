@@ -143,7 +143,7 @@ interface DeviceContextType {
 - **沙箱注意**: Web 模式下 USB 不可用；Electron 模式需在本地 Windows 运行
 - **沙箱构建**: `ELECTRON_SKIP_BINARY_DOWNLOAD=1` 必须设置，否则 pnpm install 会因 Electron 下载超时而失败
 
-## USB 通信协议（从 Procyon.dll 逆向确认）
+## USB 通信协议（从 Procyon.dll IL 反编译确认）
 
 ### 通用包格式
 ```
@@ -156,28 +156,84 @@ interface DeviceContextType {
 - **发送精确字节数**，不用 0xFF 填充到 64 字节
 - **响应码**：设备响应的 command code = 请求码 + 1
 
-### GET 命令（已验证成功）
-| 命令 | 枚举值 | Hex |
-|------|--------|-----|
-| GET_FIRMWARE_VERSION | 5 | 0x0005 |
-| GET_BATTERY_VOLTAGE | 64 | 0x0040 |
-| GET_DEVICE_TIME | 66 | 0x0042 |
-| GET_TEMPERATURE_DATA_CM | 70 | 0x0046 |
-| GET_CUSTOMER | 258 | 0x0102 |
-| GET_COUNTRY | 262 | 0x0106 |
-| GET_DISTRICT | 266 | 0x010A |
-| GET_RUN_ID_TYPE | 270 | 0x010E |
-| GET_RUN_ID | 274 | 0x0112 |
-| GET_DEPT_OUT | 278 | 0x0116 |
-| GET_UNIQUE_ID | 282 | 0x011A |
-| GET_LDAP | 286 | 0x011E |
-| GET_TOOL_TYPE | 304 | 0x0130 |
-| GET_TOOL_SIZE | 312 | 0x0138 |
-| GET_TOOL_POSITION | 316 | 0x013C |
-| GET_CONFIG_NAME | 328 | 0x0148 |
-| GET_TOOL_SN | 332 | 0x014C |
+### 基础 GET 命令（已验证成功）
+| 命令 | 枚举值 | Hex | 响应格式 |
+|------|--------|-----|----------|
+| GET_FIRMWARE_VERSION | 5 | 0x0005 | ASCII 字符串 |
+| GET_BATTERY_VOLTAGE | 64 | 0x0040 | Float32 |
+| GET_DEVICE_TIME | 66 | 0x0042 | UInt32 unix timestamp |
+| GET_TEMPERATURE_DATA_CM | 70 | 0x0046 | Float32 |
+| GET_CUSTOMER | 258 | 0x0102 | ASCII 字符串 |
+| GET_COUNTRY | 262 | 0x0106 | ASCII 字符串 |
+| GET_DISTRICT | 266 | 0x010A | ASCII 字符串 |
+| GET_RUN_ID_TYPE | 270 | 0x010E | ASCII 字符串 |
+| GET_RUN_ID | 274 | 0x0112 | ASCII 字符串 |
+| GET_DEPT_OUT | 278 | 0x0116 | ASCII 字符串 |
+| GET_UNIQUE_ID | 282 | 0x011A | ASCII 字符串 |
+| GET_LDAP | 286 | 0x011E | ASCII 字符串 |
+| GET_TOOL_TYPE | 304 | 0x0130 | ASCII 字符串 |
+| GET_TOOL_SIZE | 312 | 0x0138 | ASCII 字符串 |
+| GET_TOOL_POSITION | 316 | 0x013C | ASCII 字符串 |
+| GET_CONFIG_NAME | 328 | 0x0148 | ASCII 字符串 |
+| GET_TOOL_SN | 332 | 0x014C | ASCII 字符串 |
+| GET_HOUSING_NUMBER | 320 | 0x0140 | ASCII 字符串 |
+| GET_BHA_SERIAL_NUMBER | 324 | 0x0144 | ASCII 字符串 |
+| GET_TOOL_AXIAL_POSITION | 308 | 0x0134 | ASCII 字符串 |
+| GET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER | 300 | 0x012C | ASCII 字符串 |
+| GET_DRILL_BIT_INFO_BIT_BLADE_NUMBER | 340 | 0x0154 | ASCII 字符串 |
+| GET_DRILL_BIT_INFO_BIT_BOM | 336 | 0x0150 | ASCII 字符串 |
+| GET_UH_CONNECTION_TYPE | 352 | 0x0160 | ASCII 字符串 |
+| GET_DH_CONNECTION_TYPE | 356 | 0x0164 | ASCII 字符串 |
+| GET_INT_PRESSURE_SENSOR_SERIAL_NUMBER | 360 | 0x0168 | ASCII 字符串 |
+| GET_EXT_PRESSURE_SENSOR_SERIAL_NUMBER | 364 | 0x016C | ASCII 字符串 |
+| GET_LIMPET_SENSOR_SERIAL_NUMBER | 368 | 0x0170 | ASCII 字符串 |
+| GET_AMPLIFIER_FIRST_STAGE_GAIN | 96 | 0x0060 | ASCII 字符串 |
+| GET_AMPLIFIER_SECOND_STAGE_GAIN | 100 | 0x0064 | ASCII 字符串 |
+| GET_AMPLIFIER_DAC_OFFSET | 104 | 0x0068 | ASCII 字符串 |
 
-### SET 命令（从 DLL 确认，待设备验证）
+### 传感器 GET 命令（DLL IL 反编译确认）
+| 命令 | 枚举值 | Hex | RL | 响应格式 |
+|------|--------|-----|-----|----------|
+| GET_ROTATIONAL_DATA_CM | 144 | 0x0090 | 52 | 12 × Float32 (rpmX/Y/Z min/max/avg/rms) |
+| GET_LOWSHOCK_DATA_CM | 146 | 0x0092 | 52 | 12 × Float32 (lowShockX/Y/Z min/max/avg/rms) |
+| GET_HIGHSHOCK_DATA_CM | 148 | 0x0094 | 52 | 12 × Float32 (highShockX/Y/Z min/max/avg/rms) |
+| GET_PRESSURE_DATA_CM | 150 | 0x0096 | 16 | 3 × Float32 (psiMin/max/avg) |
+| GET_TEMPERATURE_DATA_EM | 160 | 0x00A0 | 8 | 1 × Float32 |
+| GET_GYRO_DATA_EM | 162 | 0x00A2 | 22 | 9 × Int16 (gyroX/Y/Z min/max/avg) |
+| GET_ACCELEROMETER_DATA_EM | 164 | 0x00A4 | 22 | 9 × Int16 (accelX/Y/Z min/max/avg) |
+| GET_PRESSURE_DATA_EM | 166 | 0x00A6 | 16 | 6 × UInt16 (int/ext pressure min/max/avg) |
+| GET_LIMPET_DATA_EM | 168 | 0x00A8 | 34 | 15 × UInt16 (5 channel min/max/avg) |
+| GET_FLASH_TEST_DATA | 167 | 0x00A7 | - | 测试数据 |
+
+### 内存转储命令（DLL IL 反编译确认 - 关键修正！）
+| 命令 | 枚举值 | Hex | RL | IsWordNeeded | 说明 |
+|------|--------|-----|-----|-------------|------|
+| GET_NUMBER_MEMORY_PARTITIONS | 10 | 0x000A | 5 | False | 响应含 PartitionNumber(1B) |
+| MEMORY_DUMP_START | 12 | 0x000C | 4 | False | 通知设备开始转储，等 ACK |
+| MEMORY_DUMP_END | 14 | 0x000E | 4 | False | 通知设备结束转储，等 ACK |
+| GET_MEMORY_DUMP_CHUNK_DATA | 16 | 0x0010 | 8062 | True | data=[partition_u8, chunkNumber_i32_BE]，响应含 [PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)] |
+| GET_PARTITION_WRITTEN_BYTE_COUNT | 25 | 0x0019 | 8 | True | data=[partition_u8]，响应含 UInt32 |
+| GET_PARTITION_NUMBER_CHUNKS_WRITTEN | 27 | 0x001B | 8 | True | data=[partition_u8]，响应含 UInt32 |
+| GET_PARTITION_TOTAL_NUMBER_CHUNKS | 29 | 0x001D | 8 | True | data=[partition_u8]，响应含 UInt32 |
+| GET_MEMORY_DUMP_CHUNK_SIZE | 31 | 0x001F | 8 | False | 响应含 UInt32 |
+| MEMORY_ERASE_USED | 48 | 0x0030 | 5 | False | 擦除已用内存 |
+| MEMORY_ERASE_ALL | 50 | 0x0032 | 5 | False | 擦除全部内存 |
+| GET_MEMORY_ERASE_PERCENT | 52 | 0x0034 | 5 | False | 响应含百分比(1B) |
+
+### 自检/启动命令（DLL IL 反编译确认）
+| 命令 | 枚举值 | Hex | RL | 说明 |
+|------|--------|-----|-----|------|
+| START_VERIFICATION | 84 | 0x0054 | - | 启动自检验证 |
+| VERIFY_STATUS | 86 | 0x0056 | - | 查询验证状态 |
+| SET_SELF_TEST_MODE | 1284 | 0x0504 | 4 | data=raw byte (0x01=进入/0x00=退出) |
+| GET_SELF_TEST_MODE_STATUS | 1286 | 0x0506 | - | 查询自检模式状态 |
+| GET_ACCEL_SELF_TEST_DATA | 1288 | 0x0508 | 7 | [TestStatus(1B), SelfTestData(2B UInt16)] |
+| GET_GYRO_SELF_TEST_DATA | 1290 | 0x050A | 11 | [TestStatus(1B), SelfTestDataX/Y/Z(2B each UInt16)] |
+| GET_GYRO_ACCEL_SELF_TEST_DATA | 1292 | 0x050C | 11 | [TestStatus(1B), ...] |
+| GET_PRESSURRE_SELF_TEST_DATA | 1294 | 0x050E | 5 | [TestStatus(1B)] |
+| LAUNCH_DEVICE | 88 | 0x0058 | - | 延时启动设备 |
+
+### SET 命令（从 DLL 确认）
 | 命令 | 枚举值 | Hex | 数据格式 |
 |------|--------|-----|----------|
 | SET_DEVICE_TIME | 68 | 0x0044 | 4字节 unix timestamp |
@@ -190,61 +246,31 @@ interface DeviceContextType {
 | SET_DEPT_OUT | 280 | 0x0118 | ASCII 字符串 |
 | SET_UNIQUE_ID | 284 | 0x011C | ASCII 字符串 |
 | SET_LDAP | 288 | 0x0120 | ASCII 字符串 |
-| SET_TOOL_TYPE | 306 | 0x0132 | ASCII 字符串 |
-| SET_TOOL_SIZE | 314 | 0x013A | ASCII 字符串 |
-| SET_TOOL_POSITION | 318 | 0x013E | ASCII 字符串 |
-| SET_CONFIG_NAME | 330 | 0x014A | ASCII 字符串 |
-| SET_TOOL_SN | 334 | 0x014E | ASCII 字符串 |
-| SET_UH_CONNECTION_TYPE | 354 | 0x0162 | ASCII 字符串 |
-| SET_DH_CONNECTION_TYPE | 358 | 0x0166 | ASCII 字符串 |
-| SET_INT_PRESSURE_SENSOR_SN | 362 | 0x016A | ASCII 字符串 |
-| SET_EXT_PRESSURE_SENSOR_SN | 366 | 0x016E | ASCII 字符串 |
-| SET_LIMPET_SENSOR_SN | 370 | 0x0172 | ASCII 字符串 |
-
-### 新增命令（从 DLL 逆向发现，已加入 usb-bridge.js）
-| 命令 | 枚举值 | Hex | 说明 |
-|------|--------|-----|------|
 | SET_HOUSING_NUMBER | 290 | 0x0122 | ASCII 字符串 |
 | SET_BHA_SERIAL_NUMBER | 294 | 0x0126 | ASCII 字符串 |
+| SET_TOOL_TYPE | 306 | 0x0132 | ASCII 字符串 |
 | SET_TOOL_AXIAL_POSITION | 310 | 0x0136 | ASCII 字符串 |
+| SET_TOOL_SIZE | 314 | 0x013A | ASCII 字符串 |
+| SET_TOOL_POSITION | 318 | 0x013E | ASCII 字符串 |
 | SET_TOOL_INFO_SENSOR_HEAD_SERIAL_NUMBER | 320 | 0x0140 | ASCII 字符串 |
-| SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER | 322 | 0x0142 | ASCII 字符串 |
-| SET_DRILL_BIT_INFO_BIT_BOM | 324 | 0x0144 | ASCII 字符串 |
+| SET_CONFIG_NAME | 330 | 0x014A | ASCII 字符串 |
+| SET_TOOL_SN | 334 | 0x014E | ASCII 字符串 |
+| SET_DRILL_BIT_INFO_BIT_BLADE_NUMBER | 340 | 0x0154 | ASCII 字符串 |
+| SET_DRILL_BIT_INFO_BIT_BOM | 344 | 0x0158 | ASCII 字符串 |
+| SET_UH_CONNECTION_TYPE | 352 | 0x0160 | ASCII 字符串 |
+| SET_DH_CONNECTION_TYPE | 356 | 0x0164 | ASCII 字符串 |
+| SET_INT_PRESSURE_SENSOR_SN | 360 | 0x0168 | ASCII 字符串 |
+| SET_EXT_PRESSURE_SENSOR_SN | 364 | 0x016C | ASCII 字符串 |
+| SET_LIMPET_SENSOR_SN | 368 | 0x0170 | ASCII 字符串 |
 | SET_AMPLIFIER_DAC_OFFSET | 338 | 0x0152 | ASCII 字符串 |
 | SET_AMPLIFIER_FIRST_STAGE_GAIN | 340 | 0x0154 | ASCII 字符串 |
 | SET_AMPLIFIER_SECOND_STAGE_GAIN | 342 | 0x0156 | ASCII 字符串 |
-| MEMORY_DUMP_START | 384 | 0x0180 | 通知设备开始数据转储 |
-| MEMORY_DUMP_END | 386 | 0x0182 | 通知设备结束数据转储 |
-| MEMORY_ERASE_ALL | 388 | 0x0184 | 擦除全部内存 |
-| MEMORY_ERASE_USED | 390 | 0x0186 | 擦除已用内存 |
-| GET_MEMORY_ERASE_PERCENT | 392 | 0x0188 | 获取擦除进度百分比 |
-| GET_NUMBER_MEMORY_PARTITIONS | 400 | 0x0190 | 获取内存分区数 |
-| GET_PARTITION_NUMBER_CHUNKS_WRITTEN | 402 | 0x0192 | 获取已写入块数 |
-| GET_PARTITION_TOTAL_NUMBER_CHUNKS | 404 | 0x0194 | 获取总块数 |
-| GET_PARTITION_WRITTEN_BYTE_COUNT | 406 | 0x0196 | 获取已写入字节数 |
-| GET_MEMORY_DUMP_CHUNK_SIZE | 408 | 0x0198 | 获取转储块大小 |
-| GET_MEMORY_DUMP_CHUNK_DATA | 410 | 0x019A | 获取转储块数据 |
-| START_VERIFICATION | 480 | 0x01E0 | 启动自检验证 |
-| VERIFY_STATUS | 482 | 0x01E2 | 查询验证状态 |
-| SET_SELF_TEST_MODE | 484 | 0x01E4 | 设置自检模式 |
-| LAUNCH_DEVICE | 512 | 0x0200 | 延时启动设备 |
-| GET_FLASH_TEST_DATA | 416 | 0x01A0 | 获取 Flash 测试数据 |
-| GET_HIGHSHOCK_DATA_CM | 418 | 0x01A2 | 获取高冲击数据 |
-| GET_LOWSHOCK_DATA_CM | 420 | 0x01A4 | 获取低冲击数据 CM |
-| GET_LOWSHOCK_DATA_EM | 422 | 0x01A6 | 获取低冲击数据 EM |
-| GET_PRESSURE_DATA_CM | 424 | 0x01A8 | 获取压力数据 CM |
-| GET_PRESSURE_DATA_EM | 426 | 0x01AA | 获取压力数据 EM |
-| GET_PRESSURRE_SELF_TEST_DATA | 428 | 0x01AC | 获取压力自检数据 |
-| GET_ROTATIONAL_DATA_CM | 430 | 0x01AE | 获取旋转数据 CM |
-| GET_ROTATIONAL_DATA_EM | 432 | 0x01B0 | 获取旋转数据 EM |
-| GET_TEMPERATURE_DATA_EM | 434 | 0x01B2 | 获取温度数据 EM |
-| GET_LIMPET_DATA_EM | 436 | 0x01B4 | 获取 Limpet 数据 EM |
 
 ### 功能流程
 1. **初始化流程**: setMultipleParameters → checkBattery → eraseMemory → writeIntoFlash
-2. **数据下载流程**: MEMORY_DUMP_START → GET_NUMBER_MEMORY_PARTITIONS → 循环 GET_MEMORY_DUMP_CHUNK_DATA → MEMORY_DUMP_END
-3. **自检流程**: SET_SELF_TEST_MODE → 逐项 START_VERIFICATION → VERIFY_STATUS → SET_SELF_TEST_MODE(重置)
-4. **延时启动**: LAUNCH_DEVICE 命令
+2. **数据下载流程**: MEMORY_DUMP_START(0x000C) → GET_NUMBER_MEMORY_PARTITIONS(0x000A) → 循环 GET_MEMORY_DUMP_CHUNK_DATA(0x0010) → MEMORY_DUMP_END(0x000E)
+3. **自检流程**: SET_SELF_TEST_MODE(0x0504, data=0x01) → 逐项 START_VERIFICATION(0x0054) → VERIFY_STATUS(0x0056) → SET_SELF_TEST_MODE(0x0504, data=0x00)
+4. **延时启动**: LAUNCH_DEVICE(0x0058) 命令
 
 ### SET 协议关键规则（从 DLL 确认）
 1. **ASCII 编码**: `ASCIIconversion()` 将字符串每个字符直接转 byte（无 null 终止符）
@@ -257,6 +283,7 @@ interface DeviceContextType {
 8. **写超时**: 1000ms
 9. **Read endpoint**: `OpenEndpointReader(ReadEndpointID 129)` = EP1 IN (0x81)
 10. **Write endpoint**: `OpenEndpointWriter(WriteEndpointID 1)` = EP1 OUT (0x01)
+11. **内存转储命令数据格式**: GET_MEMORY_DUMP_CHUNK_DATA 发送 data=[partition_u8, chunkNumber_bytes(4B big-endian)]，响应剥离前10字节(4B header + 1B partition + 1B status + 4B chunkNumber)后为原始数据
 
 ### SET 响应判断
 - SET 命令返回字符串值，`"0"` 表示失败，非零非null 表示成功
