@@ -144,6 +144,13 @@ export default function DeviceMonitoringPage() {
       addLog('开始下载数据...');
       const result = await downloadData();
       addLog('下载完成: success=' + String(result?.success) + ', error=' + String(result?.error) + ', partitions=' + String(result?.partitions?.length) + ', totalPartitions=' + String(result?.totalPartitions));
+      // Log partition debug info (CMD responses)
+      const partDebug = result?.partitionDebug as string[] | undefined;
+      if (partDebug && partDebug.length > 0) {
+        for (const dbg of partDebug) {
+          addLog('  [CMD] ' + dbg);
+        }
+      }
       // Log partition details
       if (result?.partitions) {
         for (let pi = 0; pi < result.partitions.length; pi++) {

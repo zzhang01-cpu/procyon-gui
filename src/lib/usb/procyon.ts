@@ -107,9 +107,14 @@ export interface DownloadResult {
     partition: number;
     data: number[];
     size: number;
+    chunksRead?: number;
+    writtenChunks?: number;
+    totalChunks?: number;
+    writtenBytes?: number;
   }>;
   totalPartitions: number;
   error?: string;
+  partitionDebug?: string[];
 }
 
 /**

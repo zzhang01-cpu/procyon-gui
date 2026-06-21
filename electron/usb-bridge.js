@@ -864,21 +864,19 @@ ProcyonUsbBridge.prototype.getMemoryPartitions = async function() {
 ProcyonUsbBridge.prototype.getWrittenChunksForPartition = async function(partition) {
   try {
     var resp = await this.sendCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN, [partition & 0xFF]);
+    console.log('[USB] WrittenChunks P' + partition + ': success=' + resp.success + ' dataLen=' + (resp.data ? resp.data.length : 'null') + ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
     if (resp.success && resp.data && resp.data.length >= 1) {
       var d = resp.data;
-      // Response is UInt32 binary - try both byte orders
       if (d.length >= 4) {
         var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
         var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
-        var count = be > 0 ? be : le;
-        console.log('[USB] WrittenChunks P' + partition + ': BE=' + be + ' LE=' + le + ' raw=[' + hexStr(d) + ']');
-        return { success: true, count: count };
+        return { success: true, count: be > 0 ? be : le, raw: hexStr(d) };
       }
       if (d.length >= 1 && d[0] > 0) {
-        return { success: true, count: d[0] };
+        return { success: true, count: d[0], raw: hexStr(d) };
       }
     }
-    return { success: false, count: 0 };
+    return { success: false, count: 0, reason: 'no data or empty (resp.success=' + resp.success + ')' };
   } catch (error) {
     return { success: false, count: 0, error: error.message };
   }
@@ -887,20 +885,19 @@ ProcyonUsbBridge.prototype.getWrittenChunksForPartition = async function(partiti
 ProcyonUsbBridge.prototype.getPartitionTotalChunks = async function(partition) {
   try {
     var resp = await this.sendCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS, [partition & 0xFF]);
+    console.log('[USB] TotalChunks P' + partition + ': success=' + resp.success + ' dataLen=' + (resp.data ? resp.data.length : 'null') + ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
     if (resp.success && resp.data && resp.data.length >= 1) {
       var d = resp.data;
       if (d.length >= 4) {
         var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
         var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
-        var count = be > 0 ? be : le;
-        console.log('[USB] TotalChunks P' + partition + ': BE=' + be + ' LE=' + le + ' raw=[' + hexStr(d) + ']');
-        return { success: true, count: count };
+        return { success: true, count: be > 0 ? be : le, raw: hexStr(d) };
       }
       if (d.length >= 1 && d[0] > 0) {
-        return { success: true, count: d[0] };
+        return { success: true, count: d[0], raw: hexStr(d) };
       }
     }
-    return { success: false, count: 0 };
+    return { success: false, count: 0, reason: 'no data or empty (resp.success=' + resp.success + ')' };
   } catch (error) {
     return { success: false, count: 0, error: error.message };
   }
@@ -909,27 +906,24 @@ ProcyonUsbBridge.prototype.getPartitionTotalChunks = async function(partition) {
 ProcyonUsbBridge.prototype.getPartitionWrittenByteCount = async function(partition) {
   try {
     var resp = await this.sendCommand(CMD.GET_PARTITION_WRITTEN_BYTE_COUNT, [partition & 0xFF]);
+    console.log('[USB] WrittenBytes P' + partition + ': success=' + resp.success + ' dataLen=' + (resp.data ? resp.data.length : 'null') + ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
     if (resp.success && resp.data && resp.data.length >= 1) {
       var d = resp.data;
       if (d.length >= 4) {
         var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
         var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
-        var count = be > 0 ? be : le;
-        console.log('[USB] WrittenBytes P' + partition + ': BE=' + be + ' LE=' + le + ' raw=[' + hexStr(d) + ']');
-        return { success: true, count: count };
+        return { success: true, count: be > 0 ? be : le, raw: hexStr(d) };
       }
       if (d.length >= 1 && d[0] > 0) {
-        return { success: true, count: d[0] };
+        return { success: true, count: d[0], raw: hexStr(d) };
       }
     }
-    return { success: false, count: 0 };
+    return { success: false, count: 0, reason: 'no data or empty (resp.success=' + resp.success + ')' };
   } catch (error) {
     return { success: false, count: 0, error: error.message };
   }
 };
 
-// DLL response: ResponseLength=8062, format: [cmdheader(4B), PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
-// IsWordNeeded=True (sends partition+chunk as data), IsLengthPreDetermined=True
 ProcyonUsbBridge.prototype.getDumpChunkData = async function(partition, chunkNumber) {
   try {
     var data = [
@@ -1031,6 +1025,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     }
 
     // 2b: Get per-partition info
+    var partitionDebug = [];
     if (numPartitions > 0) {
       for (var p = 0; p < numPartitions; p++) {
         checkTimeout();
@@ -1042,9 +1037,14 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
           totalChunks: tc.success ? tc.count : 0,
           writtenBytes: bc.success ? bc.count : 0
         });
-        console.log('[USB] P' + p + ': writtenChunks=' + (wc.success ? wc.count : '?') +
-          ', totalChunks=' + (tc.success ? tc.count : '?') +
-          ', writtenBytes=' + (bc.success ? bc.count : '?'));
+        var dbg = 'P' + p + ': wc=' + (wc.success ? wc.count : 'FAIL(' + (wc.reason || wc.error || '?') + ')') +
+          ', tc=' + (tc.success ? tc.count : 'FAIL(' + (tc.reason || tc.error || '?') + ')') +
+          ', bc=' + (bc.success ? bc.count : 'FAIL(' + (bc.reason || bc.error || '?') + ')');
+        if (wc.raw) dbg += ' wc_raw=' + wc.raw;
+        if (tc.raw) dbg += ' tc_raw=' + tc.raw;
+        if (bc.raw) dbg += ' bc_raw=' + bc.raw;
+        partitionDebug.push(dbg);
+        console.log('[USB] ' + dbg);
       }
     }
 
@@ -1063,7 +1063,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       return {
         success: false,
         error: 'No memory partitions found. CMD=' + CMD.GET_NUMBER_MEMORY_PARTITIONS,
-        partitions: [], totalPartitions: 0, partitionInfo: []
+        partitions: [], totalPartitions: 0, partitionInfo: [], partitionDebug: partitionDebug
       };
     }
 
@@ -1161,7 +1161,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
 
     READ_TIMEOUT = savedTimeout;
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
-    return { success: true, partitions: allData, totalPartitions: numPartitions, partitionInfo: partitionInfo };
+    return { success: true, partitions: allData, totalPartitions: numPartitions, partitionInfo: partitionInfo, partitionDebug: partitionDebug };
   } catch (error) {
     READ_TIMEOUT = savedTimeout;
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
