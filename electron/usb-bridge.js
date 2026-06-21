@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-21-v20 (fast download: skip partition queries, single-read optimization)
+ * VERSION: 2024-06-21-v21 (yield to event loop, firmware/battery fix, read delay)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -506,17 +506,15 @@ ProcyonUsbBridge.prototype.sendCommand = async function(commandCode, dataBytes) 
     if (!this.connected) return { success: false, error: 'Device not connected' };
 
     var packet = buildCommandPacket(commandCode, dataBytes);
-    console.log('[USB] TX CMD ' + hex4(commandCode) + ': [' + hexStr(packet) + ']');
 
     await this._writeToDevice(packet);
+    // Small delay to allow device to process and respond
+    await new Promise(function(resolve) { setTimeout(resolve, 10); });
     var response = await this._readFromDevice(4096, READ_TIMEOUT);
 
     if (!response || response.length < 4) {
-      console.log('[USB] RX: no response or too short');
       return { success: false, error: 'No response from device (timeout)' };
     }
-
-    console.log('[USB] RX: [' + hexStr(response) + ']');
 
     var parsed = parseResponse(response);
     if (!parsed) return { success: false, error: 'Invalid response format' };
@@ -634,12 +632,23 @@ ProcyonUsbBridge.prototype.sendCommandWithExpectedLength = async function(comman
 ProcyonUsbBridge.prototype.getFirmwareVersion = async function() {
   try {
     var resp = await this.sendGetCommand(CMD.GET_FIRMWARE_VERSION);
+    if (resp.success && resp.value && resp.value.length > 0) {
+      // Firmware version is returned as ASCII string (e.g. "2.0.6")
+      var ver = resp.value.trim();
+      if (ver.length > 0) {
+        return { success: true, value: ver.startsWith('v') ? ver : 'v' + ver };
+      }
+    }
+    // Fallback: try binary parsing (some firmware versions use binary format)
     if (resp.success && resp.data && resp.data.length >= 3) {
-      // Firmware version: each byte is a version segment (major.minor.patch)
-      // e.g. data=[02,00,06,02] => v2.0.6 (ignore trailing byte)
       var major = resp.data[0];
       var minor = resp.data[1];
       var patch = resp.data[2];
+      // Sanity check: if values look like ASCII chars (32-127), it's a string not binary
+      if (major >= 32 && major <= 127 && minor >= 32 && minor <= 127) {
+        // It's actually an ASCII string, use resp.value instead
+        return { success: resp.success, value: resp.value || 'unknown' };
+      }
       return { success: true, value: 'v' + major + '.' + minor + '.' + patch };
     }
     return { success: false, value: null };
@@ -662,10 +671,17 @@ ProcyonUsbBridge.prototype.getBatteryVoltage = async function() {
       }
       // Fallback: try float32 binary
       if (rawMv === 0 && resp.data.length >= 4) {
-        rawMv = Math.round(this._parseFloat(resp.data));
+        var floatValue = this._parseFloat(resp.data);
+        // DLL returns Float32. Could be millivolts (e.g. 3703.0) or volts (e.g. 3.703)
+        if (floatValue > 100) {
+          // Likely millivolts already
+          rawMv = Math.round(floatValue);
+        } else if (floatValue > 0) {
+          // Likely volts, convert to millivolts
+          rawMv = Math.round(floatValue * 1000);
+        }
       }
-      var volts = Math.round(rawMv / 10) / 100;
-      return { success: true, voltage: volts, rawMv: rawMv };
+      return { success: true, voltage: rawMv / 1000, rawMv: rawMv };
     }
     return { success: false, voltage: 0 };
   } catch (error) {
@@ -1097,10 +1113,16 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
           if (consecutiveFail >= 5) break;
         }
 
+        // Yield to event loop every 5 chunks to prevent app freeze
+        // Without this, the Electron main thread blocks and the window shows "Not Responding"
+        if (c % 5 === 0) {
+          await new Promise(function(resolve) { setTimeout(resolve, 0); });
+        }
+
         // Report progress every 500ms or every 10 chunks
         if (onProgress) {
           var now = Date.now();
-          if (now - lastProgressTime > 500 || c % 10 === 0) {
+          if (now - lastProgressTime > 300 || c % 10 === 0) {
             lastProgressTime = now;
             onProgress({
               partition: p + 1,
