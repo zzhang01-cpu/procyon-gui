@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-21-v21 (yield to event loop, firmware/battery fix, read delay)
+ * VERSION: 2024-06-21-v22 (chunk debug logs, safety limits, empty chunk detection fix)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -1051,7 +1051,8 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     var CHUNK_RESPONSE_LEN = 8062; // 4 header + 1 partition + 1 status + 4 chunkNum + 8052 data
     var CHUNK_DATA_LEN = 8052;
     var MAX_EMPTY_CHUNKS = 3; // Stop after 3 consecutive empty chunks
-    var MAX_CHUNKS_PER_PARTITION = 50000; // Safety limit
+    var MAX_CHUNKS_PER_PARTITION = 10000; // Safety limit (device has ~10K total chunks across all partitions)
+    var MAX_BYTES_PER_PARTITION = 50 * 1024 * 1024; // 50MB safety limit per partition
     var allData = [];
     var partitionDebug = [];
 
@@ -1081,11 +1082,33 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         try {
           var chunkResp = await this.sendCommandWithExpectedLength(CMD.GET_MEMORY_DUMP_CHUNK_DATA, data, CHUNK_RESPONSE_LEN);
 
+          // Debug: log first chunk of each partition to understand response format
+          if (c === 0) {
+            console.log('[USB] P' + (p+1) + ' chunk0: success=' + chunkResp.success +
+              ', data.length=' + (chunkResp.data ? chunkResp.data.length : 'null') +
+              ', raw.length=' + (chunkResp.raw ? chunkResp.raw.length : 'null') +
+              ', length=' + chunkResp.length +
+              ', first16=' + (chunkResp.data ? hexStr(chunkResp.data.slice(0, 16)) : 'N/A'));
+          }
+
           if (chunkResp.success && chunkResp.data && chunkResp.data.length > 1) {
             consecutiveFail = 0;
             var status = chunkResp.data[1]; // Status byte after partition byte
 
+            // More detailed check: is this really data or is the status byte misidentified?
+            // DLL: response = [PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
+            // Status=0 means empty chunk, non-zero means has data
             if (status !== 0 && chunkResp.data.length > 6) {
+              // Verify this is real data by checking chunk number matches what we requested
+              var respChunkNum = (chunkResp.data[2]) |
+                                 (chunkResp.data[3] << 8) |
+                                 (chunkResp.data[4] << 16) |
+                                 (chunkResp.data[5] << 24);
+              if (c === 0) {
+                console.log('[USB] P' + (p+1) + ' chunk0: partition=' + chunkResp.data[0] +
+                  ', status=' + status + ', respChunkNum=' + respChunkNum);
+              }
+
               // Has data - extract chunk payload (skip 6-byte sub-header)
               var chunkData = chunkResp.data.slice(6);
               partitionData.push(Buffer.from(chunkData));
@@ -1095,6 +1118,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
             } else {
               // Empty chunk (status=0 or no data)
               consecutiveEmpty++;
+              if (c < 5) console.log('[USB] P' + (p+1) + ' chunk' + c + ': EMPTY (status=' + status + ', dataLen=' + chunkResp.data.length + ')');
               if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) {
                 console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty chunks at chunk ' + c + ', stopping');
                 break;
@@ -1103,6 +1127,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
           } else {
             consecutiveFail++;
             consecutiveEmpty++;
+            if (c < 5) console.log('[USB] P' + (p+1) + ' chunk' + c + ': FAIL (success=' + chunkResp.success + ', dataLen=' + (chunkResp.data ? chunkResp.data.length : 0) + ')');
             if (consecutiveFail >= 5) {
               console.log('[USB] P' + (p+1) + ': ' + consecutiveFail + ' failed reads at chunk ' + c + ', stopping');
               break;
@@ -1117,6 +1142,12 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         // Without this, the Electron main thread blocks and the window shows "Not Responding"
         if (c % 5 === 0) {
           await new Promise(function(resolve) { setTimeout(resolve, 0); });
+        }
+
+        // Safety: stop if too much data read for one partition
+        if (totalBytesRead >= MAX_BYTES_PER_PARTITION) {
+          console.log('[USB] P' + (p+1) + ': safety limit reached (' + totalBytesRead + ' bytes), stopping');
+          break;
         }
 
         // Report progress every 500ms or every 10 chunks
