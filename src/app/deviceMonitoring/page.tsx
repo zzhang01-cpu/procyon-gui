@@ -413,12 +413,15 @@ export default function DeviceMonitoringPage() {
           <div className="animate-spin w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full mb-4" />
           <p className="text-sm font-medium text-blue-600 mb-2">{dm.downloading || '正在下载数据...'}</p>
           {downloadProgress ? (
-            <div className="w-64">
-              <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
-                <div className="bg-blue-600 h-3 rounded-full transition-all duration-300" style={{ width: `${downloadProgress.percent || 0}%` }} />
-              </div>
-              <p className="text-xs text-gray-500 text-center">
-                Partition {downloadProgress.partition}/{downloadProgress.totalPartitions}, Chunk {downloadProgress.chunk}/{downloadProgress.totalChunks} ({downloadProgress.percent || 0}%)
+            <div className="w-72">
+              <p className="text-xs text-gray-600 text-center mb-1">
+                分区 {downloadProgress.partition}/{downloadProgress.totalPartitions}
+              </p>
+              <p className="text-xs text-gray-500 text-center mb-2">
+                已读取 {downloadProgress.chunksRead || downloadProgress.chunk || 0} 个数据块
+                {downloadProgress.bytesDownloaded ? (
+                  <> ({(downloadProgress.bytesDownloaded / 1024).toFixed(1)} KB)</>
+                ) : null}
               </p>
             </div>
           ) : (
@@ -718,7 +721,8 @@ export default function DeviceMonitoringPage() {
                   </button>
                   {downloadProgress && (
                     <span className="text-xs text-blue-600">
-                      {dm.chunkProgress || '进度'}: {downloadProgress.chunk}/{downloadProgress.totalChunks}
+                      分区{downloadProgress.partition}/{downloadProgress.totalPartitions} - {downloadProgress.chunksRead || downloadProgress.chunk || 0}块
+                      {downloadProgress.bytesDownloaded ? ` (${(downloadProgress.bytesDownloaded / 1024).toFixed(0)}KB)` : ''}
                     </span>
                   )}
                   {downloadedData.length > 0 && (

@@ -86,6 +86,8 @@ export interface DownloadProgress {
   chunk: number;
   totalChunks: number;
   percent: number;
+  chunksRead?: number;
+  bytesDownloaded?: number;
 }
 
 export interface InitProgress {
