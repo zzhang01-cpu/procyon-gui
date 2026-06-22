@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-22-v23 (dynamic chunk response reading - fix empty chunk stream corruption)
+ * VERSION: 2024-06-22-v24 (fix chunkNumber BE byte order + parse debug + empty partition fast skip)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -1079,10 +1079,10 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     async function readChunk(partition, chunkNum) {
       var dataBytes = [
         partition & 0xFF,
-        chunkNum & 0xFF,
-        (chunkNum >> 8) & 0xFF,
+        (chunkNum >> 24) & 0xFF,
         (chunkNum >> 16) & 0xFF,
-        (chunkNum >> 24) & 0xFF
+        (chunkNum >> 8) & 0xFF,
+        chunkNum & 0xFF
       ];
       var packet = buildCommandPacket(CMD.GET_MEMORY_DUMP_CHUNK_DATA, dataBytes);
       await self._writeToDevice(packet);
@@ -1161,7 +1161,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
             } else if (chunk.data && chunk.data.length >= 6) {
               // Response has data: [PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
               var status = chunk.data[1];
-              var respChunkNum = chunk.data[2] | (chunk.data[3] << 8) | (chunk.data[4] << 16) | (chunk.data[5] << 24);
+              var respChunkNum = (chunk.data[2] << 24) | (chunk.data[3] << 16) | (chunk.data[4] << 8) | chunk.data[5];
               var payload = chunk.data.slice(6);
 
               if (c < 3) {

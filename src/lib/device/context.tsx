@@ -359,6 +359,17 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
           }
           const parsed = parseBinaryRecords(result.partitions);
           console.log('[Download] Parsed records:', parsed.length);
+          // Collect debug info from partitions (set by parseBinaryRecords)
+          const partitionDebugInfo = result.partitions.map((p: any) => ({
+            partition: p.partition,
+            size: p.size,
+            _debugFirstByte: p._debugFirstByte || 'N/A',
+            _debugTopBytes: p._debugTopBytes || 'N/A',
+            _debugHex: p._debugHex ? (p._debugHex as string).substring(0, 200) : 'N/A',
+          }));
+          console.log('[Download] Partition debug:', JSON.stringify(partitionDebugInfo, null, 2));
+          // Store debug info in result for page display
+          (result as any).partitionDebugInfo = partitionDebugInfo;
           setDownloadedData(parsed);
         }
       } else {

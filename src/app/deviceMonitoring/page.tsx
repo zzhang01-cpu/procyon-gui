@@ -170,13 +170,13 @@ export default function DeviceMonitoringPage() {
         setDownloadError(errMsg);
       } else {
         addLog('下载成功, downloadedData长度=' + String(downloadedData?.length) + ' (注意: 此值可能延迟更新)');
-        // Log partition details
-        if (result.partitions) {
-          result.partitions.forEach((p: any, i: number) => {
-            const dataType = typeof p.data;
-            const dataLen = p.data ? (Array.isArray(p.data) ? p.data.length : Buffer.isBuffer(p.data) ? p.data.length : (p.data as any).type === 'Buffer' ? (p.data as any).data?.length : '?') : 0;
-            addLog('  分区' + (i+1) + ': partition=' + p.partition + ', size=' + p.size + ', data type=' + dataType + ', data len=' + dataLen);
-          });
+        // Show partition debug info from parseBinaryRecords
+        const debugInfo = (result as any).partitionDebugInfo;
+        if (debugInfo && Array.isArray(debugInfo)) {
+          for (const d of debugInfo) {
+            addLog('  分区' + d.partition + ': firstByte=' + d._debugFirstByte + ', topBytes=' + d._debugTopBytes);
+            if (d._debugHex && d._debugHex !== 'N/A') addLog('  HEX: ' + d._debugHex);
+          }
         }
       }
     } catch (err) {

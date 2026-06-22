@@ -745,6 +745,27 @@ export function parseBinaryRecords(partitions: { partition: number; data: Buffer
       continue;
     }
 
+    // Build debug info for page display
+    const hex128 = buf.slice(0, Math.min(128, buf.length)).toString('hex').match(/.{1,2}/g)?.join(' ');
+    const firstByte = buf[0];
+    const byteFreq: Record<string, number> = {};
+    for (let i = 0; i < Math.min(256, buf.length); i++) {
+      const key = '0x' + buf[i].toString(16).padStart(2, '0');
+      byteFreq[key] = (byteFreq[key] || 0) + 1;
+    }
+    const topBytes = Object.entries(byteFreq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([k, v]) => k + '(' + v + ')')
+      .join(', ');
+    console.log('[parseBinaryRecords] P' + part.partition + ' DEBUG: firstByte=0x' + firstByte.toString(16).padStart(2, '0') + ', size=' + buf.length + ', topBytes=' + topBytes);
+    console.log('[parseBinaryRecords] P' + part.partition + ' HEX(0-128): ' + hex128);
+
+    // Store debug info for page display
+    (part as any)._debugHex = hex128;
+    (part as any)._debugTopBytes = topBytes;
+    (part as any)._debugFirstByte = '0x' + firstByte.toString(16).padStart(2, '0');
+
     let offset = 0;
     let recordTypeCounts: Record<number, number> = {};
     const firstBytes = buf.slice(0, Math.min(32, buf.length)).toString('hex');
