@@ -113,7 +113,7 @@ interface DeviceContextType {
   downloadProgress: DownloadProgress | null;
   downloadData: () => Promise<DownloadResult>;
   clearData: () => void;
-  exportData: () => string;
+  exportData: () => Promise<string>;
 
   // System test
   testResults: SelfTestResult[];
@@ -329,11 +329,12 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       const result = await usbDownloadData();
       if (result.success) {
         setDownloadResult(result);
-        // Records are now parsed in main process (avoids 52MB IPC Buffer serialization)
-        const parsedRecords = (result as any).parsedRecords as OneSecondRecord[] || [];
+        // Records are stored in main process. Only summary is returned via IPC.
         const parseDebug = (result as any).parseDebug as string[] || [];
         const chunkReadDebug = (result as any).chunkReadDebug as string[] || [];
-        console.log('[Download] Parsed records from main process:', parsedRecords.length);
+        const recordCount = (result as any).recordCount as number || 0;
+        const summary = (result as any).recordSummary as string || '';
+        console.log('[Download] Records parsed:', recordCount, summary);
         for (const line of parseDebug) {
           console.log('[Download] ' + line);
         }
@@ -342,7 +343,9 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         }
         // Store debug info for page display
         (result as any).partitionDebugInfo = [...parseDebug, ...chunkReadDebug];
-        setDownloadedData(parsedRecords);
+        // Store record count instead of full records (records stay in main process)
+        (result as any).recordCount = recordCount;
+        setDownloadedData(recordCount > 0 ? [{ _count: recordCount } as any] : []);
       } else {
         setError(result.error || 'Download failed');
       }
@@ -362,9 +365,16 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     setDownloadProgress(null);
   }, []);
 
-  const exportData = useCallback(() => {
-    return exportToCSV(downloadedData);
-  }, [downloadedData]);
+  const exportData = useCallback(async (): Promise<string> => {
+    if (!isElectron()) return '';
+    try {
+      const csv = await (window as any).electronAPI.exportData();
+      return csv || '';
+    } catch {
+      // Fallback: empty
+      return '';
+    }
+  }, []);
 
   const loadDeviceParams = useCallback(async () => {
     if (!isElectron()) return;

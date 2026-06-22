@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMemoryPartitions: () => ipcRenderer.invoke('device:get-memory-partitions'),
   getMemoryErasePercent: () => ipcRenderer.invoke('device:get-memory-erase-percent'),
   downloadData: (options) => ipcRenderer.invoke('device:download-data', options),
+  getParsedRecords: (offset, limit) => ipcRenderer.invoke('device:get-parsed-records', offset, limit),
+  exportRecordsCsv: () => ipcRenderer.invoke('device:export-records-csv'),
 
   // Memory operations
   eraseUsedMemory: () => ipcRenderer.invoke('device:erase-used-memory'),

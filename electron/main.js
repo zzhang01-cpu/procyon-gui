@@ -36,7 +36,7 @@ function createWindow() {
 
 // Initialize USB bridge IPC handlers
 function initUsbBridge() {
-  console.log('[Procyon GUI] USB Bridge version: 2024-06-22-v35 (4096 first-read chunk + USB recovery)');
+  console.log('[Procyon GUI] USB Bridge version: 2024-06-22-v36 (4096 first-read chunk + USB recovery)');
 
   // List USB devices
   ipcMain.handle('usb:list-devices', async () => {
@@ -190,6 +190,12 @@ function initUsbBridge() {
         mainWindow.webContents.send('download:progress', progress);
       }
     });
+  });
+  ipcMain.handle('device:get-parsed-records', async (_event, offset, limit) => {
+    return bridge.getParsedRecords(offset, limit);
+  });
+  ipcMain.handle('device:export-records-csv', async () => {
+    return bridge.exportRecordsCsv();
   });
 
   // Test operations

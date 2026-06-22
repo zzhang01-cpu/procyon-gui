@@ -137,6 +137,10 @@ console.log('[USB] All libusb0 functions bound OK');
 
 var libusbInitialized = false;
 
+// Stored parsed records from last download (kept in main process to avoid IPC serialization)
+var _lastParsedRecords = [];
+var _lastParseDebug = null;
+
 function ensureLibusbInit() {
   if (!libusbInitialized) {
     fn_usb_init();
@@ -1443,7 +1447,8 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
 
     // Helper: send chunk request and read response with dynamic length (v23 proven approach)
     var self = this;
-    async function readChunk(partition, chunkNum) {
+    async function readChunk(partition, chunkNum, timeout) {
+      if (!timeout) timeout = 5000;
       var dataBytes = [
         partition & 0xFF,
         chunkNum & 0xFF,
@@ -1461,7 +1466,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
 
         // Step 1: Read response - use 4096 like sendCommand does (proven to work)
         // The device may take time to prepare chunk data, so use full read
-        var firstRead = await self._readFromDevice(4096, 5000);
+        var firstRead = await self._readFromDevice(4096, timeout);
         if (!firstRead || firstRead.length < 4) {
           // Flush any remaining data from USB buffer
           try { await self._readFromDevice(4096, 100); } catch(e) {}
@@ -1545,8 +1550,11 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       var totalBytesRead = 0;
       var lastProgressTime = 0;
       var maxChunksForPartition = 20000; // Safety limit
+      var emptyChunkCount = 0; // Track total empty chunks for early skip
+      var partitionStart = Date.now();
 
       console.log('[USB] P' + (p+1) + ': reading chunks...');
+      chunkReadDebug.push('P' + (p+1) + ': reading chunks...');
 
       for (var c = 0; c < maxChunksForPartition; c++) {
         checkTimeout();
@@ -1556,7 +1564,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         var chunkRetries = 3;
         for (var retry = 0; retry < chunkRetries; retry++) {
           try {
-            chunk = await readChunk(p, c);
+            chunk = await readChunk(p, c, chunksRead === 0 && emptyCount > 0 ? 1500 : 5000);
             if (chunk.success || chunk.reason === 'no header (got 0 bytes)') {
               break; // Success or device timeout - don't retry timeout
             }
@@ -1601,6 +1609,12 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
               console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty chunks at chunk ' + c + ', stopping');
               break;
             }
+            // Fast skip: if we haven't found any real data and already have 3 empty, stop
+            if (chunksRead === 0 && consecutiveEmpty >= 3) {
+              console.log('[USB] P' + (p+1) + ': fast skip - no real data after ' + consecutiveEmpty + ' empty chunks');
+              chunkReadDebug.push('P' + (p+1) + ': fast skip (no real data found)');
+              break;
+            }
           } else if (chunk.data && chunk.data.length >= 6) {
             // Response has data: [PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
             var status = chunk.data[1];
@@ -1620,6 +1634,12 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
               consecutiveEmpty++;
               if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) {
                 console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty (status=0) at chunk ' + c);
+                break;
+              }
+              // Fast skip: no real data found yet
+              if (chunksRead === 0 && consecutiveEmpty >= 3) {
+                console.log('[USB] P' + (p+1) + ': fast skip - status=0, no real data');
+                chunkReadDebug.push('P' + (p+1) + ': fast skip (status=0, no real data)');
                 break;
               }
             } else {
@@ -1653,6 +1673,11 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
             // Short data response (less than 6 bytes) - likely an empty/NAK indicator
             consecutiveEmpty++;
             if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) break;
+            // Fast skip for short responses too
+            if (chunksRead === 0 && consecutiveEmpty >= 3) {
+              chunkReadDebug.push('P' + (p+1) + ': fast skip (short responses, no real data)');
+              break;
+            }
           }
         } else {
           // Read failure (even after retries)
@@ -1661,6 +1686,11 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
           if (consecutiveFail >= 5) {
             console.log('[USB] P' + (p+1) + ': too many failures at chunk ' + c + ', stopping');
             chunkReadDebug.push('P' + (p+1) + ': stopped after 5 consecutive failures at chunk ' + c);
+            break;
+          }
+          // Fast skip: if no real data found and already have failures
+          if (chunksRead === 0 && consecutiveEmpty >= 3) {
+            chunkReadDebug.push('P' + (p+1) + ': fast skip (failures with no real data)');
             break;
           }
         }
@@ -1741,14 +1771,59 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       partitionInfo: [],
       partitionDebug: partitionDebug,
       chunkReadDebug: chunkReadDebug,
-      parsedRecords: parseResult.records,
-      parseDebug: parseResult.debug
+      parsedRecords: parseResult.records.slice(0, 100), // Only send first 100 records via IPC
+      parseDebug: parseResult.debug,
+      // Summary info (lightweight)
+      recordCount: parseResult.records.length,
+      recordTypes: parseResult.debug ? parseResult.debug.types : null,
+      totalBytes: parseResult.debug ? parseResult.debug.totalBytes : 0
     };
+
+    // Store full records in main process for later retrieval (export/pagination)
+    _lastParsedRecords = parseResult.records;
+    _lastParseDebug = parseResult.debug;
+    console.log('[v36] Stored ' + parseResult.records.length + ' records in main process');
   } catch (error) {
     READ_TIMEOUT = savedTimeout;
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
     return { success: false, error: error.message, partitions: [], totalPartitions: 0, partitionInfo: [], partitionDebug: [], chunkReadDebug: chunkReadDebug };
   }
+};
+
+// Get stored parsed records (for pagination)
+ProcyonUsbBridge.prototype.getParsedRecords = function(offset, limit) {
+  if (!_lastParsedRecords) return { records: [], total: 0 };
+  var start = offset || 0;
+  var end = Math.min(start + (limit || 100), _lastParsedRecords.length);
+  return {
+    records: _lastParsedRecords.slice(start, end),
+    total: _lastParsedRecords.length
+  };
+};
+
+// Export stored records as CSV string
+ProcyonUsbBridge.prototype.exportRecordsCsv = function() {
+  if (!_lastParsedRecords || _lastParsedRecords.length === 0) return '';
+  
+  var headers = ['timestamp', 'temperature', 'batteryV', 
+    'rpmMinX', 'rpmMaxX', 'rpmAvgX', 'rpmRmsX',
+    'rpmMinY', 'rpmMaxY', 'rpmAvgY', 'rpmRmsY',
+    'rpmMinZ', 'rpmMaxZ', 'rpmAvgZ', 'rpmRmsZ',
+    'shockLowMinX', 'shockLowMaxX', 'shockLowAvgX', 'shockLowRmsX',
+    'shockLowMinY', 'shockLowMaxY', 'shockLowAvgY', 'shockLowRmsY',
+    'shockLowMinZ', 'shockLowMaxZ', 'shockLowAvgZ', 'shockLowRmsZ',
+    'shockMinX', 'shockMaxX', 'shockAvgX', 'shockRmsX',
+    'shockMinY', 'shockMaxY', 'shockAvgY', 'shockRmsY',
+    'shockMinZ', 'shockMaxZ', 'shockAvgZ', 'shockRmsZ',
+    'shockLateralMax', 'shockLateralRms'];
+  
+  var lines = [headers.join(',')];
+  for (var i = 0; i < _lastParsedRecords.length; i++) {
+    var r = _lastParsedRecords[i];
+    var vals = headers.map(function(h) { return r[h] !== undefined ? r[h] : ''; });
+    lines.push(vals.join(','));
+  }
+  return lines.join('\n');
 };
 
 ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {

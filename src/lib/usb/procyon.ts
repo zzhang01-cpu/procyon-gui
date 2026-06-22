@@ -498,6 +498,28 @@ export async function downloadData(): Promise<DownloadResult> {
 }
 
 /**
+ * Get parsed records from main process (paginated)
+ */
+export async function getParsedRecords(offset: number, limit: number): Promise<{ records: OneSecondRecord[]; total: number }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.getParsedRecords(offset, limit) as Promise<{ records: OneSecondRecord[]; total: number }>;
+}
+
+/**
+ * Export all parsed records as CSV string (generated in main process)
+ */
+export async function exportRecordsCsv(): Promise<{ csv: string; count: number }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.exportRecordsCsv() as Promise<{ csv: string; count: number }>;
+}
+
+/**
  * Register a callback for download progress events
  */
 export function onDownloadProgress(callback: (progress: DownloadProgress) => void): () => void {

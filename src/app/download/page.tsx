@@ -22,8 +22,9 @@ export default function DownloadPage() {
     }
   }, [connected, downloadData]);
 
-  const handleExport = useCallback(() => {
-    const csv = exportData();
+  const handleExport = useCallback(async () => {
+    const csv = await exportData();
+    if (!csv) return;
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

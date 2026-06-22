@@ -36,8 +36,8 @@ export default function WorkHistoryPage() {
     setVisibleGroups(prev => ({ ...prev, [group]: !prev[group] }));
   };
 
-  const handleExport = () => {
-    const csv = exportData();
+  const handleExport = async () => {
+    const csv = await exportData();
     if (!csv) return;
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);

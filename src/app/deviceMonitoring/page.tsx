@@ -3,6 +3,208 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useDevice } from '@/lib/device/context';
 import { useI18n } from '@/lib/i18n/context';
+
+// Sample table component that fetches records from main process on demand
+function SampleTable({ visibleGroups, dm, fmt }: {
+  visibleGroups: { temperature: boolean; battery: boolean; highShock: boolean; lowShock: boolean; rotational: boolean; pressure: boolean };
+  dm: Record<string, string>;
+  fmt: (v: number | undefined, decimals?: number) => string;
+}) {
+  const [sampleRecords, setSampleRecords] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 50;
+
+  useEffect(() => {
+    setLoading(true);
+    (window as any).electronAPI?.getRecordsPage(page * PAGE_SIZE, PAGE_SIZE)
+      .then((records: any[]) => {
+        setSampleRecords(records || []);
+        setLoading(false);
+      })
+      .catch(() => {
+        setSampleRecords([]);
+        setLoading(false);
+      });
+  }, [page]);
+
+  if (loading) {
+    return <div className="text-center py-8 text-gray-400 text-sm">加载数据...</div>;
+  }
+
+  if (sampleRecords.length === 0) {
+    return <div className="text-center py-8 text-gray-400 text-sm">无预览数据</div>;
+  }
+
+  return (
+    <div className="flex-1 flex flex-col border border-gray-200 rounded-lg overflow-hidden">
+      <div className="overflow-auto flex-1">
+        <table className="w-full text-xs border-collapse">
+          <thead className="bg-gray-50 sticky top-0 z-10">
+            <tr>
+              <th className="px-2 py-2 text-left font-semibold text-gray-700 whitespace-nowrap border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20">
+                {dm.timestamp || '时间戳'}
+              </th>
+              {visibleGroups.temperature && (
+                <th className="px-2 py-2 text-center font-semibold text-blue-700 whitespace-nowrap border-b border-r border-gray-200 bg-blue-50">
+                  {dm.temperature || '温度'} (°C)
+                </th>
+              )}
+              {visibleGroups.battery && (
+                <th className="px-2 py-2 text-center font-semibold text-green-700 whitespace-nowrap border-b border-r border-gray-200 bg-green-50">
+                  {dm.batteryVoltage || '电池'} (mV)
+                </th>
+              )}
+              {visibleGroups.highShock && (
+                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-red-700 border-b border-gray-200 bg-red-50 text-xs">
+                  {dm.highShockLabel || '高冲击'} (g)
+                </th>
+              )}
+              {visibleGroups.lowShock && (
+                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-yellow-700 border-b border-gray-200 bg-yellow-50 text-xs">
+                  {dm.lowShockLabel || '低冲击'} (g)
+                </th>
+              )}
+              {visibleGroups.rotational && (
+                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-purple-700 border-b border-gray-200 bg-purple-50 text-xs">
+                  {dm.rotational || '旋转'} (rpm)
+                </th>
+              )}
+              {visibleGroups.pressure && (
+                <th className="px-2 py-2 text-center font-semibold text-cyan-700 whitespace-nowrap border-b border-r border-gray-200 bg-cyan-50">
+                  {dm.pressureLabel || '压力'} (psi)
+                </th>
+              )}
+            </tr>
+            <tr>
+              <th className="px-2 py-1 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20"></th>
+              {visibleGroups.temperature && <th className="px-1 py-1 border-b border-r border-gray-200 bg-blue-50/50"></th>}
+              {visibleGroups.battery && <th className="px-1 py-1 border-b border-r border-gray-200 bg-green-50/50"></th>}
+              {visibleGroups.highShock && (
+                ['X', 'Y', 'Z'].map(axis => (
+                  ['min', 'max', 'avg', 'rms'].map(stat => (
+                    <th key={`hs-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-red-50/30 text-[10px]">
+                      {axis}_{stat}
+                    </th>
+                  ))
+                )).flat()
+              )}
+              {visibleGroups.lowShock && (
+                ['X', 'Y', 'Z'].map(axis => (
+                  ['min', 'max', 'avg', 'rms'].map(stat => (
+                    <th key={`ls-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-yellow-50/30 text-[10px]">
+                      {axis}_{stat}
+                    </th>
+                  ))
+                )).flat()
+              )}
+              {visibleGroups.rotational && (
+                ['X', 'Y', 'Z'].map(axis => (
+                  ['min', 'max', 'avg', 'rms'].map(stat => (
+                    <th key={`rot-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-purple-50/30 text-[10px]">
+                      {axis}_{stat}
+                    </th>
+                  ))
+                )).flat()
+              )}
+              {visibleGroups.pressure && <th className="px-1 py-1 border-b border-r border-gray-200 bg-cyan-50/50"></th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {sampleRecords.map((record, idx) => (
+              <tr key={idx} className={idx === 0 ? 'bg-blue-50/30' : 'hover:bg-gray-50/50'}>
+                <td className="px-2 py-1.5 text-gray-700 whitespace-nowrap font-mono border-r border-gray-100 sticky left-0 bg-white">
+                  {record.timestamp}
+                </td>
+                {visibleGroups.temperature && (
+                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
+                    {fmt(record.temperature, 4)}
+                  </td>
+                )}
+                {visibleGroups.battery && (
+                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
+                    {fmt(record.batteryVoltage, 0)}
+                  </td>
+                )}
+                {visibleGroups.highShock && (
+                  <>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsZ)}</td>
+                  </>
+                )}
+                {visibleGroups.lowShock && (
+                  <>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinX, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxX, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgX, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsX, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinY, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxY, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgY, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsY, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinZ, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxZ, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgZ, 4)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsZ, 4)}</td>
+                  </>
+                )}
+                {visibleGroups.rotational && (
+                  <>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsX)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsY)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgZ)}</td>
+                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsZ)}</td>
+                  </>
+                )}
+                {visibleGroups.pressure && (
+                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
+                    {fmt(record.pressure)}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {/* Pagination */}
+      <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-t border-gray-200 text-xs text-gray-600">
+        <button
+          onClick={() => setPage(Math.max(0, page - 1))}
+          disabled={page === 0}
+          className="px-3 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-30"
+        >
+          上一页
+        </button>
+        <span>第 {page + 1} 页 (每页 {PAGE_SIZE} 条)</span>
+        <button
+          onClick={() => setPage(page + 1)}
+          disabled={sampleRecords.length < PAGE_SIZE}
+          className="px-3 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-30"
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+  );
+}
 import type { OneSecondRecord } from '@/lib/usb/procyon';
 
 export default function DeviceMonitoringPage() {
@@ -390,8 +592,8 @@ export default function DeviceMonitoringPage() {
   };
 
   // Export using context's exportData (full format from procyon.ts)
-  const handleExportFullCSV = () => {
-    const csv = exportData();
+  const handleExportFullCSV = async () => {
+    const csv = await exportData();
     if (!csv) return;
     const BOM = '\uFEFF';
     const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
@@ -431,7 +633,9 @@ export default function DeviceMonitoringPage() {
       );
     }
 
-    if (downloadedData.length === 0) {
+    const recordCount = downloadedData.length > 0 ? (downloadedData[0] as any)._count || downloadedData.length : 0;
+
+    if (recordCount === 0) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center py-16 text-gray-400">
           <svg className="w-16 h-16 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -469,155 +673,67 @@ export default function DeviceMonitoringPage() {
       );
     }
 
+    // Data summary view with export button
     return (
-      <div className="flex-1 overflow-auto border border-gray-200 rounded-lg">
-        <table className="w-full text-xs border-collapse">
-          <thead className="bg-gray-50 sticky top-0 z-10">
-            <tr>
-              <th className="px-2 py-2 text-left font-semibold text-gray-700 whitespace-nowrap border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20">
-                {dm.timestamp || '时间戳'}
-              </th>
-              {visibleGroups.temperature && (
-                <th className="px-2 py-2 text-center font-semibold text-blue-700 whitespace-nowrap border-b border-r border-gray-200 bg-blue-50">
-                  {dm.temperature || '温度'} (°C)
-                </th>
-              )}
-              {visibleGroups.battery && (
-                <th className="px-2 py-2 text-center font-semibold text-green-700 whitespace-nowrap border-b border-r border-gray-200 bg-green-50">
-                  {dm.batteryVoltage || '电池'} (mV)
-                </th>
-              )}
-              {visibleGroups.highShock && (
-                <>
-                  <th colSpan={12} className="px-2 py-1 text-center font-semibold text-red-700 border-b border-gray-200 bg-red-50 text-xs">
-                    {dm.highShockLabel || '高冲击'} (g)
-                  </th>
-                </>
-              )}
-              {visibleGroups.lowShock && (
-                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-yellow-700 border-b border-gray-200 bg-yellow-50 text-xs">
-                  {dm.lowShockLabel || '低冲击'} (g)
-                </th>
-              )}
-              {visibleGroups.rotational && (
-                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-purple-700 border-b border-gray-200 bg-purple-50 text-xs">
-                  {dm.rotational || '旋转'} (rpm)
-                </th>
-              )}
-              {visibleGroups.pressure && (
-                <th className="px-2 py-2 text-center font-semibold text-cyan-700 whitespace-nowrap border-b border-r border-gray-200 bg-cyan-50">
-                  {dm.pressureLabel || '压力'} (psi)
-                </th>
-              )}
-            </tr>
-            {/* Sub-headers for X/Y/Z min/max/avg/rms */}
-            <tr>
-              <th className="px-2 py-1 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20"></th>
-              {visibleGroups.temperature && <th className="px-1 py-1 border-b border-r border-gray-200 bg-blue-50/50"></th>}
-              {visibleGroups.battery && <th className="px-1 py-1 border-b border-r border-gray-200 bg-green-50/50"></th>}
-              {visibleGroups.highShock && (
-                ['X', 'Y', 'Z'].map(axis => (
-                  ['min', 'max', 'avg', 'rms'].map(stat => (
-                    <th key={`hs-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-red-50/30 text-[10px]">
-                      {axis}_{stat}
-                    </th>
-                  ))
-                )).flat()
-              )}
-              {visibleGroups.lowShock && (
-                ['X', 'Y', 'Z'].map(axis => (
-                  ['min', 'max', 'avg', 'rms'].map(stat => (
-                    <th key={`ls-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-yellow-50/30 text-[10px]">
-                      {axis}_{stat}
-                    </th>
-                  ))
-                )).flat()
-              )}
-              {visibleGroups.rotational && (
-                ['X', 'Y', 'Z'].map(axis => (
-                  ['min', 'max', 'avg', 'rms'].map(stat => (
-                    <th key={`rot-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-purple-50/30 text-[10px]">
-                      {axis}_{stat}
-                    </th>
-                  ))
-                )).flat()
-              )}
-              {visibleGroups.pressure && <th className="px-1 py-1 border-b border-r border-gray-200 bg-cyan-50/50"></th>}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {downloadedData.map((record, idx) => (
-              <tr key={idx} className={idx === 0 ? 'bg-blue-50/30' : 'hover:bg-gray-50/50'}>
-                <td className="px-2 py-1.5 text-gray-700 whitespace-nowrap font-mono border-r border-gray-100 sticky left-0 bg-white">
-                  {record.timestamp}
-                </td>
-                {visibleGroups.temperature && (
-                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
-                    {fmt(record.temperature, 4)}
-                  </td>
-                )}
-                {visibleGroups.battery && (
-                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
-                    {fmt(record.batteryVoltage, 0)}
-                  </td>
-                )}
-                {visibleGroups.highShock && (
-                  <>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsZ)}</td>
-                  </>
-                )}
-                {visibleGroups.lowShock && (
-                  <>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinX, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxX, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgX, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsX, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinY, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxY, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgY, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsY, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinZ, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxZ, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgZ, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsZ, 4)}</td>
-                  </>
-                )}
-                {visibleGroups.rotational && (
-                  <>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsZ)}</td>
-                  </>
-                )}
-                {visibleGroups.pressure && (
-                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
-                    {fmt(record.pressure)}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="flex-1 flex flex-col">
+        {/* Summary bar */}
+        <div className="flex items-center gap-4 px-4 py-3 bg-green-50 border border-green-200 rounded-lg mb-3">
+          <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span className="text-sm font-semibold text-green-800">
+            下载成功: {recordCount.toLocaleString()} 条 OneSecond 记录
+          </span>
+          <div className="flex-1" />
+          <button
+            onClick={async () => {
+              try {
+                const csv = await (window as any).electronAPI.exportCSV();
+                if (csv) {
+                  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'procyon_data_' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.csv';
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } else {
+                  alert('导出失败: 无数据');
+                }
+              } catch (err) {
+                alert('导出失败: ' + (err instanceof Error ? err.message : String(err)));
+              }
+            }}
+            className="px-4 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 flex items-center gap-1.5"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            导出 CSV
+          </button>
+          <button
+            onClick={handleDownload}
+            disabled={!connected || isDownloading}
+            className="px-4 py-1.5 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+          >
+            重新下载
+          </button>
+        </div>
+
+        {/* Sample data preview (first 100 records from main process) */}
+        <SampleTable visibleGroups={visibleGroups} dm={dm} fmt={fmt} />
+
+        {/* Debug log */}
+        {debugLog.length > 0 && (
+          <div className="mt-3 p-3 bg-gray-100 border border-gray-200 rounded-lg">
+            <p className="text-xs font-semibold text-gray-600 mb-1">调试日志:</p>
+            <div className="text-xs text-gray-500 font-mono space-y-0.5 max-h-32 overflow-y-auto">
+              {debugLog.map((log, i) => (
+                <div key={i}>{log}</div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
