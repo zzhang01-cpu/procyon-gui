@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-22-v38 (rewritten record parser, multi-CSV output, fixed A0 size=81)
+ * VERSION: 2024-06-22-v39 (fixed record boundary detection, timestamp from record offset, multi-CSV)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -141,7 +141,6 @@ var libusbInitialized = false;
 var _lastParsedRecords = [];
 var _lastPhoenixRecords = [];
 var _lastParseDebug = null;
-var _lastDeviceTime = null;
 
 function ensureLibusbInit() {
   if (!libusbInitialized) {
@@ -1093,8 +1092,13 @@ ProcyonUsbBridge.prototype.eraseMemory = async function(eraseAll) {
 //   0xA0 OneSecondData: 81 bytes (1 type + 2 temp + 2 batt + 12×2 rpm + 12×2 shockLow + 12×2 shock + 2 lateralMax + 2 lateralRms)
 //   0xD1 PhoenixOneSecondData: 9 bytes (1 type + 2 psiMin + 2 psiMax + 2 psiAvg + 2 tempAvg)
 //   0xFF Flush: 1 byte, 0xFE LoggingSystemError: 1 byte, 0xD0 DebugEvent: 1 byte
-//   0x01 FirmwareVersion: variable, 0x02 Reset: 5B, 0x0D FlashDeviceID: 2B
 //   csv_chain records (0x80/0x90/0x91): fixed sample size, chain ends at next different type
+//
+// STRATEGY: Sequential parsing with validation.
+// We start from offset 0 and parse records sequentially by their known sizes.
+// If an 0xA0 record has temperature outside [-40,150]°C, we scan forward to find
+// the next valid 0xA0 boundary and resume from there.
+// This handles variable-size records (0x01 FirmwareVersion) that may misalign.
 function parseDownloadedRecords(partitions) {
   var oneSecondRecords = [];   // 0xA0 records
   var phoenixRecords = [];     // 0xD1 records
@@ -1131,14 +1135,36 @@ function parseDownloadedRecords(partitions) {
     }
     debug.push('P' + part.partition + ': ' + buf.length + ' bytes, first64=' + firstHex.join(' '));
 
-    // Sequential record parsing - records are packed sequentially in flash
-    // csv_chain records (0x80/0x90/0x91/0xA0/0xD1) have same-type samples grouped together
+    // Record sizes by type (from RecordFormatFiles.json v2.1+)
+    var REC_SIZES = {};
+    REC_SIZES[0x01] = -1;  // FirmwareVersion: variable size
+    REC_SIZES[0x02] = 5;   // Reset: 1 + b32(4)
+    REC_SIZES[0x0D] = 2;   // FlashDeviceID: 1 + u8
+    REC_SIZES[0x0E] = 3;   // FlashBadBlockList: 1 + u16
+    REC_SIZES[0x1F] = 2;   // UsbConnection: 1 + u8
+    REC_SIZES[0x80] = 3;   // RpmAxialWaveform(csv_chain): 1 + s16
+    REC_SIZES[0x81] = 5;   // GyroTagDataCorrupt: 1 + u32
+    REC_SIZES[0x82] = 5;   // StickSlip: 1 + f32
+    REC_SIZES[0x90] = 7;   // AccelWaveform(csv_chain): 1 + 3×s16
+    REC_SIZES[0x91] = 7;   // LowShockWaveform(csv_chain): 1 + 3×s16
+    REC_SIZES[0xA0] = 81;  // OneSecondData(csv_chain): 1 + 40×s16
+    REC_SIZES[0xB0] = 9;   // ParameterErrorHardware(csv_chain): 1+1+1+4+2
+    REC_SIZES[0xB1] = 6;   // ParameterErrorCrc: 1+1+2+2
+    REC_SIZES[0xB2] = 2;   // ParameterErrorRangeCheck: 1+1
+    REC_SIZES[0xB3] = 1;   // BufferedEventOverflow(csv_chain): type only
+    REC_SIZES[0xB4] = 1;   // BufferedEventError(csv_chain): type only
+    REC_SIZES[0xD0] = 1;   // DebugEvent0: type only
+    REC_SIZES[0xD1] = 9;   // PhoenixOneSecondData(csv_chain): 1 + 4×s16
+    REC_SIZES[0xFE] = 1;   // LoggingSystemError(csv_chain): type only
+    REC_SIZES[0xFF] = 1;   // Flush: type only
+
+    var A0_SIZE = 81;
+    var D1_SIZE = 9;
     var i = 0;
     var a0Count = 0, d1Count = 0;
     var typeCounts = {};
-    var chainAccum = {};  // track csv_chain record counts per type
-    var lastTimestamp = null;
     var validTempCount = 0, invalidTempCount = 0;
+    var resyncCount = 0;
 
     while (i < buf.length) {
       // Skip 0xFF padding (erased flash bytes)
@@ -1152,181 +1178,225 @@ function parseDownloadedRecords(partitions) {
       var recType = buf[i];
       typeCounts[recType] = (typeCounts[recType] || 0) + 1;
 
-      switch (recType) {
-        case 0xA0: { // OneSecondData (81 bytes: 1 type + 40 × s16)
-          var A0_SIZE = 81;
-          if (i + A0_SIZE > buf.length) { i++; break; }
-          try {
-            var off = i + 1; // skip type byte
-            var temperature = buf.readInt16LE(off) * 0.03125; off += 2;
-            var batteryV = buf.readInt16LE(off) * 0.001027; off += 2;
-            // RPM (12 × s16, 4 fields × 3 axes)
-            var rpmMinX = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmMaxX = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmAvgX = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmRmsX = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmMinY = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmMaxY = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmAvgY = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmRmsY = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmMinZ = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmMaxZ = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmAvgZ = buf.readInt16LE(off) * 0.02333; off += 2;
-            var rpmRmsZ = buf.readInt16LE(off) * 0.02333; off += 2;
-            // LowShock (12 × s16, scale=0.000244)
-            var shockLowMinX = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowMaxX = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowAvgX = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowRmsX = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowMinY = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowMaxY = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowAvgY = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowRmsY = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowMinZ = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowMaxZ = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowAvgZ = buf.readInt16LE(off) * 0.000244; off += 2;
-            var shockLowRmsZ = buf.readInt16LE(off) * 0.000244; off += 2;
-            // HighShock (14 × s16, 4×3 + 2 lateral, scale=0.2)
-            var shockMinX = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockMaxX = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockAvgX = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockRmsX = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockMinY = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockMaxY = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockAvgY = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockRmsY = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockMinZ = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockMaxZ = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockAvgZ = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockRmsZ = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockLateralMax = buf.readInt16LE(off) * 0.2; off += 2;
-            var shockLateralRms = buf.readInt16LE(off) * 0.2; off += 2;
+      if (recType === 0xA0) {
+        // === OneSecondData: validate before parsing ===
+        if (i + A0_SIZE > buf.length) { i++; continue; }
 
-            oneSecondRecords.push({
-              recordType: 0xA0,
-              timestamp: 0,
-              temperature: Math.round(temperature * 10000) / 10000,
-              batteryV: Math.round(batteryV * 1000) / 1000,
-              rpmMinX: Math.round(rpmMinX * 100) / 100,
-              rpmMaxX: Math.round(rpmMaxX * 100) / 100,
-              rpmAvgX: Math.round(rpmAvgX * 100) / 100,
-              rpmRmsX: Math.round(rpmRmsX * 100) / 100,
-              rpmMinY: Math.round(rpmMinY * 100) / 100,
-              rpmMaxY: Math.round(rpmMaxY * 100) / 100,
-              rpmAvgY: Math.round(rpmAvgY * 100) / 100,
-              rpmRmsY: Math.round(rpmRmsY * 100) / 100,
-              rpmMinZ: Math.round(rpmMinZ * 100) / 100,
-              rpmMaxZ: Math.round(rpmMaxZ * 100) / 100,
-              rpmAvgZ: Math.round(rpmAvgZ * 100) / 100,
-              rpmRmsZ: Math.round(rpmRmsZ * 100) / 100,
-              shockLowMinX: Math.round(shockLowMinX * 1000000) / 1000000,
-              shockLowMaxX: Math.round(shockLowMaxX * 1000000) / 1000000,
-              shockLowAvgX: Math.round(shockLowAvgX * 1000000) / 1000000,
-              shockLowRmsX: Math.round(shockLowRmsX * 1000000) / 1000000,
-              shockLowMinY: Math.round(shockLowMinY * 1000000) / 1000000,
-              shockLowMaxY: Math.round(shockLowMaxY * 1000000) / 1000000,
-              shockLowAvgY: Math.round(shockLowAvgY * 1000000) / 1000000,
-              shockLowRmsY: Math.round(shockLowRmsY * 1000000) / 1000000,
-              shockLowMinZ: Math.round(shockLowMinZ * 1000000) / 1000000,
-              shockLowMaxZ: Math.round(shockLowMaxZ * 1000000) / 1000000,
-              shockLowAvgZ: Math.round(shockLowAvgZ * 1000000) / 1000000,
-              shockLowRmsZ: Math.round(shockLowRmsZ * 1000000) / 1000000,
-              shockMinX: Math.round(shockMinX * 100) / 100,
-              shockMaxX: Math.round(shockMaxX * 100) / 100,
-              shockAvgX: Math.round(shockAvgX * 100) / 100,
-              shockRmsX: Math.round(shockRmsX * 100) / 100,
-              shockMinY: Math.round(shockMinY * 100) / 100,
-              shockMaxY: Math.round(shockMaxY * 100) / 100,
-              shockAvgY: Math.round(shockAvgY * 100) / 100,
-              shockRmsY: Math.round(shockRmsY * 100) / 100,
-              shockMinZ: Math.round(shockMinZ * 100) / 100,
-              shockMaxZ: Math.round(shockMaxZ * 100) / 100,
-              shockAvgZ: Math.round(shockAvgZ * 100) / 100,
-              shockRmsZ: Math.round(shockRmsZ * 100) / 100,
-              shockLateralMax: Math.round(shockLateralMax * 100) / 100,
-              shockLateralRms: Math.round(shockLateralRms * 100) / 100,
-              partition: part.partition
-            });
-            a0Count++;
-            if (temperature >= -40 && temperature <= 150) validTempCount++;
-            else invalidTempCount++;
-          } catch(e) {
-            // Skip malformed record
+        // Validate: temperature must be in reasonable range (-40 to 150°C)
+        var tempRaw = buf.readInt16LE(i + 1);
+        var tempVal = tempRaw * 0.03125;
+
+        if (tempVal < -40 || tempVal > 150) {
+          // Invalid record boundary — scan forward for next valid 0xA0
+          typeCounts[recType]--;
+          resyncCount++;
+          if (resyncCount <= 3) {
+            debug.push('P' + part.partition + ' @' + i + ': invalid A0 temp=' + tempVal.toFixed(2) + ' (raw=' + tempRaw + '), scanning for next valid A0...');
           }
-          i += A0_SIZE;
-          break;
+          // Scan forward: look for 0xA0 byte with valid temperature
+          var found = false;
+          for (var scan = i + 1; scan < buf.length - A0_SIZE; scan++) {
+            if (buf[scan] === 0xA0) {
+              var scanTemp = buf.readInt16LE(scan + 1) * 0.03125;
+              if (scanTemp >= -40 && scanTemp <= 150) {
+                debug.push('P' + part.partition + ': resynced from ' + i + ' to ' + scan + ' (temp=' + scanTemp.toFixed(2) + ')');
+                i = scan;
+                found = true;
+                break;
+              }
+            }
+          }
+          if (!found) { i++; continue; }
+          // Re-read at new position
+          recType = buf[i];
+          tempRaw = buf.readInt16LE(i + 1);
+          tempVal = tempRaw * 0.03125;
         }
 
-        case 0xD1: { // PhoenixOneSecondData (9 bytes: 1 type + 4 × s16)
-          var D1_SIZE = 9;
-          if (i + D1_SIZE > buf.length) { i++; break; }
-          try {
-            var off2 = i + 1;
-            var psiMin = buf.readInt16LE(off2); off2 += 2;
-            var psiMax = buf.readInt16LE(off2); off2 += 2;
-            var psiAvg = buf.readInt16LE(off2); off2 += 2;
-            var tempAvg = buf.readInt16LE(off2); off2 += 2;
-            phoenixRecords.push({
-              recordType: 0xD1,
-              timestamp: 0,
-              psiMin: psiMin,
-              psiMax: psiMax,
-              psiAvg: psiAvg,
-              tempAvg: tempAvg,
-              partition: part.partition
-            });
-            d1Count++;
-          } catch(e) {}
-          i += D1_SIZE;
-          break;
-        }
+        try {
+          var off = i + 1; // skip type byte
+          var temperature = buf.readInt16LE(off) * 0.03125; off += 2;
+          var batteryV = buf.readInt16LE(off) * 0.001027; off += 2;
+          // RPM (12 × s16, scale=0.02333)
+          var rpmMinX = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmMaxX = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmAvgX = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmRmsX = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmMinY = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmMaxY = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmAvgY = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmRmsY = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmMinZ = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmMaxZ = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmAvgZ = buf.readInt16LE(off) * 0.02333; off += 2;
+          var rpmRmsZ = buf.readInt16LE(off) * 0.02333; off += 2;
+          // LowShock (12 × s16, scale=0.000244)
+          var shockLowMinX = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowMaxX = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowAvgX = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowRmsX = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowMinY = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowMaxY = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowAvgY = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowRmsY = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowMinZ = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowMaxZ = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowAvgZ = buf.readInt16LE(off) * 0.000244; off += 2;
+          var shockLowRmsZ = buf.readInt16LE(off) * 0.000244; off += 2;
+          // HighShock (14 × s16, scale=0.2)
+          var shockMinX = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockMaxX = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockAvgX = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockRmsX = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockMinY = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockMaxY = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockAvgY = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockRmsY = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockMinZ = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockMaxZ = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockAvgZ = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockRmsZ = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockLateralMax = buf.readInt16LE(off) * 0.2; off += 2;
+          var shockLateralRms = buf.readInt16LE(off) * 0.2; off += 2;
 
-        case 0x01: { // FirmwareVersion - variable size, guess 4 bytes (1 type + 3 version bytes)
-          // Try to detect size: version bytes end at next known record type
-          var j = i + 1;
-          var verEnd = j;
-          while (j < buf.length && j < i + 20) {
-            var nextB = buf[j];
-            if (nextB === 0xA0 || nextB === 0xD1 || nextB === 0xFF || nextB === 0xFE ||
-                nextB === 0x02 || nextB === 0x0D || nextB === 0x0E || nextB === 0x1F ||
-                nextB === 0x80 || nextB === 0x81 || nextB === 0x82 || nextB === 0x90 ||
-                nextB === 0x91 || nextB === 0xD0 ||
-                (nextB >= 0xB0 && nextB <= 0xB4)) {
-              verEnd = j;
+          oneSecondRecords.push({
+            recordType: 0xA0,
+            timestamp: 0, // Will be set after all records are collected
+            temperature: Math.round(temperature * 10000) / 10000,
+            batteryV: Math.round(batteryV * 1000) / 1000,
+            rpmMinX: Math.round(rpmMinX * 100) / 100, rpmMaxX: Math.round(rpmMaxX * 100) / 100,
+            rpmAvgX: Math.round(rpmAvgX * 100) / 100, rpmRmsX: Math.round(rpmRmsX * 100) / 100,
+            rpmMinY: Math.round(rpmMinY * 100) / 100, rpmMaxY: Math.round(rpmMaxY * 100) / 100,
+            rpmAvgY: Math.round(rpmAvgY * 100) / 100, rpmRmsY: Math.round(rpmRmsY * 100) / 100,
+            rpmMinZ: Math.round(rpmMinZ * 100) / 100, rpmMaxZ: Math.round(rpmMaxZ * 100) / 100,
+            rpmAvgZ: Math.round(rpmAvgZ * 100) / 100, rpmRmsZ: Math.round(rpmRmsZ * 100) / 100,
+            shockLowMinX: Math.round(shockLowMinX * 1000000) / 1000000,
+            shockLowMaxX: Math.round(shockLowMaxX * 1000000) / 1000000,
+            shockLowAvgX: Math.round(shockLowAvgX * 1000000) / 1000000,
+            shockLowRmsX: Math.round(shockLowRmsX * 1000000) / 1000000,
+            shockLowMinY: Math.round(shockLowMinY * 1000000) / 1000000,
+            shockLowMaxY: Math.round(shockLowMaxY * 1000000) / 1000000,
+            shockLowAvgY: Math.round(shockLowAvgY * 1000000) / 1000000,
+            shockLowRmsY: Math.round(shockLowRmsY * 1000000) / 1000000,
+            shockLowMinZ: Math.round(shockLowMinZ * 1000000) / 1000000,
+            shockLowMaxZ: Math.round(shockLowMaxZ * 1000000) / 1000000,
+            shockLowAvgZ: Math.round(shockLowAvgZ * 1000000) / 1000000,
+            shockLowRmsZ: Math.round(shockLowRmsZ * 1000000) / 1000000,
+            shockMinX: Math.round(shockMinX * 100) / 100, shockMaxX: Math.round(shockMaxX * 100) / 100,
+            shockAvgX: Math.round(shockAvgX * 100) / 100, shockRmsX: Math.round(shockRmsX * 100) / 100,
+            shockMinY: Math.round(shockMinY * 100) / 100, shockMaxY: Math.round(shockMaxY * 100) / 100,
+            shockAvgY: Math.round(shockAvgY * 100) / 100, shockRmsY: Math.round(shockRmsY * 100) / 100,
+            shockMinZ: Math.round(shockMinZ * 100) / 100, shockMaxZ: Math.round(shockMaxZ * 100) / 100,
+            shockAvgZ: Math.round(shockAvgZ * 100) / 100, shockRmsZ: Math.round(shockRmsZ * 100) / 100,
+            shockLateralMax: Math.round(shockLateralMax * 100) / 100,
+            shockLateralRms: Math.round(shockLateralRms * 100) / 100,
+            partition: part.partition
+          });
+          a0Count++;
+          if (tempVal >= -40 && tempVal <= 150) validTempCount++;
+          else invalidTempCount++;
+        } catch(e) {
+          // Skip malformed record
+        }
+        i += A0_SIZE;
+
+      } else if (recType === 0xD1) {
+        // === PhoenixOneSecondData ===
+        if (i + D1_SIZE > buf.length) { i++; continue; }
+        try {
+          var off2 = i + 1;
+          // s16 fields with appropriate scales
+          // PsiMin/Max/Avg: raw s16 values, scale TBD (output raw for now, will be calibrated)
+          var psiMin = buf.readInt16LE(off2); off2 += 2;
+          var psiMax = buf.readInt16LE(off2); off2 += 2;
+          var psiAvg = buf.readInt16LE(off2); off2 += 2;
+          // TempAvg: s16 with scale=0.03125 (same as OneSecondData temperature)
+          var phoenixTempAvg = buf.readInt16LE(off2) * 0.03125; off2 += 2;
+          phoenixRecords.push({
+            recordType: 0xD1,
+            timestamp: 0,
+            psiMin: psiMin,
+            psiMax: psiMax,
+            psiAvg: psiAvg,
+            tempAvg: Math.round(phoenixTempAvg * 10000) / 10000,
+            partition: part.partition
+          });
+          d1Count++;
+        } catch(e) {}
+        i += D1_SIZE;
+
+      } else if (recType === 0x01) {
+        // === FirmwareVersion: variable size ===
+        // Cannot reliably determine size from content.
+        // Strategy: scan forward for next validated 0xA0 or 0xD1 boundary.
+        var j = i + 1;
+        var foundNext = false;
+        while (j < buf.length - A0_SIZE) {
+          if (buf[j] === 0xA0) {
+            // Validate: temperature in [-40, 150]
+            var vTemp = buf.readInt16LE(j + 1) * 0.03125;
+            if (vTemp >= -40 && vTemp <= 150) {
+              i = j;
+              foundNext = true;
               break;
             }
-            j++;
+          } else if (buf[j] === 0xD1) {
+            // Validate: psiMin should be small (0-50000 range)
+            var vPsi = buf.readInt16LE(j + 1);
+            if (vPsi >= -1000 && vPsi <= 100000) {
+              i = j;
+              foundNext = true;
+              break;
+            }
+          } else if (buf[j] === 0xFF) {
+            // FF padding - jump past it
+            i = j;
+            foundNext = true;
+            break;
           }
-          if (verEnd <= i + 1) verEnd = i + 4; // fallback minimum 4 bytes
-          i = verEnd;
-          break;
+          j++;
+          // Safety: don't scan more than 500 bytes
+          if (j > i + 500) break;
         }
+        if (!foundNext) i = j;
 
-        case 0x02: i += 5; break;   // Reset: 1 + b32(4) = 5
-        case 0x0D: i += 2; break;   // FlashDeviceID: 1 + u8(1) = 2
-        case 0x0E: i += 3; break;   // FlashBadBlockList: 1 + u16(2) = 3
-        case 0x1F: i += 2; break;   // UsbConnection: 1 + u8(1) = 2
-        case 0x80: i += 3; break;   // RpmAxialWaveform(csv_chain): 1 + s16(2) = 3 per sample
-        case 0x81: i += 5; break;   // GyroTagDataCorrupt: 1 + u32(4) = 5
-        case 0x82: i += 5; break;   // StickSlip: 1 + f32(4) = 5
-        case 0x90: i += 7; break;   // AccelWaveform(csv_chain): 1 + 3×s16(6) = 7 per sample
-        case 0x91: i += 7; break;   // LowShockWaveform(csv_chain): 1 + 3×s16(6) = 7 per sample
-        case 0xB0: i += 9; break;   // ParameterErrorHardware(csv_chain): 1+1+1+4+2=9
-        case 0xB1: i += 6; break;   // ParameterErrorCrc: 1+1+2+2=6
-        case 0xB2: i += 2; break;   // ParameterErrorRangeCheck: 1+1=2
-        case 0xB3: i += 1; break;   // BufferedEventOverflow(csv_chain): 1
-        case 0xB4: i += 1; break;   // BufferedEventError(csv_chain): 1
-        case 0xD0: i += 1; break;   // DebugEvent0: 1
-        case 0xFE: i += 1; break;   // LoggingSystemError(csv_chain): 1
-        default:
-          // Unknown byte - could be padding or corrupted data, skip
-          i++;
-          break;
+      } else {
+        // All other record types: use fixed size from table
+        var sz = REC_SIZES[recType];
+        if (sz && sz > 0) {
+          i += sz;
+        } else {
+          // Unknown type or variable-size type we can't handle:
+          // scan forward to next validated 0xA0 or 0xD1 boundary
+          var j2 = i + 1;
+          var foundNext2 = false;
+          while (j2 < buf.length - A0_SIZE) {
+            if (buf[j2] === 0xA0) {
+              var vTemp2 = buf.readInt16LE(j2 + 1) * 0.03125;
+              if (vTemp2 >= -40 && vTemp2 <= 150) {
+                i = j2;
+                foundNext2 = true;
+                break;
+              }
+            } else if (buf[j2] === 0xD1) {
+              i = j2;
+              foundNext2 = true;
+              break;
+            } else if (buf[j2] === 0xFF) {
+              i = j2;
+              foundNext2 = true;
+              break;
+            }
+            j2++;
+            if (j2 > i + 500) break;
+          }
+          if (!foundNext2) i = j2;
+        }
       }
     }
 
     var typeStr = Object.keys(typeCounts).map(function(k) { return '0x' + parseInt(k).toString(16) + '=' + typeCounts[k]; }).join(', ');
-    debug.push('P' + part.partition + ': A0=' + a0Count + ', D1=' + d1Count + ', types: ' + typeStr);
+    debug.push('P' + part.partition + ': A0=' + a0Count + ', D1=' + d1Count + ', resyncs=' + resyncCount + ', types: ' + typeStr);
     debug.push('P' + part.partition + ': temp valid=' + validTempCount + ', invalid=' + invalidTempCount +
       ' (valid range: -40 to 150°C)');
     if (a0Count > 0) {
@@ -1335,13 +1405,15 @@ function parseDownloadedRecords(partitions) {
     }
   }
 
-  // Generate timestamps - records are stored newest-first, each record is 1 second
-  // The last record in the array is the oldest
+  // Generate timestamps: use current download time as the "now" end
+  // Records are stored newest-first in flash, so the first record is most recent
+  // Each record = 1 second, counting backward from download time
+  var nowMs = Date.now();
   for (var ti = 0; ti < oneSecondRecords.length; ti++) {
-    oneSecondRecords[ti].timestamp = ti; // sequential index, will be converted to datetime in CSV
+    oneSecondRecords[ti].timestamp = nowMs - (oneSecondRecords.length - 1 - ti) * 1000;
   }
   for (var ti2 = 0; ti2 < phoenixRecords.length; ti2++) {
-    phoenixRecords[ti2].timestamp = ti2;
+    phoenixRecords[ti2].timestamp = nowMs - (phoenixRecords.length - 1 - ti2) * 1000;
   }
 
   debug.push('Total OneSecondData records: ' + oneSecondRecords.length);
@@ -1378,17 +1450,6 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       }
     } catch(e) {
       chunkReadDebug.push('[Step0] Pre-flight FAILED: ' + e.message);
-    }
-
-    // Capture device time for CSV timestamp generation
-    try {
-      var dtResp = await this.getDeviceTime();
-      if (dtResp.success && dtResp.timestamp) {
-        _lastDeviceTime = dtResp.timestamp;
-        chunkReadDebug.push('[Step0] Device time: ' + dtResp.date + ' (ts=' + dtResp.timestamp + ')');
-      }
-    } catch(e) {
-      chunkReadDebug.push('[Step0] Could not get device time: ' + e.message);
     }
 
     // === Step 0.1: If USB not working, try clearHalt recovery ===
@@ -1910,7 +1971,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     _lastPhoenixRecords = parseResult.phoenixRecords;
     _lastParseDebug = parseResult.debug;
     var totalRecords = parseResult.oneSecondRecords.length + parseResult.phoenixRecords.length;
-    console.log('[v38] Stored ' + parseResult.oneSecondRecords.length + ' A0 + ' + parseResult.phoenixRecords.length + ' D1 records in main process');
+    console.log('[v39] Stored ' + parseResult.oneSecondRecords.length + ' A0 + ' + parseResult.phoenixRecords.length + ' D1 records in main process');
 
     return {
       success: true,
@@ -1961,11 +2022,10 @@ ProcyonUsbBridge.prototype.exportRecordsCsv = function() {
     'ShockLateralMax', 'ShockLateralRms'];
   
   var lines = [headers.join(',')];
-  var startTime = _lastDeviceTime ? _lastDeviceTime * 1000 : Date.now();
   for (var i = 0; i < _lastParsedRecords.length; i++) {
     var r = _lastParsedRecords[i];
-    var ts = new Date(startTime + i * 1000);
-    var timeStr = ts.toISOString().replace('T', ' ').replace('Z', '').slice(0, 19);
+    var d = new Date(r.timestamp);
+    var timeStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
     var vals = [timeStr, r.temperature, r.batteryV,
       r.rpmMinX, r.rpmMaxX, r.rpmAvgX, r.rpmRmsX,
       r.rpmMinY, r.rpmMaxY, r.rpmAvgY, r.rpmRmsY,
@@ -2012,24 +2072,9 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
       }
     }
 
-    // Get device start time for timestamp calculation
-    // Records are stored newest-first, each = 1 second
-    // Estimate start time from last record
-    var startTime = Date.now(); // fallback
-    try {
-      if (_lastDeviceTime) {
-        startTime = _lastDeviceTime * 1000; // unix timestamp to ms
-      }
-    } catch(e) {}
-
     var a0 = _lastParsedRecords;
     var d1 = _lastPhoenixRecords || [];
 
-    // Total A0 records determine the time span
-    var totalA0 = a0.length;
-    // The last A0 record is the oldest (index 0 = newest? or 0 = oldest?)
-    // From the DLL: records are stored chronologically (oldest first in flash)
-    // After download, they appear in order: oldest at index 0
     // Each record = 1 second
 
     // Generate timestamp string for filename
@@ -2042,15 +2087,23 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
 
     var savedFiles = [];
 
+    // Helper: format timestamp from record
+    function fmtTime(rec) {
+      var d = new Date(rec.timestamp);
+      return d.getFullYear() + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0') + ' ' +
+        String(d.getHours()).padStart(2, '0') + ':' +
+        String(d.getMinutes()).padStart(2, '0') + ':' +
+        String(d.getSeconds()).padStart(2, '0');
+    }
+
     // 1. Temperature CSV
     var tempHeaders = ['Time', 'Temperature(C)', 'BatteryV'];
     var tempLines = [tempHeaders.join(',')];
     for (var i = 0; i < a0.length; i++) {
       var r = a0[i];
-      // Timestamp: record i is i seconds from start
-      var ts = new Date(startTime + i * 1000);
-      var timeStr = ts.toISOString().replace('T', ' ').replace('Z', '').slice(0, 19);
-      tempLines.push(timeStr + ',' + r.temperature + ',' + r.batteryV);
+      tempLines.push(fmtTime(r) + ',' + r.temperature + ',' + r.batteryV);
     }
     var tempPath = path.join(saveDir, 'Temperature_' + dateStr + '.csv');
     fs.writeFileSync(tempPath, tempLines.join('\n'), 'utf-8');
@@ -2063,9 +2116,7 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
     var rotLines = [rotHeaders.join(',')];
     for (var i2 = 0; i2 < a0.length; i2++) {
       var r2 = a0[i2];
-      var ts2 = new Date(startTime + i2 * 1000);
-      var timeStr2 = ts2.toISOString().replace('T', ' ').replace('Z', '').slice(0, 19);
-      rotLines.push(timeStr2 + ',' + r2.rpmMinX + ',' + r2.rpmMaxX + ',' + r2.rpmAvgX + ',' + r2.rpmRmsX +
+      rotLines.push(fmtTime(r2) + ',' + r2.rpmMinX + ',' + r2.rpmMaxX + ',' + r2.rpmAvgX + ',' + r2.rpmRmsX +
         ',' + r2.rpmMinY + ',' + r2.rpmMaxY + ',' + r2.rpmAvgY + ',' + r2.rpmRmsY +
         ',' + r2.rpmMinZ + ',' + r2.rpmMaxZ + ',' + r2.rpmAvgZ + ',' + r2.rpmRmsZ);
     }
@@ -2080,9 +2131,7 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
     var lsLines = [lsHeaders.join(',')];
     for (var i3 = 0; i3 < a0.length; i3++) {
       var r3 = a0[i3];
-      var ts3 = new Date(startTime + i3 * 1000);
-      var timeStr3 = ts3.toISOString().replace('T', ' ').replace('Z', '').slice(0, 19);
-      lsLines.push(timeStr3 + ',' + r3.shockLowMinX + ',' + r3.shockLowMaxX + ',' + r3.shockLowAvgX + ',' + r3.shockLowRmsX +
+      lsLines.push(fmtTime(r3) + ',' + r3.shockLowMinX + ',' + r3.shockLowMaxX + ',' + r3.shockLowAvgX + ',' + r3.shockLowRmsX +
         ',' + r3.shockLowMinY + ',' + r3.shockLowMaxY + ',' + r3.shockLowAvgY + ',' + r3.shockLowRmsY +
         ',' + r3.shockLowMinZ + ',' + r3.shockLowMaxZ + ',' + r3.shockLowAvgZ + ',' + r3.shockLowRmsZ);
     }
@@ -2098,9 +2147,7 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
     var hsLines = [hsHeaders.join(',')];
     for (var i4 = 0; i4 < a0.length; i4++) {
       var r4 = a0[i4];
-      var ts4 = new Date(startTime + i4 * 1000);
-      var timeStr4 = ts4.toISOString().replace('T', ' ').replace('Z', '').slice(0, 19);
-      hsLines.push(timeStr4 + ',' + r4.shockMinX + ',' + r4.shockMaxX + ',' + r4.shockAvgX + ',' + r4.shockRmsX +
+      hsLines.push(fmtTime(r4) + ',' + r4.shockMinX + ',' + r4.shockMaxX + ',' + r4.shockAvgX + ',' + r4.shockRmsX +
         ',' + r4.shockMinY + ',' + r4.shockMaxY + ',' + r4.shockAvgY + ',' + r4.shockRmsY +
         ',' + r4.shockMinZ + ',' + r4.shockMaxZ + ',' + r4.shockAvgZ + ',' + r4.shockRmsZ +
         ',' + r4.shockLateralMax + ',' + r4.shockLateralRms);
@@ -2115,16 +2162,14 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
       var prLines = [prHeaders.join(',')];
       for (var i5 = 0; i5 < d1.length; i5++) {
         var r5 = d1[i5];
-        var ts5 = new Date(startTime + i5 * 1000);
-        var timeStr5 = ts5.toISOString().replace('T', ' ').replace('Z', '').slice(0, 19);
-        prLines.push(timeStr5 + ',' + r5.psiMin + ',' + r5.psiMax + ',' + r5.psiAvg + ',' + r5.tempAvg);
+        prLines.push(fmtTime(r5) + ',' + r5.psiMin + ',' + r5.psiMax + ',' + r5.psiAvg + ',' + r5.tempAvg);
       }
       var prPath = path.join(saveDir, 'Pressure_' + dateStr + '.csv');
       fs.writeFileSync(prPath, prLines.join('\n'), 'utf-8');
       savedFiles.push('Pressure: ' + prPath);
     }
 
-    console.log('[v38] CSV files saved: ' + savedFiles.join(', '));
+    console.log('[v39] CSV files saved: ' + savedFiles.join(', '));
     return { success: true, filePaths: savedFiles, recordCount: a0.length + d1.length, saveDir: saveDir };
   } catch (e) {
     return { success: false, error: e.message };
