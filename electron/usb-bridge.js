@@ -1551,102 +1551,118 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       for (var c = 0; c < maxChunksForPartition; c++) {
         checkTimeout();
 
-        try {
-          var chunk = await readChunk(p, c);
-
-          // Debug first 5 chunks or first empty/fail of each partition
-          if (c < 5 || (!chunk.success || chunk.empty)) {
-            var dbg = 'P' + (p+1) + ' chunk' + c + ': success=' + chunk.success +
-              ', empty=' + chunk.empty +
-              ', respLen=' + (chunk.respLen !== undefined ? chunk.respLen : 'N/A') +
-              ', dataLen=' + (chunk.data ? chunk.data.length : 0) +
-              (chunk.reason ? ', reason=' + chunk.reason : '') +
-              (chunk.data && chunk.data.length > 0 ? ', first8=' + hexStr(chunk.data.slice(0, Math.min(8, chunk.data.length))) : '');
-            console.log('[USB] ' + dbg);
-            chunkReadDebug.push(dbg);
+        // Read chunk with retry (up to 3 attempts)
+        var chunk = null;
+        var chunkRetries = 3;
+        for (var retry = 0; retry < chunkRetries; retry++) {
+          try {
+            chunk = await readChunk(p, c);
+            if (chunk.success || chunk.reason === 'no header (got 0 bytes)') {
+              break; // Success or device timeout - don't retry timeout
+            }
+            // "wrong cmd" or "respLen too large" = stream desync - flush and retry
+            if (retry < chunkRetries - 1) {
+              console.log('[USB] P' + (p+1) + ' chunk' + c + ': retry ' + (retry+1) + ' after: ' + chunk.reason);
+              // Thorough flush before retry
+              for (var fi = 0; fi < 3; fi++) {
+                try { var flushed = await self._readFromDevice(8192, 50); if (!flushed || flushed.length === 0) break; } catch(e) { break; }
+              }
+              await new Promise(function(r) { setTimeout(r, 20); }); // Small delay
+            }
+          } catch (chunkErr) {
+            if (retry < chunkRetries - 1) {
+              console.log('[USB] P' + (p+1) + ' chunk' + c + ': retry ' + (retry+1) + ' after exception: ' + chunkErr.message);
+              try { await self._readFromDevice(8192, 50); } catch(e2) {}
+            } else {
+              chunk = { success: false, reason: 'exception: ' + chunkErr.message };
+            }
           }
+        }
 
-          if (chunk.success) {
-            consecutiveFail = 0;
+        // Debug first 5 chunks or first empty/fail of each partition
+        if (c < 5 || (!chunk.success || chunk.empty)) {
+          var dbg = 'P' + (p+1) + ' chunk' + c + ': success=' + chunk.success +
+            ', empty=' + chunk.empty +
+            ', respLen=' + (chunk.respLen !== undefined ? chunk.respLen : 'N/A') +
+            ', dataLen=' + (chunk.data ? chunk.data.length : 0) +
+            (chunk.reason ? ', reason=' + chunk.reason : '') +
+            (chunk.data && chunk.data.length > 0 ? ', first8=' + hexStr(chunk.data.slice(0, Math.min(8, chunk.data.length))) : '');
+          console.log('[USB] ' + dbg);
+          chunkReadDebug.push(dbg);
+        }
 
-            if (chunk.empty) {
-              // Zero-length response = empty chunk
+        if (chunk.success) {
+          consecutiveFail = 0;
+
+          if (chunk.empty) {
+            // Zero-length response = empty chunk
+            consecutiveEmpty++;
+            if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) {
+              console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty chunks at chunk ' + c + ', stopping');
+              break;
+            }
+          } else if (chunk.data && chunk.data.length >= 6) {
+            // Response has data: [PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
+            var status = chunk.data[1];
+            var respChunkNum = chunk.data[2] | (chunk.data[3] << 8) | (chunk.data[4] << 16) | (chunk.data[5] << 24);
+            var payload = chunk.data.slice(6);
+
+            if (c < 3) {
+              console.log('[USB] P' + (p+1) + ' chunk' + c + ': partition=' + chunk.data[0] +
+                ', status=' + status + ', respChunkNum=' + respChunkNum +
+                ', payloadLen=' + payload.length +
+                ', payloadFirst8=' + hexStr(payload.slice(0, Math.min(8, payload.length))));
+            }
+
+            // Status=0 means empty partition/slot
+            // Also check for 0xFF-filled payload (unwritten flash)
+            if (status === 0) {
               consecutiveEmpty++;
               if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) {
-                console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty chunks at chunk ' + c + ', stopping');
+                console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty (status=0) at chunk ' + c);
                 break;
               }
-            } else if (chunk.data && chunk.data.length >= 6) {
-              // Response has data: [PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
-              var status = chunk.data[1];
-              var respChunkNum = chunk.data[2] | (chunk.data[3] << 8) | (chunk.data[4] << 16) | (chunk.data[5] << 24);
-              var payload = chunk.data.slice(6);
-
-              if (c < 3) {
-                console.log('[USB] P' + (p+1) + ' chunk' + c + ': partition=' + chunk.data[0] +
-                  ', status=' + status + ', respChunkNum=' + respChunkNum +
-                  ', payloadLen=' + payload.length +
-                  ', payloadFirst8=' + hexStr(payload.slice(0, Math.min(8, payload.length))));
+            } else {
+              // Has data - check for 0xFF
+              var isAllFF = false;
+              if (payload.length >= 64) {
+                isAllFF = true;
+                for (var bi = 0; bi < 64; bi++) {
+                  if (payload[bi] !== 0xFF) { isAllFF = false; break; }
+                }
               }
-
-              // Status=0 means empty partition/slot
-              // Also check for 0xFF-filled payload (unwritten flash)
-              if (status === 0) {
+              if (isAllFF) {
                 consecutiveEmpty++;
                 if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) {
-                  console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty (status=0) at chunk ' + c);
+                  console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty (all-FF) at chunk ' + c);
                   break;
                 }
               } else {
-                // Has data - check for 0xFF
-                var isAllFF = false;
-                if (payload.length >= 64) {
-                  isAllFF = true;
-                  for (var bi = 0; bi < 64; bi++) {
-                    if (payload[bi] !== 0xFF) { isAllFF = false; break; }
-                  }
-                }
-                if (isAllFF) {
-                  consecutiveEmpty++;
-                  if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) {
-                    console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty (all-FF) at chunk ' + c);
-                    break;
-                  }
-                } else {
-                  // Real data!
-                  partitionData.push(Buffer.from(payload));
-                  totalBytesRead += payload.length;
-                  chunksRead++;
-                  consecutiveEmpty = 0;
-                  if (chunksRead <= 2) {
-                    var preview = hexStr(payload.slice(0, Math.min(16, payload.length)));
-                    chunkReadDebug.push('P' + (p+1) + ' chunk' + c + ': OK, respLen=' + chunk.respLen + ', payloadLen=' + payload.length + ', first16=' + preview);
-                  }
+                // Real data!
+                partitionData.push(Buffer.from(payload));
+                totalBytesRead += payload.length;
+                chunksRead++;
+                consecutiveEmpty = 0;
+                if (chunksRead <= 2) {
+                  var preview = hexStr(payload.slice(0, Math.min(16, payload.length)));
+                  chunkReadDebug.push('P' + (p+1) + ' chunk' + c + ': OK, respLen=' + chunk.respLen + ', payloadLen=' + payload.length + ', first16=' + preview);
                 }
               }
-            } else if (chunk.data && chunk.data.length > 0 && chunk.data.length < 6) {
-              // Short data response (less than 6 bytes) - likely an empty/NAK indicator
-              consecutiveEmpty++;
-              if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) break;
             }
-          } else {
-            // Read failure
-            consecutiveFail++;
+          } else if (chunk.data && chunk.data.length > 0 && chunk.data.length < 6) {
+            // Short data response (less than 6 bytes) - likely an empty/NAK indicator
             consecutiveEmpty++;
-            if (c < 5) {
-              console.log('[USB] P' + (p+1) + ' chunk' + c + ': FAIL - ' + (chunk.reason || 'unknown'));
-              chunkReadDebug.push('P' + (p+1) + ' chunk' + c + ': FAIL - ' + (chunk.reason || 'unknown'));
-            }
-            if (consecutiveFail >= 5) {
-              console.log('[USB] P' + (p+1) + ': too many failures at chunk ' + c + ', stopping');
-              chunkReadDebug.push('P' + (p+1) + ': stopped after 5 consecutive failures at chunk ' + c);
-              break;
-            }
+            if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) break;
           }
-        } catch (chunkErr) {
+        } else {
+          // Read failure (even after retries)
           consecutiveFail++;
           consecutiveEmpty++;
-          if (consecutiveFail >= 5) break;
+          if (consecutiveFail >= 5) {
+            console.log('[USB] P' + (p+1) + ': too many failures at chunk ' + c + ', stopping');
+            chunkReadDebug.push('P' + (p+1) + ': stopped after 5 consecutive failures at chunk ' + c);
+            break;
+          }
         }
 
         // Yield to event loop every 5 chunks to prevent app freeze
