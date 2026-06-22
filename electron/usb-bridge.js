@@ -129,6 +129,8 @@ var fn_usb_release_interface = lib0.func('usb_release_interface', 'int', [usb_de
 var fn_usb_set_configuration = lib0.func('usb_set_configuration', 'int', [usb_dev_handle_ptr, 'int']);
 var fn_usb_bulk_write = lib0.func('usb_bulk_write', 'int', [usb_dev_handle_ptr, 'int', 'void *', 'int', 'int']);
 var fn_usb_bulk_read = lib0.func('usb_bulk_read', 'int', [usb_dev_handle_ptr, 'int', 'void *', 'int', 'int']);
+var fn_usb_clear_halt = lib0.func('usb_clear_halt', 'int', [usb_dev_handle_ptr, 'uint']);
+var fn_usb_reset = lib0.func('usb_reset', 'int', [usb_dev_handle_ptr]);
 var fn_usb_strerror = lib0.func('usb_strerror', 'str', []);
 
 console.log('[USB] All libusb0 functions bound OK');
@@ -441,6 +443,51 @@ ProcyonUsbBridge.prototype.disconnect = async function() {
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
+  }
+};
+
+// -- USB recovery methods --
+
+ProcyonUsbBridge.prototype.clearHalt = function() {
+  if (!this.handle) {
+    console.log('[USB] clearHalt: no handle');
+    return { success: false, error: 'No USB handle' };
+  }
+  try {
+    var retOut = fn_usb_clear_halt(this.handle, EP_OUT);
+    console.log('[USB] clearHalt EP_OUT (0x' + EP_OUT.toString(16) + '): ret=' + retOut);
+    var retIn = fn_usb_clear_halt(this.handle, EP_IN);
+    console.log('[USB] clearHalt EP_IN (0x' + EP_IN.toString(16) + '): ret=' + retIn);
+    var ok = (retOut === 0 && retIn === 0);
+    if (!ok) {
+      var errMsg = '';
+      try { errMsg = fn_usb_strerror(); } catch (e) {}
+      console.log('[USB] clearHalt error: ' + errMsg);
+    }
+    return { success: ok, retOut: retOut, retIn: retIn };
+  } catch (e) {
+    console.log('[USB] clearHalt exception: ' + e.message);
+    return { success: false, error: e.message };
+  }
+};
+
+ProcyonUsbBridge.prototype.resetDevice = function() {
+  if (!this.handle) {
+    console.log('[USB] resetDevice: no handle');
+    return { success: false, error: 'No USB handle' };
+  }
+  try {
+    var ret = fn_usb_reset(this.handle);
+    console.log('[USB] usb_reset: ret=' + ret);
+    if (ret !== 0) {
+      var errMsg = '';
+      try { errMsg = fn_usb_strerror(); } catch (e) {}
+      console.log('[USB] usb_reset error: ' + errMsg);
+    }
+    return { success: ret === 0, ret: ret };
+  } catch (e) {
+    console.log('[USB] resetDevice exception: ' + e.message);
+    return { success: false, error: e.message };
   }
 };
 
@@ -1184,6 +1231,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     // === Step 0: Pre-flight check - verify basic USB communication works ===
     READ_TIMEOUT = 3000;
     chunkReadDebug.push('[Step0] Pre-flight: verifying USB communication...');
+    var usbWorking = false;
     try {
       var preResp = await this.sendCommand(CMD.GET_FIRMWARE_VERSION, []);
       var preMsg = 'GET_FIRMWARE_VERSION: success=' + preResp.success +
@@ -1191,17 +1239,122 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         (preResp.error ? ', error=' + preResp.error : '');
       console.log('[USB] ' + preMsg);
       chunkReadDebug.push('[Step0] ' + preMsg);
-      if (!preResp.success) {
-        chunkReadDebug.push('[Step0] WARNING: Basic USB communication failing! Device may be disconnected.');
+      if (preResp.success) {
+        usbWorking = true;
       }
     } catch(e) {
       chunkReadDebug.push('[Step0] Pre-flight FAILED: ' + e.message);
     }
 
-    // === Step 0.5: Send MEMORY_DUMP_END first to reset any stuck dump state ===
-    // If a previous dump was interrupted (e.g., v24's wrong BE commands), the device
-    // might be stuck in dump mode and won't respond to MEMORY_DUMP_START.
-    chunkReadDebug.push('[Step0.5] Sending MEMORY_DUMP_END (0x000E) to reset any stuck dump state...');
+    // === Step 0.1: If USB not working, try clearHalt recovery ===
+    if (!usbWorking) {
+      chunkReadDebug.push('[Step0.1] USB not responding! Attempting clearHalt recovery...');
+      var haltResult = this.clearHalt();
+      chunkReadDebug.push('[Step0.1] clearHalt result: ' + JSON.stringify(haltResult));
+      await new Promise(function(resolve) { setTimeout(resolve, 200); });
+      // Retry basic command after clearHalt
+      try {
+        var retryResp = await this.sendCommand(CMD.GET_FIRMWARE_VERSION, []);
+        chunkReadDebug.push('[Step0.1] After clearHalt: success=' + retryResp.success +
+          ', value="' + (retryResp.value || '') + '"');
+        if (retryResp.success) {
+          usbWorking = true;
+          chunkReadDebug.push('[Step0.1] USB recovered after clearHalt!');
+        }
+      } catch(e) {
+        chunkReadDebug.push('[Step0.1] Still failing after clearHalt: ' + e.message);
+      }
+    }
+
+    // === Step 0.2: If still not working, try usb_reset + re-claim ===
+    if (!usbWorking) {
+      chunkReadDebug.push('[Step0.2] USB still not responding! Attempting usb_reset...');
+      var resetResult = this.resetDevice();
+      chunkReadDebug.push('[Step0.2] usb_reset result: ' + JSON.stringify(resetResult));
+      await new Promise(function(resolve) { setTimeout(resolve, 500); });
+      // After usb_reset, re-claim the interface
+      try {
+        var claimRet = fn_usb_claim_interface(this.handle, INTERFACE_NUMBER);
+        chunkReadDebug.push('[Step0.2] Re-claim interface: ret=' + claimRet);
+      } catch(e) {
+        chunkReadDebug.push('[Step0.2] Re-claim failed: ' + e.message);
+      }
+      // Retry basic command
+      try {
+        var retryResp2 = await this.sendCommand(CMD.GET_FIRMWARE_VERSION, []);
+        chunkReadDebug.push('[Step0.2] After reset: success=' + retryResp2.success +
+          ', value="' + (retryResp2.value || '') + '"');
+        if (retryResp2.success) {
+          usbWorking = true;
+          chunkReadDebug.push('[Step0.2] USB recovered after reset!');
+        }
+      } catch(e) {
+        chunkReadDebug.push('[Step0.2] Still failing after reset: ' + e.message);
+      }
+    }
+
+    // === Step 0.3: If STILL not working, try full disconnect/reconnect ===
+    if (!usbWorking) {
+      chunkReadDebug.push('[Step0.3] USB not responding! Attempting full disconnect/reconnect...');
+      try {
+        await this.disconnect();
+        await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+        var connectResult = await this.connect();
+        chunkReadDebug.push('[Step0.3] Reconnect result: success=' + connectResult.success +
+          (connectResult.error ? ', error=' + connectResult.error : ''));
+        if (connectResult.success) {
+          try {
+            var retryResp3 = await this.sendCommand(CMD.GET_FIRMWARE_VERSION, []);
+            if (retryResp3.success) {
+              usbWorking = true;
+              chunkReadDebug.push('[Step0.3] USB recovered after reconnect!');
+            }
+          } catch(e) {}
+        }
+      } catch(e) {
+        chunkReadDebug.push('[Step0.3] Reconnect failed: ' + e.message);
+      }
+    }
+
+    if (!usbWorking) {
+      chunkReadDebug.push('[Step0] FATAL: USB communication cannot be recovered. Please physically disconnect and reconnect the device.');
+      return {
+        success: false,
+        error: 'USB communication cannot be recovered. Please physically disconnect and reconnect the USB cable, then click Connect.',
+        partitions: [],
+        partitionDebugInfo: [],
+        chunkReadDebug: chunkReadDebug,
+      };
+    }
+
+    // USB is working. Now flush stale data and enter dump mode.
+    chunkReadDebug.push('[Step0] USB communication OK. Proceeding to dump mode...');
+
+    // === Step 0.5: Flush USB buffer of any stale data ===
+    chunkReadDebug.push('[Step0.5] Flushing USB read buffer...');
+    try {
+      var flushed = 0;
+      for (var fi = 0; fi < 5; fi++) {
+        var flushBuf = Buffer.alloc(4096);
+        try {
+          var flushN = fn_usb_bulk_read(this.handle, EP_IN, flushBuf, 4096, 50);
+          if (flushN > 0) {
+            flushed += flushN;
+            chunkReadDebug.push('[Step0.5] Flush read ' + flushN + ' bytes: ' + flushBuf.slice(0, Math.min(16, flushN)).toString('hex'));
+          } else {
+            break;
+          }
+        } catch(e) {
+          break;
+        }
+      }
+      chunkReadDebug.push('[Step0.5] Total flushed: ' + flushed + ' bytes');
+    } catch(e) {
+      chunkReadDebug.push('[Step0.5] Flush exception: ' + e.message);
+    }
+
+    // === Step 0.7: Send MEMORY_DUMP_END first to reset any stuck dump state ===
+    chunkReadDebug.push('[Step0.7] Sending MEMORY_DUMP_END (0x000E) to reset any stuck dump state...');
     try {
       var endResp = await this.sendCommand(CMD.MEMORY_DUMP_END, []);
       var endMsg = 'MEMORY_DUMP_END: success=' + endResp.success +
@@ -1209,12 +1362,11 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         ', value="' + (endResp.value || '') + '"' +
         (endResp.error ? ', error=' + endResp.error : '');
       console.log('[USB] ' + endMsg);
-      chunkReadDebug.push('[Step0.5] ' + endMsg);
+      chunkReadDebug.push('[Step0.7] ' + endMsg);
     } catch(e) {
-      chunkReadDebug.push('[Step0.5] MEMORY_DUMP_END exception (may be normal): ' + e.message);
+      chunkReadDebug.push('[Step0.7] MEMORY_DUMP_END exception (may be normal if not in dump mode): ' + e.message);
     }
-    // Brief pause after dump end
-    await new Promise(function(resolve) { setTimeout(resolve, 300); });
+    await new Promise(function(resolve) { setTimeout(resolve, 500); });
 
     // === Step 1: Notify device about dump start ===
     var dumpStartOk = false;
@@ -1238,12 +1390,10 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       chunkReadDebug.push('[Step1] ' + errMsg);
     }
     if (!dumpStartOk) {
-      chunkReadDebug.push('[Step1] WARNING: Dump start NOT ACKed! Trying one more time...');
-      // Try MEMORY_DUMP_END again, then MEMORY_DUMP_START
-      try {
-        await this.sendCommand(CMD.MEMORY_DUMP_END, []);
-        await new Promise(function(resolve) { setTimeout(resolve, 500); });
-      } catch(e) {}
+      // Try clearing halt and retrying
+      chunkReadDebug.push('[Step1] Dump start NOT ACKed. Trying clearHalt + retry...');
+      this.clearHalt();
+      await new Promise(function(resolve) { setTimeout(resolve, 200); });
       try {
         var startResp2 = await this.sendCommand(CMD.MEMORY_DUMP_START, []);
         var startMsg2 = 'MEMORY_DUMP_START retry: success=' + startResp2.success +
@@ -1261,7 +1411,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       }
     }
     if (!dumpStartOk) {
-      chunkReadDebug.push('[Step1] FATAL: Dump start NOT ACKed after 2 attempts. Device may have no data.');
+      chunkReadDebug.push('[Step1] FATAL: Dump start NOT ACKed after recovery attempts. Device may have no data or be in wrong state.');
     }
     // Give device time to prepare for dump mode
     await new Promise(function(resolve) { setTimeout(resolve, 500); });
@@ -1280,18 +1430,6 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     if (numPartitions === 0) {
       numPartitions = 1; // Assume at least 1 partition
       chunkReadDebug.push('[Step2] No partition count, assuming 1');
-    }
-
-    // === Step 2.5: Flush USB buffer & probe test ===
-    chunkReadDebug.push('[Step2.5] Flushing USB buffer before chunk reads...');
-    try {
-      var flushData = await this._readFromDevice(4096, 200);
-      var flushMsg = 'Flush: got ' + (flushData ? flushData.length : 0) + ' bytes' +
-        (flushData && flushData.length > 0 ? ' hex=' + hexStr(flushData.slice(0, 16)) : '');
-      console.log('[USB] ' + flushMsg);
-      chunkReadDebug.push('[Step2.5] ' + flushMsg);
-    } catch(e) {
-      chunkReadDebug.push('[Step2.5] Flush: nothing to flush');
     }
 
     // === Step 3: Download data using dynamic response reading (v23 proven approach) ===
@@ -1373,42 +1511,6 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       }
     }
 
-    // === Step 3.5: Probe test ===
-    chunkReadDebug.push('[Probe] Testing chunk read (P0 chunk0)...');
-    READ_TIMEOUT = 5000;
-    try {
-      var probeResult = await readChunk(0, 0);
-      var probeMsg = 'Probe result: success=' + probeResult.success +
-        ', empty=' + probeResult.empty +
-        ', respLen=' + (probeResult.respLen !== undefined ? probeResult.respLen : 'N/A') +
-        ', dataLen=' + (probeResult.data ? probeResult.data.length : 0) +
-        (probeResult.reason ? ', reason=' + probeResult.reason : '');
-      console.log('[USB] ' + probeMsg);
-      chunkReadDebug.push('[Probe] ' + probeMsg);
-      if (!probeResult.success) {
-        chunkReadDebug.push('[Probe] PROBE FAILED! Trying to re-send MEMORY_DUMP_START...');
-        try {
-          var retryResp = await this.sendCommand(CMD.MEMORY_DUMP_START, []);
-          chunkReadDebug.push('[Probe] Retry MEMORY_DUMP_START: success=' + retryResp.success);
-          await new Promise(function(resolve) { setTimeout(resolve, 1000); });
-          // Flush any response data
-          try { await this._readFromDevice(4096, 100); } catch(e) {}
-        } catch(e2) {
-          chunkReadDebug.push('[Probe] Retry failed: ' + e2.message);
-        }
-        // Try probe again
-        var probeResult2 = await readChunk(0, 0);
-        var probeMsg2 = 'Probe2 result: success=' + probeResult2.success +
-          ', empty=' + probeResult2.empty +
-          (probeResult2.reason ? ', reason=' + probeResult2.reason : '');
-        chunkReadDebug.push('[Probe] ' + probeMsg2);
-        if (!probeResult2.success) {
-          chunkReadDebug.push('[Probe] Both probes failed. Device may have no data or not in dump mode.');
-        }
-      }
-    } catch(probeErr) {
-      chunkReadDebug.push('[Probe] Exception: ' + probeErr.message);
-    }
     READ_TIMEOUT = 3000;
 
     for (var p = 0; p < numPartitions; p++) {
