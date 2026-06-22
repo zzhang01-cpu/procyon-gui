@@ -1459,27 +1459,31 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         // Small delay to let device prepare response
         await new Promise(function(r) { setTimeout(r, 5); });
 
-        // Step 1: Read exactly the 4-byte response header
-        var headerBuf = await self._readFromDevice(4, 3000);
-        if (!headerBuf || headerBuf.length < 4) {
+        // Step 1: Read response - use 4096 like sendCommand does (proven to work)
+        // The device may take time to prepare chunk data, so use full read
+        var firstRead = await self._readFromDevice(4096, 5000);
+        if (!firstRead || firstRead.length < 4) {
           // Flush any remaining data from USB buffer
           try { await self._readFromDevice(4096, 100); } catch(e) {}
-          return { success: false, reason: 'no header (got ' + (headerBuf ? headerBuf.length : 0) + ' bytes)' };
+          return { success: false, reason: 'no header (got ' + (firstRead ? firstRead.length : 0) + ' bytes)' };
         }
 
-        // Parse header: [cmdlow_resp, cmdhigh_resp, lengthlow, lengthhigh]
-        var respCmd = headerBuf[0] | (headerBuf[1] << 8);
-        var respLen = headerBuf[2] | (headerBuf[3] << 8);
+        // Parse header from first read: [cmdlow_resp, cmdhigh_resp, lengthlow, lengthhigh]
+        var respCmd = firstRead[0] | (firstRead[1] << 8);
+        var respLen = firstRead[2] | (firstRead[3] << 8);
+        
+        // Data already received in first read (after 4-byte header)
+        var dataReceived = firstRead.length - 4;
 
         // Validate: response command should be request command + 1
         var expectedRespCmd = CMD.GET_MEMORY_DUMP_CHUNK_DATA + 1; // 0x0011
         if (respCmd !== expectedRespCmd) {
           // Flush any remaining data from USB buffer
           try { await self._readFromDevice(4096, 100); } catch(e) {}
-          return { success: false, reason: 'wrong cmd: got 0x' + respCmd.toString(16) + ' expected 0x' + expectedRespCmd.toString(16) + ', hdr=' + hexStr(headerBuf) };
+          return { success: false, reason: 'wrong cmd: got 0x' + respCmd.toString(16) + ' expected 0x' + expectedRespCmd.toString(16) + ', hdr=' + hexStr(firstRead.slice(0, 16)) };
         }
 
-        // Step 2: Read the data portion (exactly respLen bytes)
+        // Step 2: Assemble the full data portion (respLen bytes)
         if (respLen === 0) {
           // Zero-length data = empty chunk
           return { success: true, empty: true, data: [], respLen: 0 };
@@ -1489,15 +1493,34 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         if (respLen > 10000) {
           // Likely corrupted header, flush and fail
           try { await self._readFromDevice(8192, 100); } catch(e) {}
-          return { success: false, reason: 'respLen too large: ' + respLen + ', hdr=' + hexStr(headerBuf) };
+          return { success: false, reason: 'respLen too large: ' + respLen + ', hdr=' + hexStr(firstRead.slice(0, 16)) };
         }
 
-        // Read exactly respLen bytes of data (single read, like v23)
-        var dataBuf = await self._readFromDevice(respLen, 3000);
-        if (!dataBuf || dataBuf.length < respLen) {
-          return { success: false, reason: 'short data: got ' + (dataBuf ? dataBuf.length : 0) + ' expected ' + respLen };
+        // We already have some data from the first read
+        var dataParts = [];
+        if (dataReceived > 0) {
+          dataParts.push(firstRead.slice(4, 4 + Math.min(dataReceived, respLen)));
+        }
+        var dataStillNeeded = respLen - dataReceived;
+
+        // Read remaining data if needed
+        while (dataStillNeeded > 0) {
+          var readSize = Math.min(dataStillNeeded, 8192);
+          var moreData = await self._readFromDevice(readSize, 3000);
+          if (!moreData || moreData.length === 0) {
+            // Timeout - return what we have so far
+            var partialData = Buffer.concat(dataParts);
+            if (partialData.length >= 10) {
+              // We have enough data to be useful, just return partial
+              return { success: true, empty: false, data: partialData, respLen: respLen, partial: true };
+            }
+            return { success: false, reason: 'short data: got ' + partialData.length + ' expected ' + respLen };
+          }
+          dataParts.push(moreData);
+          dataStillNeeded -= moreData.length;
         }
 
+        var dataBuf = Buffer.concat(dataParts);
         // Trim to exact length (in case we over-read)
         if (dataBuf.length > respLen) {
           dataBuf = dataBuf.slice(0, respLen);
