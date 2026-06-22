@@ -169,13 +169,13 @@ export default function DeviceMonitoringPage() {
         addLog('下载失败: ' + errMsg);
         setDownloadError(errMsg);
       } else {
-        addLog('下载成功, downloadedData长度=' + String(downloadedData?.length) + ' (注意: 此值可能延迟更新)');
-        // Show partition debug info from parseBinaryRecords
-        const debugInfo = (result as any).partitionDebugInfo;
-        if (debugInfo && Array.isArray(debugInfo)) {
-          for (const d of debugInfo) {
-            addLog('  分区' + d.partition + ': firstByte=' + d._debugFirstByte + ', topBytes=' + d._debugTopBytes);
-            if (d._debugHex && d._debugHex !== 'N/A') addLog('  HEX: ' + d._debugHex);
+        // parsedRecords is now in downloadedData, check length after state update
+        addLog('下载成功! 数据已传至主进程解析');
+        // Show parse debug info from main process (string[])
+        const parseDebugInfo = (result as any).partitionDebugInfo;
+        if (parseDebugInfo && Array.isArray(parseDebugInfo)) {
+          for (const line of parseDebugInfo) {
+            addLog('  ' + String(line));
           }
         }
       }

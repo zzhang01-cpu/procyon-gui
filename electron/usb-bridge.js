@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-22-v24 (fix chunkNumber BE byte order + parse debug + empty partition fast skip)
+ * VERSION: 2024-06-22-v25 (parse binary records in main process + fix IPC 52MB Buffer serialization)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -1030,6 +1030,140 @@ ProcyonUsbBridge.prototype.eraseMemory = async function(eraseAll) {
   }
 };
 
+// Parse binary records from downloaded partition data (main process)
+function parseDownloadedRecords(partitions) {
+  var records = [];
+  var debug = [];
+
+  for (var pi = 0; pi < partitions.length; pi++) {
+    var part = partitions[pi];
+    if (!part.data || part.size === 0) {
+      debug.push('P' + part.partition + ': empty (' + part.size + ' bytes)');
+      continue;
+    }
+
+    var buf = part.data;
+    var firstHex = [];
+    for (var fi = 0; fi < Math.min(32, buf.length); fi++) {
+      firstHex.push(('0' + buf[fi].toString(16)).slice(-2));
+    }
+    debug.push('P' + part.partition + ': ' + buf.length + ' bytes, first32=' + firstHex.join(' '));
+
+    // Count byte frequency for top bytes
+    var freq = {};
+    for (var fi2 = 0; fi2 < Math.min(256, buf.length); fi2++) {
+      var b = buf[fi2];
+      freq[b] = (freq[b] || 0) + 1;
+    }
+    var topBytes = Object.keys(freq).sort(function(a,b) { return freq[b] - freq[a]; }).slice(0, 5).map(function(k) { return '0x' + parseInt(k).toString(16) + ':' + freq[k]; });
+    debug.push('P' + part.partition + ' topBytes: ' + topBytes.join(', '));
+
+    // Scan for OneSecondData (0xA0) records
+    // Record format: [type(1B), ...fields, type(1B), ...fields, ...]
+    // OneSecondData: type=0xA0, size=84 bytes (1 type + 42 Int16 values)
+    var recordCount = 0;
+    var typeCounts = {};
+    var i = 0;
+
+    while (i < buf.length - 2) {
+      var recType = buf[i];
+
+      // Known record types and their sizes
+      var recSize = 0;
+      switch (recType) {
+        case 0xA0: recSize = 84; break;  // OneSecondData
+        case 0x01: recSize = 12; break;  // FirmwareVersion
+        case 0x02: recSize = 4; break;   // Reset
+        case 0x0D: recSize = 8; break;   // FlashDeviceID
+        case 0x80: recSize = -1; break;  // RpmAxialWaveform (csv_chain, skip)
+        case 0x81: recSize = -1; break;  // GyroTagDataCorrupt
+        case 0x82: recSize = -1; break;  // StickSlip
+        case 0x90: recSize = -1; break;  // AccelWaveform
+        case 0x91: recSize = -1; break;  // LowShockWaveform
+        case 0xB0: case 0xB1: case 0xB2: case 0xB3: case 0xB4: recSize = 4; break; // ParameterError
+        case 0xD0: recSize = 8; break;   // DebugEvent
+        case 0xD1: recSize = 84; break;  // PhoenixOneSecondData
+        case 0xFE: recSize = 4; break;   // LoggingSystemError
+        case 0xFF: recSize = 4; break;   // Flush
+        default: i++; continue; // Unknown type, skip byte
+      }
+
+      typeCounts[recType] = (typeCounts[recType] || 0) + 1;
+
+      if (recSize === -1) {
+        // csv_chain record - skip for now, find next record
+        i += 2; // skip type + potential length byte
+        while (i < buf.length - 1) {
+          var nextType = buf[i];
+          if (nextType === 0xA0 || nextType === 0x01 || nextType === 0x02 || nextType === 0x0D ||
+              nextType === 0xD0 || nextType === 0xD1 || nextType === 0xFE || nextType === 0xFF ||
+              (nextType >= 0xB0 && nextType <= 0xB4)) {
+            break;
+          }
+          i++;
+        }
+        continue;
+      }
+
+      if (recSize > 0 && i + recSize <= buf.length) {
+        if (recType === 0xA0 || recType === 0xD1) {
+          // Parse OneSecondData / PhoenixOneSecondData
+          try {
+            var tempRaw = buf.readInt16LE(i + 1);
+            var battRaw = buf.readInt16LE(i + 3);
+            var temperature = tempRaw * 0.03125;
+            var batteryV = battRaw * 0.001027;
+            var rpmMinX = buf.readInt16LE(i + 5) * 0.02333;
+            var rpmMaxX = buf.readInt16LE(i + 7) * 0.02333;
+            var rpmAvgX = buf.readInt16LE(i + 9) * 0.02333;
+            var rpmRmsX = buf.readInt16LE(i + 11) * 0.02333;
+            var rpmMinY = buf.readInt16LE(i + 13) * 0.02333;
+            var rpmMaxY = buf.readInt16LE(i + 15) * 0.02333;
+            var rpmAvgY = buf.readInt16LE(i + 17) * 0.02333;
+            var rpmRmsY = buf.readInt16LE(i + 19) * 0.02333;
+            var rpmMinZ = buf.readInt16LE(i + 21) * 0.02333;
+            var rpmMaxZ = buf.readInt16LE(i + 23) * 0.02333;
+            var rpmAvgZ = buf.readInt16LE(i + 25) * 0.02333;
+            var rpmRmsZ = buf.readInt16LE(i + 27) * 0.02333;
+
+            records.push({
+              recordType: recType,
+              timestamp: 0,
+              temperature: Math.round(temperature * 100) / 100,
+              batteryV: Math.round(batteryV * 1000) / 1000,
+              rpmMinX: Math.round(rpmMinX * 100) / 100,
+              rpmMaxX: Math.round(rpmMaxX * 100) / 100,
+              rpmAvgX: Math.round(rpmAvgX * 100) / 100,
+              rpmRmsX: Math.round(rpmRmsX * 100) / 100,
+              rpmMinY: Math.round(rpmMinY * 100) / 100,
+              rpmMaxY: Math.round(rpmMaxY * 100) / 100,
+              rpmAvgY: Math.round(rpmAvgY * 100) / 100,
+              rpmRmsY: Math.round(rpmRmsY * 100) / 100,
+              rpmMinZ: Math.round(rpmMinZ * 100) / 100,
+              rpmMaxZ: Math.round(rpmMaxZ * 100) / 100,
+              rpmAvgZ: Math.round(rpmAvgZ * 100) / 100,
+              rpmRmsZ: Math.round(rpmRmsZ * 100) / 100,
+              partition: part.partition
+            });
+            recordCount++;
+          } catch(e) {
+            // Skip malformed record
+          }
+        }
+        i += recSize;
+      } else {
+        i++;
+      }
+    }
+
+    var typeStr = Object.keys(typeCounts).map(function(k) { return '0x' + parseInt(k).toString(16) + '=' + typeCounts[k]; }).join(', ');
+    debug.push('P' + part.partition + ': found ' + recordCount + ' OneSecondRecords, types: ' + typeStr);
+  }
+
+  debug.push('Total parsed records: ' + records.length);
+  return { records: records, debug: debug };
+}
+
 ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   var savedTimeout = READ_TIMEOUT;
   var startTime = Date.now();
@@ -1268,10 +1402,21 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       console.log('[USB] P' + (p+1) + ' done: ' + chunksRead + ' chunks, ' + finalData.length + ' bytes, ' + elapsedSec + 's elapsed');
     }
 
-    // === Step 4: Notify device about dump end ===
+    // === Step 4: Parse binary records in main process ===
+    var parseResult = parseDownloadedRecords(allData);
+
+    // === Step 5: Notify device about dump end ===
     READ_TIMEOUT = savedTimeout;
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
-    return { success: true, partitions: allData, totalPartitions: numPartitions, partitionInfo: [], partitionDebug: partitionDebug };
+    return {
+      success: true,
+      partitions: allData.map(function(p) { return { partition: p.partition, size: p.size, chunksRead: p.chunksRead }; }),
+      totalPartitions: numPartitions,
+      partitionInfo: [],
+      partitionDebug: partitionDebug,
+      parsedRecords: parseResult.records,
+      parseDebug: parseResult.debug
+    };
   } catch (error) {
     READ_TIMEOUT = savedTimeout;
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}

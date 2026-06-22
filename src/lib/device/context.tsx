@@ -327,51 +327,18 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     setDownloadProgress({ partition: 0, totalPartitions: 0, chunk: 0, totalChunks: 0, percent: 0 });
     try {
       const result = await usbDownloadData();
-      console.log('[Download] Raw result:', JSON.stringify({
-        success: result.success,
-        error: result.error,
-        totalPartitions: result.totalPartitions,
-        partitionCount: result.partitions?.length,
-        partitionSizes: result.partitions?.map((p: any) => ({
-          partition: p.partition,
-          size: p.size,
-          dataType: typeof p.data,
-          dataIsArray: Array.isArray(p.data),
-          dataLength: p.data?.length,
-          dataFirst10: p.data?.slice?.(0, 10),
-        })),
-      }));
       if (result.success) {
         setDownloadResult(result);
-        // Parse binary data into OneSecondRecord[]
-        if (result.partitions && result.partitions.length > 0) {
-          // Handle IPC-serialized Buffer: {type: 'Buffer', data: [...]}
-          for (const part of result.partitions) {
-            const pData = part.data as unknown;
-            if (pData && !Buffer.isBuffer(pData)) {
-              const pObj = pData as Record<string, unknown>;
-              if (pObj.type === 'Buffer' && Array.isArray(pObj.data)) {
-                (part as Record<string, unknown>).data = Buffer.from(pObj.data as number[]);
-              } else if (Array.isArray(pData)) {
-                (part as Record<string, unknown>).data = Buffer.from(pData as number[]);
-              }
-            }
-          }
-          const parsed = parseBinaryRecords(result.partitions);
-          console.log('[Download] Parsed records:', parsed.length);
-          // Collect debug info from partitions (set by parseBinaryRecords)
-          const partitionDebugInfo = result.partitions.map((p: any) => ({
-            partition: p.partition,
-            size: p.size,
-            _debugFirstByte: p._debugFirstByte || 'N/A',
-            _debugTopBytes: p._debugTopBytes || 'N/A',
-            _debugHex: p._debugHex ? (p._debugHex as string).substring(0, 200) : 'N/A',
-          }));
-          console.log('[Download] Partition debug:', JSON.stringify(partitionDebugInfo, null, 2));
-          // Store debug info in result for page display
-          (result as any).partitionDebugInfo = partitionDebugInfo;
-          setDownloadedData(parsed);
+        // Records are now parsed in main process (avoids 52MB IPC Buffer serialization)
+        const parsedRecords = (result as any).parsedRecords as OneSecondRecord[] || [];
+        const parseDebug = (result as any).parseDebug as string[] || [];
+        console.log('[Download] Parsed records from main process:', parsedRecords.length);
+        for (const line of parseDebug) {
+          console.log('[Download] ' + line);
         }
+        // Store parse debug info for page display
+        (result as any).partitionDebugInfo = parseDebug;
+        setDownloadedData(parsedRecords);
       } else {
         setError(result.error || 'Download failed');
       }
