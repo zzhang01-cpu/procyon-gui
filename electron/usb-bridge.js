@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-22-v29 (dynamic header reading for chunk data - revert to v23 approach)
+ * VERSION: 2024-06-22-v30 (enhanced dump start logging, USB flush, probe test)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -1183,13 +1183,27 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   try {
     // === Step 1: Notify device about dump start ===
     READ_TIMEOUT = 3000;
+    var dumpStartOk = false;
     try {
-      var notifyResp = await this.sendAckCommand(CMD.MEMORY_DUMP_START);
-      console.log('[USB] MEMORY_DUMP_START: ' + (notifyResp.success ? 'ACKed' : 'not ACKed'));
+      // Don't use sendAckCommand - it discards response details.
+      // Use sendCommand directly so we can log the raw response.
+      var startResp = await this.sendCommand(CMD.MEMORY_DUMP_START, []);
+      console.log('[USB] MEMORY_DUMP_START: success=' + startResp.success +
+        ', cmdCode=0x' + (startResp.commandCode ? startResp.commandCode.toString(16) : 'N/A') +
+        ', value="' + (startResp.value || '') + '"' +
+        ', dataLen=' + (startResp.data ? startResp.data.length : 0) +
+        (startResp.error ? ', error=' + startResp.error : ''));
+      if (startResp.success && startResp.commandCode === CMD.MEMORY_DUMP_START + 1) {
+        dumpStartOk = true;
+      }
     } catch(e) {
-      console.log('[USB] MEMORY_DUMP_START failed: ' + e.message);
+      console.log('[USB] MEMORY_DUMP_START exception: ' + e.message);
     }
-    await new Promise(function(resolve) { setTimeout(resolve, 300); });
+    if (!dumpStartOk) {
+      console.log('[USB] WARNING: MEMORY_DUMP_START may not have been ACKed! Chunk reads will likely fail.');
+    }
+    // Give device time to prepare for dump mode
+    await new Promise(function(resolve) { setTimeout(resolve, 500); });
 
     // === Step 2: Get number of partitions ===
     READ_TIMEOUT = 2000;
@@ -1212,6 +1226,16 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     var MAX_EMPTY_CHUNKS = 3;
     var allData = [];
     var partitionDebug = [];
+
+    // Flush any leftover data in USB buffer before starting chunk reads
+    console.log('[USB] Flushing USB buffer before chunk reads...');
+    try {
+      var flushData = await this._readFromDevice(4096, 200);
+      console.log('[USB] Flush: got ' + (flushData ? flushData.length : 0) + ' bytes' +
+        (flushData && flushData.length > 0 ? ' hex=' + hexStr(flushData.slice(0, 16)) : ''));
+    } catch(e) {
+      console.log('[USB] Flush: nothing to flush');
+    }
 
     // Helper: send chunk request and read response with dynamic length (v23 proven approach)
     // CRITICAL: Must read exact number of bytes to avoid corrupting the USB stream
@@ -1284,6 +1308,43 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         return { success: false, reason: 'exception: ' + e.message };
       }
     }
+
+    // === Step 2.5: Probe test - try reading chunk 0 from partition 0 ===
+    // This helps diagnose whether the device is actually in dump mode
+    console.log('[USB] Probing chunk read (P0 chunk0)...');
+    READ_TIMEOUT = 5000;
+    try {
+      var probeResult = await readChunk(0, 0);
+      console.log('[USB] Probe result: success=' + probeResult.success +
+        ', empty=' + probeResult.empty +
+        ', respLen=' + (probeResult.respLen !== undefined ? probeResult.respLen : 'N/A') +
+        ', dataLen=' + (probeResult.data ? probeResult.data.length : 0) +
+        (probeResult.reason ? ', reason=' + probeResult.reason : '') +
+        (probeResult.rawHeader ? ', rawHeader=' + probeResult.rawHeader : ''));
+      if (!probeResult.success) {
+        console.log('[USB] PROBE FAILED! Device may not be in dump mode or memory is empty.');
+        console.log('[USB] Attempting to re-send MEMORY_DUMP_START...');
+        // Try sending MEMORY_DUMP_START again
+        try {
+          var retryResp = await this.sendCommand(CMD.MEMORY_DUMP_START, []);
+          console.log('[USB] Retry MEMORY_DUMP_START: success=' + retryResp.success);
+          await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+        } catch(e2) {
+          console.log('[USB] Retry MEMORY_DUMP_START failed: ' + e2.message);
+        }
+        // Try probe again
+        var probeResult2 = await readChunk(0, 0);
+        console.log('[USB] Probe2 result: success=' + probeResult2.success +
+          ', empty=' + probeResult2.empty +
+          (probeResult2.reason ? ', reason=' + probeResult2.reason : ''));
+        if (!probeResult2.success) {
+          console.log('[USB] Both probes failed. Device likely has no data or is not in dump mode.');
+        }
+      }
+    } catch(probeErr) {
+      console.log('[USB] Probe exception: ' + probeErr.message);
+    }
+    READ_TIMEOUT = 3000;
 
     for (var p = 0; p < numPartitions; p++) {
       checkTimeout();
