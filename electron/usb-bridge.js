@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-21-v22 (chunk debug logs, safety limits, empty chunk detection fix)
+ * VERSION: 2024-06-22-v23 (dynamic chunk response reading - fix empty chunk stream corruption)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -880,24 +880,45 @@ ProcyonUsbBridge.prototype.getMemoryPartitions = async function() {
   }
 };
 
-// Get written chunk count for a specific partition
-// DLL: GetWrittenChunksForPartition(partition) -> GetValueFromResponse((Command)27, [partition_u8])
+// Parse UInt32 from response data (used by partition info queries)
+// DLL uses GetValueFromResponse which reads the data field as a UInt32
+function parseResponseUInt32(resp) {
+  if (!resp.success || !resp.data || resp.data.length < 1) {
+    return { success: false, count: 0 };
+  }
+  var d = resp.data;
+  // Try ASCII value first (some responses return numbers as ASCII strings)
+  if (resp.value && resp.value.length > 0) {
+    var parsed = parseInt(resp.value, 10);
+    if (!isNaN(parsed) && parsed > 0 && parsed < 1000000) {
+      return { success: true, count: parsed, source: 'ascii' };
+    }
+  }
+  // Try raw bytes as UInt32
+  if (d.length >= 4) {
+    // Big-endian (network byte order, as DLL uses)
+    var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
+    // Little-endian
+    var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
+    // Pick the reasonable one (not 0, not absurdly large)
+    if (be > 0 && be < 1000000) return { success: true, count: be, source: 'be', raw: hexStr(d) };
+    if (le > 0 && le < 1000000) return { success: true, count: le, source: 'le', raw: hexStr(d) };
+  }
+  // Single byte fallback
+  if (d.length >= 1 && d[0] > 0 && d[0] < 256) {
+    return { success: true, count: d[0], source: 'byte', raw: hexStr(d) };
+  }
+  return { success: false, count: 0, raw: hexStr(d) };
+}
+
 ProcyonUsbBridge.prototype.getWrittenChunksForPartition = async function(partition) {
   try {
     var resp = await this.sendCommand(CMD.GET_PARTITION_NUMBER_CHUNKS_WRITTEN, [partition & 0xFF]);
-    console.log('[USB] WrittenChunks P' + partition + ': success=' + resp.success + ' dataLen=' + (resp.data ? resp.data.length : 'null') + ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
-    if (resp.success && resp.data && resp.data.length >= 1) {
-      var d = resp.data;
-      if (d.length >= 4) {
-        var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
-        var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
-        return { success: true, count: be > 0 ? be : le, raw: hexStr(d) };
-      }
-      if (d.length >= 1 && d[0] > 0) {
-        return { success: true, count: d[0], raw: hexStr(d) };
-      }
-    }
-    return { success: false, count: 0, reason: 'no data or empty (resp.success=' + resp.success + ')' };
+    console.log('[USB] WrittenChunks P' + partition + ': success=' + resp.success +
+      ' dataLen=' + (resp.data ? resp.data.length : 'null') +
+      ' value=' + JSON.stringify(resp.value) +
+      ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
+    return parseResponseUInt32(resp);
   } catch (error) {
     return { success: false, count: 0, error: error.message };
   }
@@ -906,19 +927,11 @@ ProcyonUsbBridge.prototype.getWrittenChunksForPartition = async function(partiti
 ProcyonUsbBridge.prototype.getPartitionTotalChunks = async function(partition) {
   try {
     var resp = await this.sendCommand(CMD.GET_PARTITION_TOTAL_NUMBER_CHUNKS, [partition & 0xFF]);
-    console.log('[USB] TotalChunks P' + partition + ': success=' + resp.success + ' dataLen=' + (resp.data ? resp.data.length : 'null') + ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
-    if (resp.success && resp.data && resp.data.length >= 1) {
-      var d = resp.data;
-      if (d.length >= 4) {
-        var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
-        var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
-        return { success: true, count: be > 0 ? be : le, raw: hexStr(d) };
-      }
-      if (d.length >= 1 && d[0] > 0) {
-        return { success: true, count: d[0], raw: hexStr(d) };
-      }
-    }
-    return { success: false, count: 0, reason: 'no data or empty (resp.success=' + resp.success + ')' };
+    console.log('[USB] TotalChunks P' + partition + ': success=' + resp.success +
+      ' dataLen=' + (resp.data ? resp.data.length : 'null') +
+      ' value=' + JSON.stringify(resp.value) +
+      ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
+    return parseResponseUInt32(resp);
   } catch (error) {
     return { success: false, count: 0, error: error.message };
   }
@@ -927,19 +940,25 @@ ProcyonUsbBridge.prototype.getPartitionTotalChunks = async function(partition) {
 ProcyonUsbBridge.prototype.getPartitionWrittenByteCount = async function(partition) {
   try {
     var resp = await this.sendCommand(CMD.GET_PARTITION_WRITTEN_BYTE_COUNT, [partition & 0xFF]);
-    console.log('[USB] WrittenBytes P' + partition + ': success=' + resp.success + ' dataLen=' + (resp.data ? resp.data.length : 'null') + ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
-    if (resp.success && resp.data && resp.data.length >= 1) {
-      var d = resp.data;
-      if (d.length >= 4) {
-        var be = ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
-        var le = ((d[3] << 24) | (d[2] << 16) | (d[1] << 8) | d[0]) >>> 0;
-        return { success: true, count: be > 0 ? be : le, raw: hexStr(d) };
-      }
-      if (d.length >= 1 && d[0] > 0) {
-        return { success: true, count: d[0], raw: hexStr(d) };
-      }
-    }
-    return { success: false, count: 0, reason: 'no data or empty (resp.success=' + resp.success + ')' };
+    console.log('[USB] WrittenBytes P' + partition + ': success=' + resp.success +
+      ' dataLen=' + (resp.data ? resp.data.length : 'null') +
+      ' value=' + JSON.stringify(resp.value) +
+      ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
+    return parseResponseUInt32(resp);
+  } catch (error) {
+    return { success: false, count: 0, error: error.message };
+  }
+};
+
+// Get the chunk size from the device
+ProcyonUsbBridge.prototype.getMemoryDumpChunkSize = async function() {
+  try {
+    var resp = await this.sendCommand(CMD.GET_MEMORY_DUMP_CHUNK_SIZE);
+    console.log('[USB] ChunkSize: success=' + resp.success +
+      ' dataLen=' + (resp.data ? resp.data.length : 'null') +
+      ' value=' + JSON.stringify(resp.value) +
+      ' raw=' + (resp.data ? hexStr(resp.data) : 'n/a'));
+    return parseResponseUInt32(resp);
   } catch (error) {
     return { success: false, count: 0, error: error.message };
   }
@@ -1045,16 +1064,61 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       console.log('[USB] No partition count, assuming 1');
     }
 
-    // === Step 3: Download data - read chunks until empty ===
-    // Skip partition info queries (they return wrong values due to protocol issues)
-    // The original software reads chunks sequentially until empty, which is fast
-    var CHUNK_RESPONSE_LEN = 8062; // 4 header + 1 partition + 1 status + 4 chunkNum + 8052 data
+    // === Step 3: Download data - read chunks using dynamic response reading ===
+    // Key insight from DLL: empty chunks return SHORT responses, not full 8062 bytes.
+    // sendCommandWithExpectedLength would over-read and corrupt the stream.
+    // Instead, read the header first (4 bytes), check the length field,
+    // then read exactly that many data bytes.
     var CHUNK_DATA_LEN = 8052;
-    var MAX_EMPTY_CHUNKS = 3; // Stop after 3 consecutive empty chunks
-    var MAX_CHUNKS_PER_PARTITION = 10000; // Safety limit (device has ~10K total chunks across all partitions)
-    var MAX_BYTES_PER_PARTITION = 50 * 1024 * 1024; // 50MB safety limit per partition
+    var MAX_EMPTY_CHUNKS = 3;
     var allData = [];
     var partitionDebug = [];
+
+    // Helper: send chunk request and read response with dynamic length
+    var self = this;
+    async function readChunk(partition, chunkNum) {
+      var dataBytes = [
+        partition & 0xFF,
+        chunkNum & 0xFF,
+        (chunkNum >> 8) & 0xFF,
+        (chunkNum >> 16) & 0xFF,
+        (chunkNum >> 24) & 0xFF
+      ];
+      var packet = buildCommandPacket(CMD.GET_MEMORY_DUMP_CHUNK_DATA, dataBytes);
+      await self._writeToDevice(packet);
+
+      // Small delay to let device prepare response
+      await new Promise(function(r) { setTimeout(r, 2); });
+
+      // Read response header (4 bytes) first
+      var headerBuf = await self._readFromDevice(4);
+      if (!headerBuf || headerBuf.length < 4) {
+        return { success: false, reason: 'no header' };
+      }
+
+      // Parse header: [cmdlow_resp, cmdhigh_resp, lengthlow, lengthhigh]
+      var respCmd = headerBuf[0] | (headerBuf[1] << 8);
+      var respLen = headerBuf[2] | (headerBuf[3] << 8);
+
+      // Validate: response command should be request command + 1
+      var expectedRespCmd = CMD.GET_MEMORY_DUMP_CHUNK_DATA + 1;
+      if (respCmd !== expectedRespCmd) {
+        return { success: false, reason: 'wrong cmd: got 0x' + respCmd.toString(16) + ' expected 0x' + expectedRespCmd.toString(16), raw: hexStr(headerBuf) };
+      }
+
+      // Read the data portion
+      if (respLen === 0) {
+        // Zero-length data = definitely empty chunk
+        return { success: true, empty: true, data: [], respLen: 0 };
+      }
+
+      var dataBuf = await self._readFromDevice(respLen);
+      if (!dataBuf || dataBuf.length < respLen) {
+        return { success: false, reason: 'short data: got ' + (dataBuf ? dataBuf.length : 0) + ' expected ' + respLen };
+      }
+
+      return { success: true, empty: false, data: dataBuf, respLen: respLen };
+    }
 
     for (var p = 0; p < numPartitions; p++) {
       checkTimeout();
@@ -1064,93 +1128,114 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       var chunksRead = 0;
       var totalBytesRead = 0;
       var lastProgressTime = 0;
+      var maxChunksForPartition = 20000; // Safety limit
 
       console.log('[USB] P' + (p+1) + ': reading chunks until empty...');
 
-      for (var c = 0; c < MAX_CHUNKS_PER_PARTITION; c++) {
+      for (var c = 0; c < maxChunksForPartition; c++) {
         checkTimeout();
 
-        // Build chunk request packet directly for speed
-        var data = [
-          p & 0xFF,
-          c & 0xFF,
-          (c >> 8) & 0xFF,
-          (c >> 16) & 0xFF,
-          (c >> 24) & 0xFF
-        ];
-
         try {
-          var chunkResp = await this.sendCommandWithExpectedLength(CMD.GET_MEMORY_DUMP_CHUNK_DATA, data, CHUNK_RESPONSE_LEN);
+          var chunk = await readChunk(p, c);
 
-          // Debug: log first chunk of each partition to understand response format
-          if (c === 0) {
-            console.log('[USB] P' + (p+1) + ' chunk0: success=' + chunkResp.success +
-              ', data.length=' + (chunkResp.data ? chunkResp.data.length : 'null') +
-              ', raw.length=' + (chunkResp.raw ? chunkResp.raw.length : 'null') +
-              ', length=' + chunkResp.length +
-              ', first16=' + (chunkResp.data ? hexStr(chunkResp.data.slice(0, 16)) : 'N/A'));
+          // Debug first 3 chunks of each partition
+          if (c < 3) {
+            console.log('[USB] P' + (p+1) + ' chunk' + c + ': success=' + chunk.success +
+              ', empty=' + chunk.empty +
+              ', respLen=' + (chunk.respLen !== undefined ? chunk.respLen : 'N/A') +
+              ', dataLen=' + (chunk.data ? chunk.data.length : 0) +
+              (chunk.reason ? ', reason=' + chunk.reason : '') +
+              (chunk.data && chunk.data.length > 0 ? ', first8=' + hexStr(chunk.data.slice(0, 8)) : ''));
           }
 
-          if (chunkResp.success && chunkResp.data && chunkResp.data.length > 1) {
+          if (chunk.success) {
             consecutiveFail = 0;
-            var status = chunkResp.data[1]; // Status byte after partition byte
 
-            // More detailed check: is this really data or is the status byte misidentified?
-            // DLL: response = [PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
-            // Status=0 means empty chunk, non-zero means has data
-            if (status !== 0 && chunkResp.data.length > 6) {
-              // Verify this is real data by checking chunk number matches what we requested
-              var respChunkNum = (chunkResp.data[2]) |
-                                 (chunkResp.data[3] << 8) |
-                                 (chunkResp.data[4] << 16) |
-                                 (chunkResp.data[5] << 24);
-              if (c === 0) {
-                console.log('[USB] P' + (p+1) + ' chunk0: partition=' + chunkResp.data[0] +
-                  ', status=' + status + ', respChunkNum=' + respChunkNum);
-              }
-
-              // Has data - extract chunk payload (skip 6-byte sub-header)
-              var chunkData = chunkResp.data.slice(6);
-              partitionData.push(Buffer.from(chunkData));
-              totalBytesRead += chunkData.length;
-              chunksRead++;
-              consecutiveEmpty = 0;
-            } else {
-              // Empty chunk (status=0 or no data)
+            if (chunk.empty) {
+              // Zero-length response = empty chunk
               consecutiveEmpty++;
-              if (c < 5) console.log('[USB] P' + (p+1) + ' chunk' + c + ': EMPTY (status=' + status + ', dataLen=' + chunkResp.data.length + ')');
               if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) {
                 console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty chunks at chunk ' + c + ', stopping');
                 break;
               }
+            } else if (chunk.data && chunk.data.length >= 6) {
+              // Response has data: [PartitionNumber(1B), Status(1B), ChunkNumber(4B), Data(8052B)]
+              var status = chunk.data[1];
+              var respChunkNum = chunk.data[2] | (chunk.data[3] << 8) | (chunk.data[4] << 16) | (chunk.data[5] << 24);
+              var payload = chunk.data.slice(6);
+
+              if (c < 3) {
+                console.log('[USB] P' + (p+1) + ' chunk' + c + ': partition=' + chunk.data[0] +
+                  ', status=' + status + ', respChunkNum=' + respChunkNum +
+                  ', payloadLen=' + payload.length +
+                  ', payloadFirst8=' + hexStr(payload.slice(0, 8)));
+              }
+
+              // Status=0 means empty partition/slot
+              // Also check for 0xFF-filled payload (unwritten flash)
+              if (status === 0) {
+                consecutiveEmpty++;
+                if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) {
+                  console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty (status=0) at chunk ' + c);
+                  break;
+                }
+              } else {
+                // Has data
+                var isAllFF = false;
+                if (payload.length >= 64) {
+                  isAllFF = true;
+                  for (var bi = 0; bi < 64; bi++) {
+                    if (payload[bi] !== 0xFF) { isAllFF = false; break; }
+                  }
+                }
+                if (isAllFF) {
+                  consecutiveEmpty++;
+                  if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) {
+                    console.log('[USB] P' + (p+1) + ': ' + consecutiveEmpty + ' empty (all-FF) at chunk ' + c);
+                    break;
+                  }
+                } else {
+                  // Real data!
+                  partitionData.push(Buffer.from(payload));
+                  totalBytesRead += payload.length;
+                  chunksRead++;
+                  consecutiveEmpty = 0;
+                }
+              }
+            } else if (chunk.data && chunk.data.length > 0 && chunk.data.length < 6) {
+              // Short data response (less than 6 bytes) - likely an empty/NAK indicator
+              if (c < 5) console.log('[USB] P' + (p+1) + ' chunk' + c + ': short response (' + chunk.data.length + ' bytes), treating as empty');
+              consecutiveEmpty++;
+              if (consecutiveEmpty >= MAX_EMPTY_CHUNKS) break;
             }
           } else {
+            // Read failure
             consecutiveFail++;
             consecutiveEmpty++;
-            if (c < 5) console.log('[USB] P' + (p+1) + ' chunk' + c + ': FAIL (success=' + chunkResp.success + ', dataLen=' + (chunkResp.data ? chunkResp.data.length : 0) + ')');
+            if (c < 5) console.log('[USB] P' + (p+1) + ' chunk' + c + ': FAIL - ' + (chunk.reason || 'unknown'));
             if (consecutiveFail >= 5) {
-              console.log('[USB] P' + (p+1) + ': ' + consecutiveFail + ' failed reads at chunk ' + c + ', stopping');
+              console.log('[USB] P' + (p+1) + ': too many failures at chunk ' + c + ', stopping');
               break;
             }
           }
         } catch (chunkErr) {
           consecutiveFail++;
+          consecutiveEmpty++;
           if (consecutiveFail >= 5) break;
         }
 
         // Yield to event loop every 5 chunks to prevent app freeze
-        // Without this, the Electron main thread blocks and the window shows "Not Responding"
         if (c % 5 === 0) {
           await new Promise(function(resolve) { setTimeout(resolve, 0); });
         }
 
         // Safety: stop if too much data read for one partition
-        if (totalBytesRead >= MAX_BYTES_PER_PARTITION) {
+        if (totalBytesRead >= 80 * 1024 * 1024) { // 80MB limit
           console.log('[USB] P' + (p+1) + ': safety limit reached (' + totalBytesRead + ' bytes), stopping');
           break;
         }
 
-        // Report progress every 500ms or every 10 chunks
+        // Report progress every 300ms or every 10 chunks
         if (onProgress) {
           var now = Date.now();
           if (now - lastProgressTime > 300 || c % 10 === 0) {
@@ -1159,7 +1244,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
               partition: p + 1,
               totalPartitions: numPartitions,
               chunk: c + 1,
-              totalChunks: 0, // Unknown, probing
+              totalChunks: 0,
               chunksRead: chunksRead,
               bytesDownloaded: totalBytesRead,
               percent: 0
