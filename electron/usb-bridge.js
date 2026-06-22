@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-22-v27 (add chunkReadDebug to diagnose 0-chunk issue)
+ * VERSION: 2024-06-22-v27b (fix chunkReadDebug not defined)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -1168,6 +1168,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   var savedTimeout = READ_TIMEOUT;
   var startTime = Date.now();
   var MAX_DOWNLOAD_TIME = 300000; // 5 minutes
+  var chunkReadDebug = [];
 
   function elapsed() { return Date.now() - startTime; }
   function checkTimeout() {
