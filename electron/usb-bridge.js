@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-22-v30 (enhanced dump start logging, USB flush, probe test)
+ * VERSION: 2024-06-22-v37 (simplified download+CSV, fixed saveRecordsCsv path)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -1564,7 +1564,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         var chunkRetries = 3;
         for (var retry = 0; retry < chunkRetries; retry++) {
           try {
-            chunk = await readChunk(p, c, chunksRead === 0 && emptyCount > 0 ? 1500 : 5000);
+            chunk = await readChunk(p, c, chunksRead === 0 && emptyChunkCount > 0 ? 1500 : 5000);
             if (chunk.success || chunk.reason === 'no header (got 0 bytes)') {
               break; // Success or device timeout - don't retry timeout
             }
@@ -1824,6 +1824,60 @@ ProcyonUsbBridge.prototype.exportRecordsCsv = function() {
     lines.push(vals.join(','));
   }
   return lines.join('\n');
+};
+
+ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
+  if (!_lastParsedRecords || _lastParsedRecords.length === 0) {
+    return { success: false, error: 'No records to export' };
+  }
+  try {
+    var fs = require('fs');
+    var path = require('path');
+    var os = require('os');
+    
+    // Generate CSV content
+    var headers = ['timestamp', 'temperature', 'batteryV',
+      'rpmMinX', 'rpmMaxX', 'rpmAvgX', 'rpmRmsX',
+      'rpmMinY', 'rpmMaxY', 'rpmAvgY', 'rpmRmsY',
+      'rpmMinZ', 'rpmMaxZ', 'rpmAvgZ', 'rpmRmsZ',
+      'shockLowMinX', 'shockLowMaxX', 'shockLowAvgX', 'shockLowRmsX',
+      'shockLowMinY', 'shockLowMaxY', 'shockLowAvgY', 'shockLowRmsY',
+      'shockLowMinZ', 'shockLowMaxZ', 'shockLowAvgZ', 'shockLowRmsZ',
+      'shockMinX', 'shockMaxX', 'shockAvgX', 'shockRmsX',
+      'shockMinY', 'shockMaxY', 'shockAvgY', 'shockRmsY',
+      'shockMinZ', 'shockMaxZ', 'shockAvgZ', 'shockRmsZ',
+      'shockLateralMax', 'shockLateralRms'];
+    
+    var lines = [headers.join(',')];
+    for (var i = 0; i < _lastParsedRecords.length; i++) {
+      var r = _lastParsedRecords[i];
+      var vals = headers.map(function(h) { return r[h] !== undefined ? r[h] : ''; });
+      lines.push(vals.join(','));
+    }
+    
+    // Determine save path - always save to Downloads directory
+    var downloadsDir = path.join(os.homedir(), 'Downloads');
+    var fileName = defaultPath;
+    if (!fileName || fileName.indexOf(path.sep) === -1) {
+      // defaultPath is just a filename (or empty) - use Downloads dir
+      if (!fileName) {
+        var now = new Date();
+        var dateStr = now.getFullYear() + '-' +
+          String(now.getMonth() + 1).padStart(2, '0') + '-' +
+          String(now.getDate()).padStart(2, '0') + '_' +
+          String(now.getHours()).padStart(2, '0') +
+          String(now.getMinutes()).padStart(2, '0');
+        fileName = 'Procyon_CM_Data_' + dateStr + '.csv';
+      }
+    }
+    var savePath = path.isAbsolute(fileName) ? fileName : path.join(downloadsDir, fileName);
+    
+    fs.writeFileSync(savePath, lines.join('\n'), 'utf-8');
+    console.log('[v37] CSV saved to: ' + savePath + ' (' + _lastParsedRecords.length + ' records)');
+    return { success: true, filePath: savePath, recordCount: _lastParsedRecords.length };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 };
 
 ProcyonUsbBridge.prototype.runSelfTest = async function(tests, onProgress) {

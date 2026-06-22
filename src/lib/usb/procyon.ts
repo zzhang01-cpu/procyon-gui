@@ -519,6 +519,14 @@ export async function exportRecordsCsv(): Promise<{ csv: string; count: number }
   return api.exportRecordsCsv() as Promise<{ csv: string; count: number }>;
 }
 
+export async function saveRecordsCsv(defaultPath: string): Promise<{ filePath: string; count: number }> {
+  const api = getAPI();
+  if (!api) {
+    throw new Error('Not running in Electron environment');
+  }
+  return api.saveRecordsCsv(defaultPath) as Promise<{ filePath: string; count: number }>;
+}
+
 /**
  * Register a callback for download progress events
  */

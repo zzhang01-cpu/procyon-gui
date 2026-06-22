@@ -3,209 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useDevice } from '@/lib/device/context';
 import { useI18n } from '@/lib/i18n/context';
-
-// Sample table component that fetches records from main process on demand
-function SampleTable({ visibleGroups, dm, fmt }: {
-  visibleGroups: { temperature: boolean; battery: boolean; highShock: boolean; lowShock: boolean; rotational: boolean; pressure: boolean };
-  dm: Record<string, string>;
-  fmt: (v: number | undefined, decimals?: number) => string;
-}) {
-  const [sampleRecords, setSampleRecords] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(0);
-  const PAGE_SIZE = 50;
-
-  useEffect(() => {
-    setLoading(true);
-    (window as any).electronAPI?.getRecordsPage(page * PAGE_SIZE, PAGE_SIZE)
-      .then((records: any[]) => {
-        setSampleRecords(records || []);
-        setLoading(false);
-      })
-      .catch(() => {
-        setSampleRecords([]);
-        setLoading(false);
-      });
-  }, [page]);
-
-  if (loading) {
-    return <div className="text-center py-8 text-gray-400 text-sm">加载数据...</div>;
-  }
-
-  if (sampleRecords.length === 0) {
-    return <div className="text-center py-8 text-gray-400 text-sm">无预览数据</div>;
-  }
-
-  return (
-    <div className="flex-1 flex flex-col border border-gray-200 rounded-lg overflow-hidden">
-      <div className="overflow-auto flex-1">
-        <table className="w-full text-xs border-collapse">
-          <thead className="bg-gray-50 sticky top-0 z-10">
-            <tr>
-              <th className="px-2 py-2 text-left font-semibold text-gray-700 whitespace-nowrap border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20">
-                {dm.timestamp || '时间戳'}
-              </th>
-              {visibleGroups.temperature && (
-                <th className="px-2 py-2 text-center font-semibold text-blue-700 whitespace-nowrap border-b border-r border-gray-200 bg-blue-50">
-                  {dm.temperature || '温度'} (°C)
-                </th>
-              )}
-              {visibleGroups.battery && (
-                <th className="px-2 py-2 text-center font-semibold text-green-700 whitespace-nowrap border-b border-r border-gray-200 bg-green-50">
-                  {dm.batteryVoltage || '电池'} (mV)
-                </th>
-              )}
-              {visibleGroups.highShock && (
-                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-red-700 border-b border-gray-200 bg-red-50 text-xs">
-                  {dm.highShockLabel || '高冲击'} (g)
-                </th>
-              )}
-              {visibleGroups.lowShock && (
-                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-yellow-700 border-b border-gray-200 bg-yellow-50 text-xs">
-                  {dm.lowShockLabel || '低冲击'} (g)
-                </th>
-              )}
-              {visibleGroups.rotational && (
-                <th colSpan={12} className="px-2 py-1 text-center font-semibold text-purple-700 border-b border-gray-200 bg-purple-50 text-xs">
-                  {dm.rotational || '旋转'} (rpm)
-                </th>
-              )}
-              {visibleGroups.pressure && (
-                <th className="px-2 py-2 text-center font-semibold text-cyan-700 whitespace-nowrap border-b border-r border-gray-200 bg-cyan-50">
-                  {dm.pressureLabel || '压力'} (psi)
-                </th>
-              )}
-            </tr>
-            <tr>
-              <th className="px-2 py-1 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20"></th>
-              {visibleGroups.temperature && <th className="px-1 py-1 border-b border-r border-gray-200 bg-blue-50/50"></th>}
-              {visibleGroups.battery && <th className="px-1 py-1 border-b border-r border-gray-200 bg-green-50/50"></th>}
-              {visibleGroups.highShock && (
-                ['X', 'Y', 'Z'].map(axis => (
-                  ['min', 'max', 'avg', 'rms'].map(stat => (
-                    <th key={`hs-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-red-50/30 text-[10px]">
-                      {axis}_{stat}
-                    </th>
-                  ))
-                )).flat()
-              )}
-              {visibleGroups.lowShock && (
-                ['X', 'Y', 'Z'].map(axis => (
-                  ['min', 'max', 'avg', 'rms'].map(stat => (
-                    <th key={`ls-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-yellow-50/30 text-[10px]">
-                      {axis}_{stat}
-                    </th>
-                  ))
-                )).flat()
-              )}
-              {visibleGroups.rotational && (
-                ['X', 'Y', 'Z'].map(axis => (
-                  ['min', 'max', 'avg', 'rms'].map(stat => (
-                    <th key={`rot-${axis}-${stat}`} className="px-1 py-1 text-center font-normal text-gray-600 whitespace-nowrap border-b border-r border-gray-200 bg-purple-50/30 text-[10px]">
-                      {axis}_{stat}
-                    </th>
-                  ))
-                )).flat()
-              )}
-              {visibleGroups.pressure && <th className="px-1 py-1 border-b border-r border-gray-200 bg-cyan-50/50"></th>}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {sampleRecords.map((record, idx) => (
-              <tr key={idx} className={idx === 0 ? 'bg-blue-50/30' : 'hover:bg-gray-50/50'}>
-                <td className="px-2 py-1.5 text-gray-700 whitespace-nowrap font-mono border-r border-gray-100 sticky left-0 bg-white">
-                  {record.timestamp}
-                </td>
-                {visibleGroups.temperature && (
-                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
-                    {fmt(record.temperature, 4)}
-                  </td>
-                )}
-                {visibleGroups.battery && (
-                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
-                    {fmt(record.batteryVoltage, 0)}
-                  </td>
-                )}
-                {visibleGroups.highShock && (
-                  <>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMinZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockMaxZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockAvgZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockRmsZ)}</td>
-                  </>
-                )}
-                {visibleGroups.lowShock && (
-                  <>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinX, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxX, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgX, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsX, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinY, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxY, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgY, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsY, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMinZ, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowMaxZ, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowAvgZ, 4)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.shockLowRmsZ, 4)}</td>
-                  </>
-                )}
-                {visibleGroups.rotational && (
-                  <>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsX)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsY)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMinZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmMaxZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmAvgZ)}</td>
-                    <td className="px-1.5 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">{fmt(record.rpmRmsZ)}</td>
-                  </>
-                )}
-                {visibleGroups.pressure && (
-                  <td className="px-2 py-1.5 text-center font-mono text-gray-700 border-r border-gray-100">
-                    {fmt(record.pressure)}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {/* Pagination */}
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-t border-gray-200 text-xs text-gray-600">
-        <button
-          onClick={() => setPage(Math.max(0, page - 1))}
-          disabled={page === 0}
-          className="px-3 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-30"
-        >
-          上一页
-        </button>
-        <span>第 {page + 1} 页 (每页 {PAGE_SIZE} 条)</span>
-        <button
-          onClick={() => setPage(page + 1)}
-          disabled={sampleRecords.length < PAGE_SIZE}
-          className="px-3 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-30"
-        >
-          下一页
-        </button>
-      </div>
-    </div>
-  );
-}
-import type { OneSecondRecord } from '@/lib/usb/procyon';
+import { saveRecordsCsv as usbSaveRecordsCsv } from '@/lib/usb/procyon';
 
 export default function DeviceMonitoringPage() {
   const {
@@ -222,7 +20,6 @@ export default function DeviceMonitoringPage() {
     downloadData,
     downloadProgress,
     clearData,
-    exportData,
   } = useDevice();
   const { t } = useI18n();
   const dm = t.deviceMonitoring;
@@ -236,6 +33,8 @@ export default function DeviceMonitoringPage() {
   // Download state
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadRecordCount, setDownloadRecordCount] = useState(0);
+  const [csvFilePath, setCsvFilePath] = useState<string | null>(null);
   const [debugLog, setDebugLog] = useState<string[]>([]);
 
   const addLog = (msg: string) => {
@@ -243,17 +42,6 @@ export default function DeviceMonitoringPage() {
     setDebugLog(prev => [...prev.slice(-15), `[${ts}] ${msg}`]);
     console.log('[MonitorPage]', msg);
   };
-
-  // Visible sensor groups (for downloaded data view)
-  const [visibleGroups, setVisibleGroups] = useState({
-    temperature: true,
-    battery: true,
-    highShock: true,
-    lowShock: true,
-    pressure: true,
-    rotational: true,
-    shockLateral: false,
-  });
 
   // Launch device
   const [launchHours, setLaunchHours] = useState(0);
@@ -301,7 +89,6 @@ export default function DeviceMonitoringPage() {
               timestamp: ts,
               temperature: data.temperatureCM != null ? String(data.temperatureCM) : 'N/A',
               batteryVoltage: data.batteryVoltage != null ? String(data.batteryVoltage) : 'N/A',
-              // Multi-axis sensor data from getSensorData (Float32 values)
               rpmX_min: data.rpmX_min || 'N/A', rpmX_max: data.rpmX_max || 'N/A', rpmX_avg: data.rpmX_avg || 'N/A', rpmX_rms: data.rpmX_rms || 'N/A',
               rpmY_min: data.rpmY_min || 'N/A', rpmY_max: data.rpmY_max || 'N/A', rpmY_avg: data.rpmY_avg || 'N/A', rpmY_rms: data.rpmY_rms || 'N/A',
               rpmZ_min: data.rpmZ_min || 'N/A', rpmZ_max: data.rpmZ_max || 'N/A', rpmZ_avg: data.rpmZ_avg || 'N/A', rpmZ_rms: data.rpmZ_rms || 'N/A',
@@ -341,11 +128,13 @@ export default function DeviceMonitoringPage() {
     }
     setIsDownloading(true);
     setDownloadError(null);
+    setDownloadRecordCount(0);
+    setCsvFilePath(null);
     setDebugLog([]);
     try {
       addLog('开始下载数据...');
       const result = await downloadData();
-      addLog('下载完成: success=' + String(result?.success) + ', error=' + String(result?.error) + ', partitions=' + String(result?.partitions?.length) + ', totalPartitions=' + String(result?.totalPartitions));
+      addLog('下载完成: success=' + String(result?.success) + ', error=' + String(result?.error));
       // Log partition debug info (CMD responses)
       const partDebug = result?.partitionDebug as string[] | undefined;
       if (partDebug && partDebug.length > 0) {
@@ -371,9 +160,12 @@ export default function DeviceMonitoringPage() {
         addLog('下载失败: ' + errMsg);
         setDownloadError(errMsg);
       } else {
-        // parsedRecords is now in downloadedData, check length after state update
-        addLog('下载成功! 数据已传至主进程解析');
-        // Show parse debug info from main process (string[])
+        const recordCount = (result as any).recordCount || 0;
+        const savedPath = (result as any).csvFilePath || null;
+        setDownloadRecordCount(recordCount);
+        setCsvFilePath(savedPath);
+        addLog('下载成功! ' + recordCount.toLocaleString() + ' 条记录' + (savedPath ? ', CSV已保存: ' + savedPath : ''));
+        // Show parse debug info from main process
         const parseDebugInfo = (result as any).partitionDebugInfo;
         if (parseDebugInfo && Array.isArray(parseDebugInfo)) {
           for (const line of parseDebugInfo) {
@@ -387,7 +179,22 @@ export default function DeviceMonitoringPage() {
     } finally {
       setIsDownloading(false);
     }
-  }, [connected, downloadData, dm.downloadFailed, t.errors]);
+  }, [connected, downloadData, dm.downloadFailed, dm.downloading, t.errors]);
+
+  // Manual CSV save button
+  const handleSaveCSV = async () => {
+    try {
+      const result = await usbSaveRecordsCsv('Procyon_Data_' + new Date().toISOString().slice(0, 10) + '.csv');
+      if (result && (result as any).success !== false) {
+        setCsvFilePath((result as any).filePath);
+        addLog('CSV已保存: ' + (result as any).filePath);
+      } else {
+        addLog('CSV保存失败: ' + ((result as any).error || 'unknown'));
+      }
+    } catch (err) {
+      addLog('CSV保存异常: ' + (err instanceof Error ? err.message : ''));
+    }
+  };
 
   const handleLaunch = async () => {
     if (!connected) {
@@ -446,133 +253,6 @@ export default function DeviceMonitoringPage() {
     }
   };
 
-  const toggleGroup = (key: keyof typeof visibleGroups) => {
-    setVisibleGroups(prev => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  // Format number with fixed decimal places
-  const fmt = (val: number | undefined | null, decimals: number = 2): string => {
-    if (val == null || isNaN(val)) return 'N/A';
-    return val.toFixed(decimals);
-  };
-
-  // CSV export for downloaded data - match original Procyon software format
-  const exportDownloadedCSV = () => {
-    if (downloadedData.length === 0) return;
-    const BOM = '\uFEFF';
-
-    // Temperature CSV (like original: Timestamp, Temperature)
-    const tempCsv = BOM + [
-      'Timestamp,Temperature',
-      ...downloadedData.map(r => `${r.timestamp},${fmt(r.temperature, 4)}`)
-    ].join('\n');
-
-    // Battery CSV
-    const battCsv = BOM + [
-      'Timestamp,Battery_mV',
-      ...downloadedData.map(r => `${r.timestamp},${fmt(r.batteryVoltage, 0)}`)
-    ].join('\n');
-
-    // HighShock CSV - X/Y/Z min/max/avg/rms (like original)
-    const hsHeaders = 'Timestamp,highShockX_min,highShockX_max,highShockX_avg,highShockX_rms,highShockY_min,highShockY_max,highShockY_avg,highShockY_rms,highShockZ_min,highShockZ_max,highShockZ_avg,highShockZ_rms';
-    const hsCsv = BOM + [
-      hsHeaders,
-      ...downloadedData.map(r => [
-        r.timestamp,
-        fmt(r.shockMinX), fmt(r.shockMaxX), fmt(r.shockAvgX), fmt(r.shockRmsX),
-        fmt(r.shockMinY), fmt(r.shockMaxY), fmt(r.shockAvgY), fmt(r.shockRmsY),
-        fmt(r.shockMinZ), fmt(r.shockMaxZ), fmt(r.shockAvgZ), fmt(r.shockRmsZ),
-      ].join(','))
-    ].join('\n');
-
-    // LowShock CSV - X/Y/Z min/max/avg/rms (like original)
-    const lsHeaders = 'Timestamp,lowShockX_min,lowShockX_max,lowShockX_avg,lowShockX_rms,lowShockY_min,lowShockY_max,lowShockY_avg,lowShockY_rms,lowShockZ_min,lowShockZ_max,lowShockZ_avg,lowShockZ_rms';
-    const lsCsv = BOM + [
-      lsHeaders,
-      ...downloadedData.map(r => [
-        r.timestamp,
-        fmt(r.shockLowMinX), fmt(r.shockLowMaxX), fmt(r.shockLowAvgX), fmt(r.shockLowRmsX),
-        fmt(r.shockLowMinY), fmt(r.shockLowMaxY), fmt(r.shockLowAvgY), fmt(r.shockLowRmsY),
-        fmt(r.shockLowMinZ), fmt(r.shockLowMaxZ), fmt(r.shockLowAvgZ), fmt(r.shockLowRmsZ),
-      ].join(','))
-    ].join('\n');
-
-    // Pressure CSV (like original: psi_min, psi_max, psi_avg)
-    const prCsv = BOM + [
-      'Timestamp,psi_min,psi_max,psi_avg',
-      ...downloadedData.map(r => [
-        r.timestamp, fmt(r.pressure), fmt(r.pressure), fmt(r.pressure)
-      ].join(','))
-    ].join('\n');
-
-    // Rotational CSV - X/Y/Z min/max/avg/rms (like original)
-    const rotHeaders = 'Timestamp,rpmX_min,rpmX_max,rpmX_avg,rpmX_rms,rpmY_min,rpmY_max,rpmY_avg,rpmY_rms,rpmZ_min,rpmZ_max,rpmZ_avg,rpmZ_rms';
-    const rotCsv = BOM + [
-      rotHeaders,
-      ...downloadedData.map(r => [
-        r.timestamp,
-        fmt(r.rpmMinX), fmt(r.rpmMaxX), fmt(r.rpmAvgX), fmt(r.rpmRmsX),
-        fmt(r.rpmMinY), fmt(r.rpmMaxY), fmt(r.rpmAvgY), fmt(r.rpmRmsY),
-        fmt(r.rpmMinZ), fmt(r.rpmMaxZ), fmt(r.rpmAvgZ), fmt(r.rpmRmsZ),
-      ].join(','))
-    ].join('\n');
-
-    // Combined all data CSV
-    const allHeaders = [
-      'Timestamp', 'Temperature', 'Battery_mV',
-      'highShockX_min', 'highShockX_max', 'highShockX_avg', 'highShockX_rms',
-      'highShockY_min', 'highShockY_max', 'highShockY_avg', 'highShockY_rms',
-      'highShockZ_min', 'highShockZ_max', 'highShockZ_avg', 'highShockZ_rms',
-      'shockLateralMax', 'shockLateralRms',
-      'lowShockX_min', 'lowShockX_max', 'lowShockX_avg', 'lowShockX_rms',
-      'lowShockY_min', 'lowShockY_max', 'lowShockY_avg', 'lowShockY_rms',
-      'lowShockZ_min', 'lowShockZ_max', 'lowShockZ_avg', 'lowShockZ_rms',
-      'rpmX_min', 'rpmX_max', 'rpmX_avg', 'rpmX_rms',
-      'rpmY_min', 'rpmY_max', 'rpmY_avg', 'rpmY_rms',
-      'rpmZ_min', 'rpmZ_max', 'rpmZ_avg', 'rpmZ_rms',
-      'psi_avg',
-    ];
-    const allCsv = BOM + [
-      allHeaders.join(','),
-      ...downloadedData.map(r => [
-        r.timestamp, fmt(r.temperature, 4), fmt(r.batteryVoltage, 0),
-        fmt(r.shockMinX), fmt(r.shockMaxX), fmt(r.shockAvgX), fmt(r.shockRmsX),
-        fmt(r.shockMinY), fmt(r.shockMaxY), fmt(r.shockAvgY), fmt(r.shockRmsY),
-        fmt(r.shockMinZ), fmt(r.shockMaxZ), fmt(r.shockAvgZ), fmt(r.shockRmsZ),
-        fmt(r.shockLateralMax), fmt(r.shockLateralRms),
-        fmt(r.shockLowMinX), fmt(r.shockLowMaxX), fmt(r.shockLowAvgX), fmt(r.shockLowRmsX),
-        fmt(r.shockLowMinY), fmt(r.shockLowMaxY), fmt(r.shockLowAvgY), fmt(r.shockLowRmsY),
-        fmt(r.shockLowMinZ), fmt(r.shockLowMaxZ), fmt(r.shockLowAvgZ), fmt(r.shockLowRmsZ),
-        fmt(r.rpmMinX), fmt(r.rpmMaxX), fmt(r.rpmAvgX), fmt(r.rpmRmsX),
-        fmt(r.rpmMinY), fmt(r.rpmMaxY), fmt(r.rpmAvgY), fmt(r.rpmRmsY),
-        fmt(r.rpmMinZ), fmt(r.rpmMaxZ), fmt(r.rpmAvgZ), fmt(r.rpmRmsZ),
-        fmt(r.pressure),
-      ].join(','))
-    ].join('\n');
-
-    const files = [
-      { name: 'monitoring_temperature.csv', content: tempCsv },
-      { name: 'monitoring_battery.csv', content: battCsv },
-      { name: 'monitoring_highShock.csv', content: hsCsv },
-      { name: 'monitoring_lowShock.csv', content: lsCsv },
-      { name: 'monitoring_pressure.csv', content: prCsv },
-      { name: 'monitoring_rotational.csv', content: rotCsv },
-      { name: 'monitoring_all_data.csv', content: allCsv },
-    ];
-
-    files.forEach((file, idx) => {
-      setTimeout(() => {
-        const blob = new Blob([file.content], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = file.name;
-        link.click();
-        URL.revokeObjectURL(url);
-      }, idx * 300);
-    });
-  };
-
   // CSV export for polling data (simpler format)
   const exportPollingCSV = () => {
     if (pollRecords.length === 0) return;
@@ -591,36 +271,29 @@ export default function DeviceMonitoringPage() {
     URL.revokeObjectURL(url);
   };
 
-  // Export using context's exportData (full format from procyon.ts)
-  const handleExportFullCSV = async () => {
-    const csv = await exportData();
-    if (!csv) return;
-    const BOM = '\uFEFF';
-    const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'procyon_data.csv';
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
   const batteryMv = deviceInfo?.batteryVoltage;
 
-  // Render OneSecondRecord data table
-  const renderDownloadedTable = () => {
+  // Render download section
+  const renderDownloadSection = () => {
     if (isDownloading) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center py-16">
           <div className="animate-spin w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full mb-4" />
           <p className="text-sm font-medium text-blue-600 mb-2">{dm.downloading || '正在下载数据...'}</p>
           {downloadProgress ? (
-            <div className="w-72">
+            <div className="w-80">
+              {/* Progress bar */}
+              <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+                <div
+                  className="bg-blue-600 h-3 rounded-full transition-all"
+                  style={{ width: Math.min(100, ((downloadProgress.partition - 1) / downloadProgress.totalPartitions * 100 + (downloadProgress.chunksRead || 0) / Math.max(1, downloadProgress.totalChunks || 100) / downloadProgress.totalPartitions * 100)) + '%' }}
+                />
+              </div>
               <p className="text-xs text-gray-600 text-center mb-1">
                 分区 {downloadProgress.partition}/{downloadProgress.totalPartitions}
               </p>
-              <p className="text-xs text-gray-500 text-center mb-2">
-                已读取 {downloadProgress.chunksRead || downloadProgress.chunk || 0} 个数据块
+              <p className="text-xs text-gray-500 text-center mb-1">
+                数据块: {downloadProgress.chunksRead || downloadProgress.chunk || 0}
                 {downloadProgress.bytesDownloaded ? (
                   <> ({(downloadProgress.bytesDownloaded / 1024).toFixed(1)} KB)</>
                 ) : null}
@@ -633,112 +306,74 @@ export default function DeviceMonitoringPage() {
       );
     }
 
-    const recordCount = downloadedData.length > 0 ? (downloadedData[0] as any)._count || downloadedData.length : 0;
-
-    if (recordCount === 0) {
+    // Download complete - show result
+    if (downloadRecordCount > 0) {
       return (
-        <div className="flex-1 flex flex-col items-center justify-center py-16 text-gray-400">
-          <svg className="w-16 h-16 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        <div className="flex-1 flex flex-col items-center justify-center py-12">
+          <svg className="w-16 h-16 mb-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          <p className="text-sm mb-2">{dm.noData || '暂无数据'}</p>
-          <p className="text-xs mb-4">{dm.downloadFirst || '请先从设备下载数据'}</p>
-          <button
-            onClick={handleDownload}
-            disabled={!connected || isDownloading}
-            className="px-6 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {dm.startDownload || '下载数据'}
-          </button>
-          {downloadError && (
-            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg max-w-lg text-center">
-              <p className="text-sm font-semibold text-red-700 mb-1">下载失败</p>
-              <p className="text-xs text-red-600 break-all">{downloadError}</p>
-            </div>
+          <p className="text-lg font-semibold text-green-700 mb-1">
+            下载成功
+          </p>
+          <p className="text-sm text-gray-600 mb-1">
+            {downloadRecordCount.toLocaleString()} 条 OneSecond 记录
+          </p>
+          {csvFilePath && (
+            <p className="text-xs text-gray-500 mb-4 font-mono break-all max-w-lg text-center">
+              CSV 已保存: {csvFilePath}
+            </p>
           )}
-          {debugLog.length > 0 && (
-            <div className="mt-4 p-3 bg-gray-100 border border-gray-200 rounded-lg max-w-lg w-full">
-              <p className="text-xs font-semibold text-gray-600 mb-1">调试日志:</p>
-              <div className="text-xs text-gray-500 font-mono space-y-0.5 max-h-40 overflow-y-auto">
-                {debugLog.map((log, i) => (
-                  <div key={i}>{log}</div>
-                ))}
-              </div>
-            </div>
-          )}
-          {!connected && (
-            <p className="text-xs text-amber-500 mt-2">请先连接设备</p>
-          )}
+          <div className="flex gap-3">
+            <button
+              onClick={handleSaveCSV}
+              className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              重新保存CSV
+            </button>
+            <button
+              onClick={() => { setDownloadRecordCount(0); setCsvFilePath(null); }}
+              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-300"
+            >
+              清除
+            </button>
+          </div>
         </div>
       );
     }
 
-    // Data summary view with export button
+    // No data yet - show download button
     return (
-      <div className="flex-1 flex flex-col">
-        {/* Summary bar */}
-        <div className="flex items-center gap-4 px-4 py-3 bg-green-50 border border-green-200 rounded-lg mb-3">
-          <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <span className="text-sm font-semibold text-green-800">
-            下载成功: {recordCount.toLocaleString()} 条 OneSecond 记录
-          </span>
-          <div className="flex-1" />
-          <button
-            onClick={async () => {
-              try {
-                const csv = await (window as any).electronAPI.exportCSV();
-                if (csv) {
-                  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'procyon_data_' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.csv';
-                  a.click();
-                  URL.revokeObjectURL(url);
-                } else {
-                  alert('导出失败: 无数据');
-                }
-              } catch (err) {
-                alert('导出失败: ' + (err instanceof Error ? err.message : String(err)));
-              }
-            }}
-            className="px-4 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 flex items-center gap-1.5"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            导出 CSV
-          </button>
-          <button
-            onClick={handleDownload}
-            disabled={!connected || isDownloading}
-            className="px-4 py-1.5 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
-          >
-            重新下载
-          </button>
-        </div>
-
-        {/* Sample data preview (first 100 records from main process) */}
-        <SampleTable visibleGroups={visibleGroups} dm={dm} fmt={fmt} />
-
-        {/* Debug log */}
-        {debugLog.length > 0 && (
-          <div className="mt-3 p-3 bg-gray-100 border border-gray-200 rounded-lg">
-            <p className="text-xs font-semibold text-gray-600 mb-1">调试日志:</p>
-            <div className="text-xs text-gray-500 font-mono space-y-0.5 max-h-32 overflow-y-auto">
-              {debugLog.map((log, i) => (
-                <div key={i}>{log}</div>
-              ))}
-            </div>
+      <div className="flex-1 flex flex-col items-center justify-center py-16 text-gray-400">
+        <svg className="w-16 h-16 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        </svg>
+        <p className="text-sm mb-2">{dm.noData || '暂无数据'}</p>
+        <p className="text-xs mb-4">{dm.downloadFirst || '请先从设备下载数据'}</p>
+        <button
+          onClick={handleDownload}
+          disabled={!connected || isDownloading}
+          className="px-6 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {dm.startDownload || '下载数据'}
+        </button>
+        {downloadError && (
+          <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg max-w-lg text-center">
+            <p className="text-sm font-semibold text-red-700 mb-1">下载失败</p>
+            <p className="text-xs text-red-600 break-all">{downloadError}</p>
           </div>
+        )}
+        {!connected && (
+          <p className="text-xs text-amber-500 mt-2">请先连接设备</p>
         )}
       </div>
     );
   };
 
-  // Render polling data table (simpler, single values)
+  // Render polling data table
   const renderPollingTable = () => {
     if (pollRecords.length === 0) {
       return (
@@ -801,9 +436,9 @@ export default function DeviceMonitoringPage() {
       {/* Real-Time Tab */}
       {activeTab === 'realtime' && (
         <div className="flex-1 flex gap-4 overflow-hidden">
-          {/* Left: Sensor Data */}
+          {/* Left: Data Area */}
           <div className="flex-1 flex flex-col min-w-0">
-            {/* Data Source Switch + Controls */}
+            {/* Controls bar */}
             <div className="flex items-center gap-3 mb-3 flex-wrap">
               {/* Data Source Toggle */}
               <div className="flex bg-gray-100 rounded-lg p-0.5">
@@ -825,48 +460,14 @@ export default function DeviceMonitoringPage() {
                 </button>
               </div>
 
-              {dataSource === 'downloaded' && (
-                <>
-                  <button
-                    onClick={handleDownload}
-                    disabled={!connected || isDownloading}
-                    className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                  >
-                    {isDownloading && <span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-                    {isDownloading ? (dm.downloading || '下载中...') : (dm.startDownload || '下载数据')}
-                  </button>
-                  {downloadProgress && (
-                    <span className="text-xs text-blue-600">
-                      分区{downloadProgress.partition}/{downloadProgress.totalPartitions} - {downloadProgress.chunksRead || downloadProgress.chunk || 0}块
-                      {downloadProgress.bytesDownloaded ? ` (${(downloadProgress.bytesDownloaded / 1024).toFixed(0)}KB)` : ''}
-                    </span>
-                  )}
-                  {downloadedData.length > 0 && (
-                    <>
-                      <span className="text-xs text-gray-500">
-                        {downloadedData.length} {dm.records || '条记录'}
-                      </span>
-                      <button
-                        onClick={exportDownloadedCSV}
-                        className="ml-auto px-3 py-1.5 text-xs bg-green-600 text-white rounded hover:bg-green-700"
-                      >
-                        {dm.exportCSV || '导出CSV'}
-                      </button>
-                      <button
-                        onClick={handleExportFullCSV}
-                        className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700"
-                      >
-                        {dm.exportFullCSV || '导出全量CSV'}
-                      </button>
-                      <button
-                        onClick={clearData}
-                        className="px-3 py-1.5 text-xs bg-gray-400 text-white rounded hover:bg-gray-500"
-                      >
-                        {dm.clearData || '清除数据'}
-                      </button>
-                    </>
-                  )}
-                </>
+              {dataSource === 'downloaded' && !isDownloading && downloadRecordCount === 0 && (
+                <button
+                  onClick={handleDownload}
+                  disabled={!connected}
+                  className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {dm.startDownload || '下载数据'}
+                </button>
               )}
 
               {dataSource === 'polling' && (
@@ -902,37 +503,21 @@ export default function DeviceMonitoringPage() {
               )}
 
               {pollError && <span className="text-xs text-red-500 ml-2">{pollError}</span>}
-              {downloadError && <span className="text-xs text-red-600 font-medium ml-2">⚠ 下载失败: {downloadError}</span>}
+              {downloadError && <span className="text-xs text-red-600 font-medium ml-2">下载失败: {downloadError}</span>}
             </div>
 
-            {/* Data Table */}
-            {dataSource === 'downloaded' ? renderDownloadedTable() : renderPollingTable()}
+            {/* Data display area */}
+            {dataSource === 'downloaded' ? renderDownloadSection() : renderPollingTable()}
 
-            {/* Sensor Visibility Toggles (only for downloaded data) */}
-            {dataSource === 'downloaded' && downloadedData.length > 0 && (
-              <div className="flex flex-wrap gap-3 mt-3 pt-3 border-t border-gray-100">
-                {(Object.keys(visibleGroups) as Array<keyof typeof visibleGroups>).map(key => {
-                  const labelMap: Record<string, string> = {
-                    temperature: dm.temperature || '温度',
-                    battery: dm.batteryVoltage || '电池',
-                    highShock: dm.highShockLabel || '高冲击',
-                    lowShock: dm.lowShockLabel || '低冲击',
-                    pressure: dm.pressureLabel || '压力',
-                    rotational: dm.rotational || '旋转',
-                    shockLateral: dm.shockLateral || '横向冲击',
-                  };
-                  return (
-                    <label key={key} className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={visibleGroups[key]}
-                        onChange={() => toggleGroup(key)}
-                        className="rounded border-gray-300"
-                      />
-                      {labelMap[key] || key}
-                    </label>
-                  );
-                })}
+            {/* Debug log */}
+            {debugLog.length > 0 && (
+              <div className="mt-3 p-3 bg-gray-100 border border-gray-200 rounded-lg">
+                <p className="text-xs font-semibold text-gray-600 mb-1">调试日志:</p>
+                <div className="text-xs text-gray-500 font-mono space-y-0.5 max-h-32 overflow-y-auto">
+                  {debugLog.map((log, i) => (
+                    <div key={i}>{log}</div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

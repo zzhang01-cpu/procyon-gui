@@ -50,6 +50,7 @@ import {
   type DownloadResult,
   type UsbDeviceInfo,
   parseBinaryRecords,
+  saveRecordsCsv as usbSaveRecordsCsv,
 } from '../usb/procyon';
 
 interface DeviceContextType {
@@ -329,7 +330,6 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       const result = await usbDownloadData();
       if (result.success) {
         setDownloadResult(result);
-        // Records are stored in main process. Only summary is returned via IPC.
         const parseDebug = (result as any).parseDebug as string[] || [];
         const chunkReadDebug = (result as any).chunkReadDebug as string[] || [];
         const recordCount = (result as any).recordCount as number || 0;
@@ -341,11 +341,22 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         for (const line of chunkReadDebug) {
           console.log('[Download CHUNK] ' + line);
         }
-        // Store debug info for page display
         (result as any).partitionDebugInfo = [...parseDebug, ...chunkReadDebug];
-        // Store record count instead of full records (records stay in main process)
         (result as any).recordCount = recordCount;
         setDownloadedData(recordCount > 0 ? [{ _count: recordCount } as any] : []);
+
+        // Auto-save CSV if records were parsed
+        if (recordCount > 0) {
+          try {
+            const saveResult = await usbSaveRecordsCsv('Procyon_Data_' + new Date().toISOString().slice(0, 10) + '.csv');
+            if (saveResult.filePath) {
+              (result as any).csvFilePath = saveResult.filePath;
+              console.log('[Download] CSV saved to:', saveResult.filePath);
+            }
+          } catch (csvErr) {
+            console.error('[Download] CSV save failed:', csvErr);
+          }
+        }
       } else {
         setError(result.error || 'Download failed');
       }
