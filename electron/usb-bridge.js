@@ -1181,8 +1181,42 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   }
 
   try {
-    // === Step 1: Notify device about dump start ===
+    // === Step 0: Pre-flight check - verify basic USB communication works ===
     READ_TIMEOUT = 3000;
+    chunkReadDebug.push('[Step0] Pre-flight: verifying USB communication...');
+    try {
+      var preResp = await this.sendCommand(CMD.GET_FIRMWARE_VERSION, []);
+      var preMsg = 'GET_FIRMWARE_VERSION: success=' + preResp.success +
+        ', value="' + (preResp.value || '') + '"' +
+        (preResp.error ? ', error=' + preResp.error : '');
+      console.log('[USB] ' + preMsg);
+      chunkReadDebug.push('[Step0] ' + preMsg);
+      if (!preResp.success) {
+        chunkReadDebug.push('[Step0] WARNING: Basic USB communication failing! Device may be disconnected.');
+      }
+    } catch(e) {
+      chunkReadDebug.push('[Step0] Pre-flight FAILED: ' + e.message);
+    }
+
+    // === Step 0.5: Send MEMORY_DUMP_END first to reset any stuck dump state ===
+    // If a previous dump was interrupted (e.g., v24's wrong BE commands), the device
+    // might be stuck in dump mode and won't respond to MEMORY_DUMP_START.
+    chunkReadDebug.push('[Step0.5] Sending MEMORY_DUMP_END (0x000E) to reset any stuck dump state...');
+    try {
+      var endResp = await this.sendCommand(CMD.MEMORY_DUMP_END, []);
+      var endMsg = 'MEMORY_DUMP_END: success=' + endResp.success +
+        ', cmdCode=0x' + (endResp.commandCode ? endResp.commandCode.toString(16) : 'N/A') +
+        ', value="' + (endResp.value || '') + '"' +
+        (endResp.error ? ', error=' + endResp.error : '');
+      console.log('[USB] ' + endMsg);
+      chunkReadDebug.push('[Step0.5] ' + endMsg);
+    } catch(e) {
+      chunkReadDebug.push('[Step0.5] MEMORY_DUMP_END exception (may be normal): ' + e.message);
+    }
+    // Brief pause after dump end
+    await new Promise(function(resolve) { setTimeout(resolve, 300); });
+
+    // === Step 1: Notify device about dump start ===
     var dumpStartOk = false;
     chunkReadDebug.push('[Step1] Sending MEMORY_DUMP_START (0x000C)...');
     try {
@@ -1204,7 +1238,30 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       chunkReadDebug.push('[Step1] ' + errMsg);
     }
     if (!dumpStartOk) {
-      chunkReadDebug.push('[Step1] WARNING: Dump start NOT ACKed! Chunk reads will likely fail.');
+      chunkReadDebug.push('[Step1] WARNING: Dump start NOT ACKed! Trying one more time...');
+      // Try MEMORY_DUMP_END again, then MEMORY_DUMP_START
+      try {
+        await this.sendCommand(CMD.MEMORY_DUMP_END, []);
+        await new Promise(function(resolve) { setTimeout(resolve, 500); });
+      } catch(e) {}
+      try {
+        var startResp2 = await this.sendCommand(CMD.MEMORY_DUMP_START, []);
+        var startMsg2 = 'MEMORY_DUMP_START retry: success=' + startResp2.success +
+          ', cmdCode=0x' + (startResp2.commandCode ? startResp2.commandCode.toString(16) : 'N/A') +
+          ', value="' + (startResp2.value || '') + '"' +
+          (startResp2.error ? ', error=' + startResp2.error : '');
+        console.log('[USB] ' + startMsg2);
+        chunkReadDebug.push('[Step1] ' + startMsg2);
+        if (startResp2.success && startResp2.commandCode === CMD.MEMORY_DUMP_START + 1) {
+          dumpStartOk = true;
+          chunkReadDebug.push('[Step1] Dump start retry ACKed OK');
+        }
+      } catch(e) {
+        chunkReadDebug.push('[Step1] Retry also failed: ' + e.message);
+      }
+    }
+    if (!dumpStartOk) {
+      chunkReadDebug.push('[Step1] FATAL: Dump start NOT ACKed after 2 attempts. Device may have no data.');
     }
     // Give device time to prepare for dump mode
     await new Promise(function(resolve) { setTimeout(resolve, 500); });
