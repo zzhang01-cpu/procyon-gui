@@ -1764,6 +1764,11 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     // === Step 6: Notify device about dump end ===
     READ_TIMEOUT = savedTimeout;
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
+    // Store full records in main process for later retrieval (export/pagination)
+    _lastParsedRecords = parseResult.records;
+    _lastParseDebug = parseResult.debug;
+    console.log('[v37] Stored ' + parseResult.records.length + ' records in main process');
+
     return {
       success: true,
       partitions: allData.map(function(p) { return { partition: p.partition, size: p.size, chunksRead: p.chunksRead }; }),
@@ -1778,11 +1783,6 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       recordTypes: parseResult.debug ? parseResult.debug.types : null,
       totalBytes: parseResult.debug ? parseResult.debug.totalBytes : 0
     };
-
-    // Store full records in main process for later retrieval (export/pagination)
-    _lastParsedRecords = parseResult.records;
-    _lastParseDebug = parseResult.debug;
-    console.log('[v36] Stored ' + parseResult.records.length + ' records in main process');
   } catch (error) {
     READ_TIMEOUT = savedTimeout;
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
