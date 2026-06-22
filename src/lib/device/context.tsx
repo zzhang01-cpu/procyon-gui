@@ -348,10 +348,11 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         // Auto-save CSV if records were parsed
         if (recordCount > 0) {
           try {
-            const saveResult = await usbSaveRecordsCsv('Procyon_Data_' + new Date().toISOString().slice(0, 10) + '.csv');
-            if (saveResult.filePath) {
-              (result as any).csvFilePath = saveResult.filePath;
-              console.log('[Download] CSV saved to:', saveResult.filePath);
+            const saveResult = await usbSaveRecordsCsv('') as any;
+            if (saveResult.filePaths) {
+              (result as any).csvFilePaths = saveResult.filePaths;
+              (result as any).csvSaveDir = saveResult.saveDir;
+              console.log('[Download] CSV files saved:', saveResult.filePaths.join(', '));
             }
           } catch (csvErr) {
             console.error('[Download] CSV save failed:', csvErr);

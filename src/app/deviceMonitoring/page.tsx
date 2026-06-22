@@ -34,7 +34,8 @@ export default function DeviceMonitoringPage() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloadRecordCount, setDownloadRecordCount] = useState(0);
-  const [csvFilePath, setCsvFilePath] = useState<string | null>(null);
+  const [csvFilePaths, setCsvFilePaths] = useState<string[]>([]);
+  const [csvSaveDir, setCsvSaveDir] = useState<string | null>(null);
   const [debugLog, setDebugLog] = useState<string[]>([]);
 
   const addLog = (msg: string) => {
@@ -129,7 +130,8 @@ export default function DeviceMonitoringPage() {
     setIsDownloading(true);
     setDownloadError(null);
     setDownloadRecordCount(0);
-    setCsvFilePath(null);
+    setCsvFilePaths([]);
+    setCsvSaveDir(null);
     setDebugLog([]);
     try {
       addLog('开始下载数据...');
@@ -161,10 +163,18 @@ export default function DeviceMonitoringPage() {
         setDownloadError(errMsg);
       } else {
         const recordCount = (result as any).recordCount || 0;
-        const savedPath = (result as any).csvFilePath || null;
+        const savedPaths = (result as any).csvFilePaths || [];
+        const savedDir = (result as any).csvSaveDir || null;
         setDownloadRecordCount(recordCount);
-        setCsvFilePath(savedPath);
-        addLog('下载成功! ' + recordCount.toLocaleString() + ' 条记录' + (savedPath ? ', CSV已保存: ' + savedPath : ''));
+        setCsvFilePaths(savedPaths);
+        setCsvSaveDir(savedDir);
+        addLog('下载成功! ' + recordCount.toLocaleString() + ' 条记录');
+        if (savedPaths.length > 0) {
+          addLog('CSV已保存到: ' + (savedDir || 'Downloads'));
+          for (const p of savedPaths) {
+            addLog('  ' + p);
+          }
+        }
         // Show parse debug info from main process
         const parseDebugInfo = (result as any).partitionDebugInfo;
         if (parseDebugInfo && Array.isArray(parseDebugInfo)) {
@@ -184,10 +194,14 @@ export default function DeviceMonitoringPage() {
   // Manual CSV save button
   const handleSaveCSV = async () => {
     try {
-      const result = await usbSaveRecordsCsv('Procyon_Data_' + new Date().toISOString().slice(0, 10) + '.csv');
-      if (result && (result as any).success !== false) {
-        setCsvFilePath((result as any).filePath);
-        addLog('CSV已保存: ' + (result as any).filePath);
+      const result = await usbSaveRecordsCsv('') as any;
+      if (result && result.success !== false) {
+        setCsvFilePaths(result.filePaths || []);
+        setCsvSaveDir(result.saveDir || null);
+        addLog('CSV已保存到: ' + (result.saveDir || 'Downloads'));
+        for (const p of (result.filePaths || [])) {
+          addLog('  ' + p);
+        }
       } else {
         addLog('CSV保存失败: ' + ((result as any).error || 'unknown'));
       }
@@ -319,10 +333,13 @@ export default function DeviceMonitoringPage() {
           <p className="text-sm text-gray-600 mb-1">
             {downloadRecordCount.toLocaleString()} 条 OneSecond 记录
           </p>
-          {csvFilePath && (
-            <p className="text-xs text-gray-500 mb-4 font-mono break-all max-w-lg text-center">
-              CSV 已保存: {csvFilePath}
-            </p>
+          {csvFilePaths.length > 0 && (
+            <div className="text-xs text-gray-500 mb-4 max-w-lg text-center">
+              <p className="font-medium mb-1">CSV 已保存到: {csvSaveDir || 'Downloads'}</p>
+              {csvFilePaths.map((p, i) => (
+                <p key={i} className="font-mono break-all">{p}</p>
+              ))}
+            </div>
           )}
           <div className="flex gap-3">
             <button
@@ -335,7 +352,7 @@ export default function DeviceMonitoringPage() {
               重新保存CSV
             </button>
             <button
-              onClick={() => { setDownloadRecordCount(0); setCsvFilePath(null); }}
+              onClick={() => { setDownloadRecordCount(0); setCsvFilePaths([]); }}
               className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-300"
             >
               清除
