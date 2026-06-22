@@ -332,12 +332,16 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         // Records are now parsed in main process (avoids 52MB IPC Buffer serialization)
         const parsedRecords = (result as any).parsedRecords as OneSecondRecord[] || [];
         const parseDebug = (result as any).parseDebug as string[] || [];
+        const chunkReadDebug = (result as any).chunkReadDebug as string[] || [];
         console.log('[Download] Parsed records from main process:', parsedRecords.length);
         for (const line of parseDebug) {
           console.log('[Download] ' + line);
         }
-        // Store parse debug info for page display
-        (result as any).partitionDebugInfo = parseDebug;
+        for (const line of chunkReadDebug) {
+          console.log('[Download CHUNK] ' + line);
+        }
+        // Store debug info for page display
+        (result as any).partitionDebugInfo = [...parseDebug, ...chunkReadDebug];
         setDownloadedData(parsedRecords);
       } else {
         setError(result.error || 'Download failed');

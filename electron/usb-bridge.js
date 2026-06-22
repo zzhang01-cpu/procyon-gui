@@ -1,6 +1,6 @@
 /**
  * Procyon CM USB Bridge -- Direct libusb0.dll FFI implementation
- * VERSION: 2024-06-22-v26 (revert to LE chunkNumber + sendCommandWithExpectedLength - v24 BE broke all reads)
+ * VERSION: 2024-06-22-v27 (add chunkReadDebug to diagnose 0-chunk issue)
  *
  * Uses koffi to call libusb0.dll directly, bypassing node-usb.
  * Same communication path as original Procyon.exe.
@@ -1256,15 +1256,17 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
         try {
           var chunk = await readChunk(p, c);
 
-          // Debug first 3 chunks of each partition
-          if (c < 3) {
-            console.log('[USB] P' + (p+1) + ' chunk' + c + ': success=' + chunk.success +
+          // Debug first 5 chunks or first empty/fail of each partition
+          if (c < 5 || (!chunk.success || chunk.empty)) {
+            var dbg = 'P' + (p+1) + ' chunk' + c + ': success=' + chunk.success +
               ', empty=' + chunk.empty +
               ', status=' + (chunk.status !== undefined ? chunk.status : 'N/A') +
               ', dataLen=' + (chunk.data ? chunk.data.length : 0) +
               ', payloadLen=' + (chunk.payload ? chunk.payload.length : 0) +
               (chunk.reason ? ', reason=' + chunk.reason : '') +
-              (chunk.payload && chunk.payload.length > 0 ? ', payloadFirst8=' + hexStr(chunk.payload.slice(0, 8)) : ''));
+              (chunk.payload && chunk.payload.length > 0 ? ', payloadFirst8=' + hexStr(chunk.payload.slice(0, 8)) : '');
+            console.log('[USB] ' + dbg);
+            chunkReadDebug.push(dbg);
           }
 
           if (chunk.success) {
@@ -1370,13 +1372,14 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       totalPartitions: numPartitions,
       partitionInfo: [],
       partitionDebug: partitionDebug,
+      chunkReadDebug: chunkReadDebug,
       parsedRecords: parseResult.records,
       parseDebug: parseResult.debug
     };
   } catch (error) {
     READ_TIMEOUT = savedTimeout;
     try { await this.sendAckCommand(CMD.MEMORY_DUMP_END); } catch(e) {}
-    return { success: false, error: error.message, partitions: [], totalPartitions: 0, partitionInfo: [], partitionDebug: [] };
+    return { success: false, error: error.message, partitions: [], totalPartitions: 0, partitionInfo: [], partitionDebug: [], chunkReadDebug: chunkReadDebug };
   }
 };
 
