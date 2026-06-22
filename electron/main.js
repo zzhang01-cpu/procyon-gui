@@ -36,7 +36,7 @@ function createWindow() {
 
 // Initialize USB bridge IPC handlers
 function initUsbBridge() {
-  console.log('[Procyon GUI] USB Bridge version: 2024-06-22-v30 (enhanced dump start, flush, probe)');
+  console.log('[Procyon GUI] USB Bridge version: 2024-06-22-v31 (all debug to page, probe, flush)');
 
   // List USB devices
   ipcMain.handle('usb:list-devices', async () => {
