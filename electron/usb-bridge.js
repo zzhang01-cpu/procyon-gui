@@ -1303,101 +1303,16 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
           ', value="' + (retryResp.value || '') + '"');
         if (retryResp.success) {
           usbWorking = true;
-function readChunk(partition, chunkNum, timeout) {
-  var CMD = GET_MEMORY_DUMP_CHUNK_DATA;
-  var expectedRespCmd = CMD + 1; // 0x0011
-  var expectedRespLo = expectedRespCmd & 0xFF;  // 0x11
-  var expectedRespHi = (expectedRespCmd >> 8) & 0xFF; // 0x00
-  var MAX_RETRIES = 3;
-
-  for (var attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    // Step 1: Aggressive flush - read until 3 consecutive timeouts
-    var flushTotal = 0;
-    var emptyStreak = 0;
-    while (emptyStreak < 3) {
-      var junk = _readFromDevice(4096, 30);
-      if (!junk || junk.length === 0) {
-        emptyStreak++;
-      } else {
-        emptyStreak = 0;
-        flushTotal += junk.length;
-      }
-    }
-    if (attempt === 0 && flushTotal > 0) {
-      console.log('[USB] readChunk pre-flush: ' + flushTotal + ' bytes drained');
-    }
-
-    // Step 2: Small delay to let device settle
-    _sleep(50);
-
-    // Step 3: Send command
-    var data = Buffer.alloc(5);
-    data[0] = partition & 0xFF;
-    data.writeInt32BE(chunkNum, 1);
-    var writeOk = _writeToDevice(CMD, data, 1000);
-    if (!writeOk) {
-      console.log('[USB] readChunk write failed (attempt ' + (attempt+1) + ')');
-      continue;
-    }
-
-    // Step 4: Read response - use 4096 to get everything in one shot
-    var resp = _readFromDevice(4096, timeout || 5000);
-    if (!resp || resp.length < 4) {
-      console.log('[USB] readChunk no response (attempt ' + (attempt+1) + ', got ' + (resp ? resp.length : 0) + ' bytes)');
-      continue;
-    }
-
-    // Step 5: Search for the expected response header in the data
-    // The expected header is [0x11, 0x00, lenLo, lenHi]
-    // Search for 0x11 followed by 0x00
-    var foundAt = -1;
-    for (var si = 0; si < resp.length - 3; si++) {
-      if (resp[si] === expectedRespLo && resp[si+1] === expectedRespHi) {
-        // Found potential header, check if length makes sense
-        var rLen = resp[si+2] | (resp[si+3] << 8);
-        // Chunk response should be 4 header + up to 8058 data bytes
-        if (rLen >= 0 && rLen <= 8062 && si + 4 + rLen <= resp.length) {
-          foundAt = si;
-          break;
         }
+      } catch(e) {
+        chunkReadDebug.push('[Step0.1] Retry failed: ' + e.message);
       }
     }
 
-    if (foundAt < 0) {
-      // Could not find expected header - log what we got
-      var hdrHex = Array.from(resp.slice(0, Math.min(16, resp.length))).map(function(b) { return (b & 0xFF).toString(16).padStart(2, '0'); }).join(', ');
-      console.log('[USB] readChunk header not found in ' + resp.length + ' bytes: ' + hdrHex + ' (attempt ' + (attempt+1) + ')');
-      continue;
-    }
-
-    if (foundAt > 0) {
-      console.log('[USB] readChunk found header at offset ' + foundAt + ' (skipped ' + foundAt + ' junk bytes)');
-    }
-
-    // Extract header and payload
-    var header = resp.slice(foundAt, foundAt + 4);
-    var respLen = header[2] | (header[3] << 8);
-    var payload = resp.slice(foundAt + 4, foundAt + 4 + respLen);
-
-    // Verify we got enough data
-    if (payload.length < respLen) {
-      console.log('[USB] readChunk payload short: got ' + payload.length + ' expected ' + respLen + ' (attempt ' + (attempt+1) + ')');
-      continue;
-    }
-
-    return {
-      success: true,
-      cmd: expectedRespCmd,
-      dataLen: respLen,
-      data: payload,
-      header: header
-    };
-  }
-
-  // All retries failed
-  return null;
-}
-
+    // === Step 1: Send MEMORY_DUMP_START ===
+    var dumpStartOk = false;
+    try {
+      var startResp = await this.sendCommand(CMD.MEMORY_DUMP_START, []);
 
       if (startResp.success && startResp.commandCode === CMD.MEMORY_DUMP_START + 1) {
         dumpStartOk = true;
@@ -1462,93 +1377,97 @@ function readChunk(partition, chunkNum, timeout) {
 
     // Helper: send chunk request and read response with dynamic length (v23 proven approach)
     var self = this;
-function readChunk(partition, chunkNum, timeout) {
-  var CMD = GET_MEMORY_DUMP_CHUNK_DATA;
-  var expectedRespCmd = CMD + 1; // 0x0011
-  var MAX_RETRIES = 3;
+    var readChunk = async function(partition, chunkNum, timeout) {
+      var expectedRespCmd = CMD.GET_MEMORY_DUMP_CHUNK_DATA + 1; // 0x0011
+      var MAX_RETRIES = 3;
 
-  for (var attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    // On retry, do aggressive flush first
-    if (attempt > 0) {
-      var emptyStreak = 0;
-      var flushTotal = 0;
-      while (emptyStreak < 5) {
-        var junk = _readFromDevice(4096, 30);
-        if (!junk || junk.length === 0) {
-          emptyStreak++;
-        } else {
-          emptyStreak = 0;
-          flushTotal += junk.length;
+      for (var attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        // On retry, do aggressive flush first
+        if (attempt > 0) {
+          var emptyStreak = 0;
+          var flushTotal = 0;
+          while (emptyStreak < 5) {
+            var junk = await self._readFromDevice(4096, 30);
+            if (!junk || junk.length === 0) {
+              emptyStreak++;
+            } else {
+              emptyStreak = 0;
+              flushTotal += junk.length;
+            }
+          }
+          if (flushTotal > 0) {
+            console.log('[USB] readChunk retry-flush: ' + flushTotal + ' bytes drained');
+          }
+          await new Promise(function(r) { setTimeout(r, 100); });
         }
+
+        // Build command packet: [cmdLow, cmdHigh, lenLow, lenHigh, partition, chunkNum(4B BE)]
+        var cmdData = [partition & 0xFF,
+                       (chunkNum >> 24) & 0xFF,
+                       (chunkNum >> 16) & 0xFF,
+                       (chunkNum >> 8) & 0xFF,
+                       chunkNum & 0xFF];
+        var packet = buildCommandPacket(CMD.GET_MEMORY_DUMP_CHUNK_DATA, cmdData);
+        try {
+          await self._writeToDevice(Buffer.from(packet));
+        } catch (writeErr) {
+          console.log('[USB] readChunk write failed (attempt ' + (attempt+1) + '): ' + writeErr.message);
+          continue;
+        }
+
+        // Read response - use 4096 as first read (proven to work with libusb-win32)
+        var resp = await self._readFromDevice(4096, timeout || 5000);
+        if (!resp || resp.length < 4) {
+          console.log('[USB] readChunk no response (attempt ' + (attempt+1) + ', got ' + (resp ? resp.length : 0) + ' bytes)');
+          continue;
+        }
+
+        // Parse header from first 4 bytes
+        var respCmd = resp[0] | (resp[1] << 8);
+        var respLen = resp[2] | (resp[3] << 8);
+
+        // Validate response command
+        if (respCmd !== expectedRespCmd) {
+          var hdrHex = Array.from(resp.slice(0, Math.min(16, resp.length))).map(function(b) { return (b & 0xFF).toString(16).padStart(2, '0'); }).join(', ');
+          console.log('[USB] readChunk wrong cmd: got 0x' + respCmd.toString(16) + ' expected 0x' + expectedRespCmd.toString(16) + ', first16=' + hdrHex + ' (attempt ' + (attempt+1) + ')');
+          continue;
+        }
+
+        // Validate response length
+        if (respLen < 0 || respLen > 8062) {
+          console.log('[USB] readChunk invalid len: ' + respLen + ' (attempt ' + (attempt+1) + ')');
+          continue;
+        }
+
+        // Extract payload (may need to read more if 4096 wasn't enough)
+        var payload = resp.slice(4, 4 + respLen);
+        if (payload.length < respLen) {
+          // Need to read more
+          var remaining = respLen - payload.length;
+          var more = await self._readFromDevice(remaining, timeout || 3000);
+          if (more && more.length > 0) {
+            payload = Buffer.concat([payload, more]);
+          }
+        }
+
+        if (payload.length < respLen) {
+          console.log('[USB] readChunk payload short: got ' + payload.length + ' expected ' + respLen + ' (attempt ' + (attempt+1) + ')');
+          continue;
+        }
+
+        return {
+          success: true,
+          empty: (respLen === 0),
+          respLen: respLen + 4,
+          dataLen: respLen,
+          data: payload,
+          header: resp.slice(0, 4)
+        };
       }
-      if (flushTotal > 0) {
-        console.log('[USB] readChunk retry-flush: ' + flushTotal + ' bytes drained');
-      }
-      _sleep(100);
-    }
 
-    // Send command
-    var data = Buffer.alloc(5);
-    data[0] = partition & 0xFF;
-    data.writeInt32BE(chunkNum, 1);
-    var writeOk = _writeToDevice(CMD, data, 1000);
-    if (!writeOk) {
-      console.log('[USB] readChunk write failed (attempt ' + (attempt+1) + ')');
-      continue;
-    }
-
-    // Read response - use 4096 as first read (proven to work with libusb-win32)
-    var resp = _readFromDevice(4096, timeout || 5000);
-    if (!resp || resp.length < 4) {
-      console.log('[USB] readChunk no response (attempt ' + (attempt+1) + ', got ' + (resp ? resp.length : 0) + ' bytes)');
-      continue;
-    }
-
-    // Parse header from first 4 bytes
-    var respCmd = resp[0] | (resp[1] << 8);
-    var respLen = resp[2] | (resp[3] << 8);
-
-    // Validate response command
-    if (respCmd !== expectedRespCmd) {
-      var hdrHex = Array.from(resp.slice(0, Math.min(16, resp.length))).map(function(b) { return (b & 0xFF).toString(16).padStart(2, '0'); }).join(', ');
-      console.log('[USB] readChunk wrong cmd: got 0x' + respCmd.toString(16) + ' expected 0x' + expectedRespCmd.toString(16) + ', first16=' + hdrHex + ' (attempt ' + (attempt+1) + ')');
-      continue;
-    }
-
-    // Validate response length
-    if (respLen < 0 || respLen > 8062) {
-      console.log('[USB] readChunk invalid len: ' + respLen + ' (attempt ' + (attempt+1) + ')');
-      continue;
-    }
-
-    // Extract payload (may need to read more if 4096 wasn't enough)
-    var payload = resp.slice(4, 4 + respLen);
-    if (payload.length < respLen) {
-      // Need to read more
-      var remaining = respLen - payload.length;
-      var more = _readFromDevice(remaining, timeout || 3000);
-      if (more && more.length > 0) {
-        payload = Buffer.concat([payload, more]);
-      }
-    }
-
-    if (payload.length < respLen) {
-      console.log('[USB] readChunk payload short: got ' + payload.length + ' expected ' + respLen + ' (attempt ' + (attempt+1) + ')');
-      continue;
-    }
-
-    return {
-      success: true,
-      cmd: respCmd,
-      dataLen: respLen,
-      data: payload,
-      header: resp.slice(0, 4)
+      // All retries failed
+      return null;
     };
-  }
-
-  // All retries failed
-  return null;
-}
 
 
     READ_TIMEOUT = 3000;
@@ -1577,12 +1496,12 @@ function readChunk(partition, chunkNum, timeout) {
         for (var retry = 0; retry < chunkRetries; retry++) {
           try {
             chunk = await readChunk(p, c, chunksRead === 0 && emptyChunkCount > 0 ? 1500 : 5000);
-            if (chunk.success || chunk.reason === 'no header (got 0 bytes)') {
+            if (chunk && (chunk.success || chunk.reason === 'no header (got 0 bytes)')) {
               break; // Success or device timeout - don't retry timeout
             }
             // "wrong cmd" or "respLen too large" = stream desync - flush and retry
             if (retry < chunkRetries - 1) {
-              console.log('[USB] P' + (p+1) + ' chunk' + c + ': retry ' + (retry+1) + ' after: ' + chunk.reason);
+              console.log('[USB] P' + (p+1) + ' chunk' + c + ': retry ' + (retry+1) + ' after: ' + (chunk ? chunk.reason : 'null'));
               // Thorough flush before retry
               for (var fi = 0; fi < 3; fi++) {
                 try { var flushed = await self._readFromDevice(8192, 50); if (!flushed || flushed.length === 0) break; } catch(e) { break; }
@@ -1597,6 +1516,11 @@ function readChunk(partition, chunkNum, timeout) {
               chunk = { success: false, reason: 'exception: ' + chunkErr.message };
             }
           }
+        }
+
+        // If chunk is null (all retries failed), treat as failure
+        if (!chunk) {
+          chunk = { success: false, reason: 'all retries exhausted' };
         }
 
         // Debug first 5 chunks or first empty/fail of each partition
