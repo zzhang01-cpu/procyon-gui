@@ -1256,7 +1256,15 @@ function parseDownloadedRecords(rawData) {
   debug.skippedBytes = skippedBytes;
   debug.totalScanned = buf.length;
 
-  return { oneSecondRecords: oneSecondRecords, phoenixRecords: phoenixRecords, debug: debug };
+  var debugLines = [
+    'Buffer size: ' + buf.length + ' bytes',
+    '0xA0 OneSecondData records found: ' + foundCount,
+    '0xD1 Phoenix records found: ' + d1FoundCount,
+    'Skipped bytes (non-record): ' + skippedBytes,
+    'Total scanned: ' + buf.length + ' bytes'
+  ];
+
+  return { oneSecondRecords: oneSecondRecords, phoenixRecords: phoenixRecords, debug: debugLines };
 }
 
 
@@ -1703,7 +1711,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     // Store parsed records in main process for CSV export
     _lastParsedRecords = parseResult.oneSecondRecords;
     _lastPhoenixRecords = parseResult.phoenixRecords;
-    _lastParseDebug = parseResult.debug;
+    _lastParseDebug = parseResult.debugLog || [];
     var totalRecords = parseResult.oneSecondRecords.length + parseResult.phoenixRecords.length;
     console.log('[v39] Stored ' + parseResult.oneSecondRecords.length + ' A0 + ' + parseResult.phoenixRecords.length + ' D1 records in main process');
 
@@ -1714,7 +1722,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       partitionInfo: [],
       partitionDebug: partitionDebug,
       chunkReadDebug: chunkReadDebug,
-      parseDebug: parseResult.debug,
+      parseDebug: parseResult.debugLog || [],
       // Summary info (lightweight)
       recordCount: totalRecords,
       a0Count: parseResult.oneSecondRecords.length,
@@ -1760,16 +1768,16 @@ ProcyonUsbBridge.prototype.exportRecordsCsv = function() {
     var r = _lastParsedRecords[i];
     var d = new Date(r.timestamp);
     var timeStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
-    var vals = [timeStr, r.temperature, r.batteryV,
-      r.rpmMinX, r.rpmMaxX, r.rpmAvgX, r.rpmRmsX,
-      r.rpmMinY, r.rpmMaxY, r.rpmAvgY, r.rpmRmsY,
-      r.rpmMinZ, r.rpmMaxZ, r.rpmAvgZ, r.rpmRmsZ,
-      r.shockLowMinX, r.shockLowMaxX, r.shockLowAvgX, r.shockLowRmsX,
-      r.shockLowMinY, r.shockLowMaxY, r.shockLowAvgY, r.shockLowRmsY,
-      r.shockLowMinZ, r.shockLowMaxZ, r.shockLowAvgZ, r.shockLowRmsZ,
-      r.shockMinX, r.shockMaxX, r.shockAvgX, r.shockRmsX,
-      r.shockMinY, r.shockMaxY, r.shockAvgY, r.shockRmsY,
-      r.shockMinZ, r.shockMaxZ, r.shockAvgZ, r.shockRmsZ,
+    var vals = [timeStr, r.temperature, r.batteryVoltage,
+      r.rpmXMin, r.rpmXMax, r.rpmXAvg, r.rpmXRms,
+      r.rpmYMin, r.rpmYMax, r.rpmYAvg, r.rpmYRms,
+      r.rpmZMin, r.rpmZMax, r.rpmZAvg, r.rpmZRms,
+      r.shockLowXMin, r.shockLowXMax, r.shockLowXAvg, r.shockLowXRms,
+      r.shockLowYMin, r.shockLowYMax, r.shockLowYAvg, r.shockLowYRms,
+      r.shockLowZMin, r.shockLowZMax, r.shockLowZAvg, r.shockLowZRms,
+      r.shockXMin, r.shockXMax, r.shockXAvg, r.shockXRms,
+      r.shockYMin, r.shockYMax, r.shockYAvg, r.shockYRms,
+      r.shockZMin, r.shockZMax, r.shockZAvg, r.shockZRms,
       r.shockLateralMax, r.shockLateralRms];
     lines.push(vals.join(','));
   }
@@ -1837,7 +1845,7 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
     var tempLines = [tempHeaders.join(',')];
     for (var i = 0; i < a0.length; i++) {
       var r = a0[i];
-      tempLines.push(fmtTime(r) + ',' + r.temperature + ',' + r.batteryV);
+      tempLines.push(fmtTime(r) + ',' + r.temperature + ',' + r.batteryVoltage);
     }
     var tempPath = path.join(saveDir, 'Temperature_' + dateStr + '.csv');
     fs.writeFileSync(tempPath, tempLines.join('\n'), 'utf-8');
@@ -1850,9 +1858,9 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
     var rotLines = [rotHeaders.join(',')];
     for (var i2 = 0; i2 < a0.length; i2++) {
       var r2 = a0[i2];
-      rotLines.push(fmtTime(r2) + ',' + r2.rpmMinX + ',' + r2.rpmMaxX + ',' + r2.rpmAvgX + ',' + r2.rpmRmsX +
-        ',' + r2.rpmMinY + ',' + r2.rpmMaxY + ',' + r2.rpmAvgY + ',' + r2.rpmRmsY +
-        ',' + r2.rpmMinZ + ',' + r2.rpmMaxZ + ',' + r2.rpmAvgZ + ',' + r2.rpmRmsZ);
+      rotLines.push(fmtTime(r2) + ',' + r2.rpmXMin + ',' + r2.rpmXMax + ',' + r2.rpmXAvg + ',' + r2.rpmXRms +
+        ',' + r2.rpmYMin + ',' + r2.rpmYMax + ',' + r2.rpmYAvg + ',' + r2.rpmYRms +
+        ',' + r2.rpmZMin + ',' + r2.rpmZMax + ',' + r2.rpmZAvg + ',' + r2.rpmZRms);
     }
     var rotPath = path.join(saveDir, 'Rotational_' + dateStr + '.csv');
     fs.writeFileSync(rotPath, rotLines.join('\n'), 'utf-8');
@@ -1865,9 +1873,9 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
     var lsLines = [lsHeaders.join(',')];
     for (var i3 = 0; i3 < a0.length; i3++) {
       var r3 = a0[i3];
-      lsLines.push(fmtTime(r3) + ',' + r3.shockLowMinX + ',' + r3.shockLowMaxX + ',' + r3.shockLowAvgX + ',' + r3.shockLowRmsX +
-        ',' + r3.shockLowMinY + ',' + r3.shockLowMaxY + ',' + r3.shockLowAvgY + ',' + r3.shockLowRmsY +
-        ',' + r3.shockLowMinZ + ',' + r3.shockLowMaxZ + ',' + r3.shockLowAvgZ + ',' + r3.shockLowRmsZ);
+      lsLines.push(fmtTime(r3) + ',' + r3.shockLowXMin + ',' + r3.shockLowXMax + ',' + r3.shockLowXAvg + ',' + r3.shockLowXRms +
+        ',' + r3.shockLowYMin + ',' + r3.shockLowYMax + ',' + r3.shockLowYAvg + ',' + r3.shockLowYRms +
+        ',' + r3.shockLowZMin + ',' + r3.shockLowZMax + ',' + r3.shockLowZAvg + ',' + r3.shockLowZRms);
     }
     var lsPath = path.join(saveDir, 'LowShock_' + dateStr + '.csv');
     fs.writeFileSync(lsPath, lsLines.join('\n'), 'utf-8');
@@ -1881,9 +1889,9 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
     var hsLines = [hsHeaders.join(',')];
     for (var i4 = 0; i4 < a0.length; i4++) {
       var r4 = a0[i4];
-      hsLines.push(fmtTime(r4) + ',' + r4.shockMinX + ',' + r4.shockMaxX + ',' + r4.shockAvgX + ',' + r4.shockRmsX +
-        ',' + r4.shockMinY + ',' + r4.shockMaxY + ',' + r4.shockAvgY + ',' + r4.shockRmsY +
-        ',' + r4.shockMinZ + ',' + r4.shockMaxZ + ',' + r4.shockAvgZ + ',' + r4.shockRmsZ +
+      hsLines.push(fmtTime(r4) + ',' + r4.shockXMin + ',' + r4.shockXMax + ',' + r4.shockXAvg + ',' + r4.shockXRms +
+        ',' + r4.shockYMin + ',' + r4.shockYMax + ',' + r4.shockYAvg + ',' + r4.shockYRms +
+        ',' + r4.shockZMin + ',' + r4.shockZMax + ',' + r4.shockZAvg + ',' + r4.shockZRms +
         ',' + r4.shockLateralMax + ',' + r4.shockLateralRms);
     }
     var hsPath = path.join(saveDir, 'HighShock_' + dateStr + '.csv');
