@@ -1099,328 +1099,166 @@ ProcyonUsbBridge.prototype.eraseMemory = async function(eraseAll) {
 // If an 0xA0 record has temperature outside [-40,150]°C, we scan forward to find
 // the next valid 0xA0 boundary and resume from there.
 // This handles variable-size records (0x01 FirmwareVersion) that may misalign.
-function parseDownloadedRecords(partitions) {
-  var oneSecondRecords = [];   // 0xA0 records
-  var phoenixRecords = [];     // 0xD1 records
-  var debug = [];
+function parseDownloadedRecords(rawData) {
+  var buf = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
+  var oneSecondRecords = [];
+  var phoenixRecords = [];
+  var debug = { size: buf.length };
 
-  // Save raw binary for offline analysis
-  try {
-    var fs = require('fs');
-    var path = require('path');
-    var os = require('os');
-    var dumpDir = path.join(os.homedir(), 'Downloads');
-    for (var di = 0; di < partitions.length; di++) {
-      if (partitions[di].data && partitions[di].size > 0) {
-        var dumpPath = path.join(dumpDir, 'procyon_raw_partition' + partitions[di].partition + '.bin');
-        fs.writeFileSync(dumpPath, partitions[di].data);
-        debug.push('Raw binary saved to: ' + dumpPath);
-      }
-    }
-  } catch(e) {
-    debug.push('Warning: could not save raw binary: ' + e.message);
-  }
+  // A0 OneSecondData record size (v2.1+): 81 bytes
+  // Layout: type(1) + temp(2) + batt(2) + rpm(24) + shockLow(24) + shockHigh(24) + latMax(2) + latRms(2)
+  var A0_SIZE = 81;
+  // D1 PhoenixOneSecondData record size: 9 bytes
+  // Layout: type(1) + psiMin(2) + psiMax(2) + psiAvg(2) + tempAvg(2)
+  var D1_SIZE = 9;
 
-  for (var pi = 0; pi < partitions.length; pi++) {
-    var part = partitions[pi];
-    if (!part.data || part.size === 0) {
-      debug.push('P' + part.partition + ': empty (' + part.size + ' bytes)');
+  // Strategy: scan the buffer for valid 0xA0 records by verifying field ranges
+  // A valid 0xA0 record has:
+  //   - temperature between -40 and 150 °C
+  //   - battery between 0 and 5 V
+  //   - rpm values between -2000 and 2000 rpm
+
+  var i = 0;
+  var skippedBytes = 0;
+  var foundCount = 0;
+
+  while (i < buf.length - A0_SIZE) {
+    // Look for 0xA0 marker
+    if (buf[i] !== 0xA0) {
+      i++;
+      skippedBytes++;
       continue;
     }
 
-    var buf = part.data;
-    var firstHex = [];
-    for (var fi = 0; fi < Math.min(64, buf.length); fi++) {
-      firstHex.push(('0' + buf[fi].toString(16)).slice(-2));
-    }
-    debug.push('P' + part.partition + ': ' + buf.length + ' bytes, first64=' + firstHex.join(' '));
+    // Read candidate temperature (s16 LE at offset 1)
+    var rawTemp = buf.readInt16LE(i + 1);
+    var temp = rawTemp * 0.03125;
 
-    // Record sizes by type (from RecordFormatFiles.json v2.1+)
-    var REC_SIZES = {};
-    REC_SIZES[0x01] = -1;  // FirmwareVersion: variable size
-    REC_SIZES[0x02] = 5;   // Reset: 1 + b32(4)
-    REC_SIZES[0x0D] = 2;   // FlashDeviceID: 1 + u8
-    REC_SIZES[0x0E] = 3;   // FlashBadBlockList: 1 + u16
-    REC_SIZES[0x1F] = 2;   // UsbConnection: 1 + u8
-    REC_SIZES[0x80] = 3;   // RpmAxialWaveform(csv_chain): 1 + s16
-    REC_SIZES[0x81] = 5;   // GyroTagDataCorrupt: 1 + u32
-    REC_SIZES[0x82] = 5;   // StickSlip: 1 + f32
-    REC_SIZES[0x90] = 7;   // AccelWaveform(csv_chain): 1 + 3×s16
-    REC_SIZES[0x91] = 7;   // LowShockWaveform(csv_chain): 1 + 3×s16
-    REC_SIZES[0xA0] = 81;  // OneSecondData(csv_chain): 1 + 40×s16
-    REC_SIZES[0xB0] = 9;   // ParameterErrorHardware(csv_chain): 1+1+1+4+2
-    REC_SIZES[0xB1] = 6;   // ParameterErrorCrc: 1+1+2+2
-    REC_SIZES[0xB2] = 2;   // ParameterErrorRangeCheck: 1+1
-    REC_SIZES[0xB3] = 1;   // BufferedEventOverflow(csv_chain): type only
-    REC_SIZES[0xB4] = 1;   // BufferedEventError(csv_chain): type only
-    REC_SIZES[0xD0] = 1;   // DebugEvent0: type only
-    REC_SIZES[0xD1] = 9;   // PhoenixOneSecondData(csv_chain): 1 + 4×s16
-    REC_SIZES[0xFE] = 1;   // LoggingSystemError(csv_chain): type only
-    REC_SIZES[0xFF] = 1;   // Flush: type only
-
-    var A0_SIZE = 81;
-    var D1_SIZE = 9;
-    var i = 0;
-    var a0Count = 0, d1Count = 0;
-    var typeCounts = {};
-    var validTempCount = 0, invalidTempCount = 0;
-    var resyncCount = 0;
-
-    while (i < buf.length) {
-      // Skip 0xFF padding (erased flash bytes)
-      if (buf[i] === 0xFF) {
-        var ffStart = i;
-        while (i < buf.length && buf[i] === 0xFF) i++;
-        typeCounts[0xFF] = (typeCounts[0xFF] || 0) + (i - ffStart);
-        continue;
-      }
-
-      var recType = buf[i];
-      typeCounts[recType] = (typeCounts[recType] || 0) + 1;
-
-      if (recType === 0xA0) {
-        // === OneSecondData: validate before parsing ===
-        if (i + A0_SIZE > buf.length) { i++; continue; }
-
-        // Validate: temperature must be in reasonable range (-40 to 150°C)
-        var tempRaw = buf.readInt16LE(i + 1);
-        var tempVal = tempRaw * 0.03125;
-
-        if (tempVal < -40 || tempVal > 150) {
-          // Invalid record boundary — scan forward for next valid 0xA0
-          typeCounts[recType]--;
-          resyncCount++;
-          if (resyncCount <= 3) {
-            debug.push('P' + part.partition + ' @' + i + ': invalid A0 temp=' + tempVal.toFixed(2) + ' (raw=' + tempRaw + '), scanning for next valid A0...');
-          }
-          // Scan forward: look for 0xA0 byte with valid temperature
-          var found = false;
-          for (var scan = i + 1; scan < buf.length - A0_SIZE; scan++) {
-            if (buf[scan] === 0xA0) {
-              var scanTemp = buf.readInt16LE(scan + 1) * 0.03125;
-              if (scanTemp >= -40 && scanTemp <= 150) {
-                debug.push('P' + part.partition + ': resynced from ' + i + ' to ' + scan + ' (temp=' + scanTemp.toFixed(2) + ')');
-                i = scan;
-                found = true;
-                break;
-              }
-            }
-          }
-          if (!found) { i++; continue; }
-          // Re-read at new position
-          recType = buf[i];
-          tempRaw = buf.readInt16LE(i + 1);
-          tempVal = tempRaw * 0.03125;
-        }
-
-        try {
-          var off = i + 1; // skip type byte
-          var temperature = buf.readInt16LE(off) * 0.03125; off += 2;
-          var batteryV = buf.readInt16LE(off) * 0.001027; off += 2;
-          // RPM (12 × s16, scale=0.02333)
-          var rpmMinX = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmMaxX = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmAvgX = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmRmsX = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmMinY = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmMaxY = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmAvgY = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmRmsY = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmMinZ = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmMaxZ = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmAvgZ = buf.readInt16LE(off) * 0.02333; off += 2;
-          var rpmRmsZ = buf.readInt16LE(off) * 0.02333; off += 2;
-          // LowShock (12 × s16, scale=0.000244)
-          var shockLowMinX = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowMaxX = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowAvgX = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowRmsX = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowMinY = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowMaxY = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowAvgY = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowRmsY = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowMinZ = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowMaxZ = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowAvgZ = buf.readInt16LE(off) * 0.000244; off += 2;
-          var shockLowRmsZ = buf.readInt16LE(off) * 0.000244; off += 2;
-          // HighShock (14 × s16, scale=0.2)
-          var shockMinX = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockMaxX = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockAvgX = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockRmsX = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockMinY = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockMaxY = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockAvgY = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockRmsY = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockMinZ = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockMaxZ = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockAvgZ = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockRmsZ = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockLateralMax = buf.readInt16LE(off) * 0.2; off += 2;
-          var shockLateralRms = buf.readInt16LE(off) * 0.2; off += 2;
-
-          oneSecondRecords.push({
-            recordType: 0xA0,
-            timestamp: 0, // Will be set after all records are collected
-            temperature: Math.round(temperature * 10000) / 10000,
-            batteryV: Math.round(batteryV * 1000) / 1000,
-            rpmMinX: Math.round(rpmMinX * 100) / 100, rpmMaxX: Math.round(rpmMaxX * 100) / 100,
-            rpmAvgX: Math.round(rpmAvgX * 100) / 100, rpmRmsX: Math.round(rpmRmsX * 100) / 100,
-            rpmMinY: Math.round(rpmMinY * 100) / 100, rpmMaxY: Math.round(rpmMaxY * 100) / 100,
-            rpmAvgY: Math.round(rpmAvgY * 100) / 100, rpmRmsY: Math.round(rpmRmsY * 100) / 100,
-            rpmMinZ: Math.round(rpmMinZ * 100) / 100, rpmMaxZ: Math.round(rpmMaxZ * 100) / 100,
-            rpmAvgZ: Math.round(rpmAvgZ * 100) / 100, rpmRmsZ: Math.round(rpmRmsZ * 100) / 100,
-            shockLowMinX: Math.round(shockLowMinX * 1000000) / 1000000,
-            shockLowMaxX: Math.round(shockLowMaxX * 1000000) / 1000000,
-            shockLowAvgX: Math.round(shockLowAvgX * 1000000) / 1000000,
-            shockLowRmsX: Math.round(shockLowRmsX * 1000000) / 1000000,
-            shockLowMinY: Math.round(shockLowMinY * 1000000) / 1000000,
-            shockLowMaxY: Math.round(shockLowMaxY * 1000000) / 1000000,
-            shockLowAvgY: Math.round(shockLowAvgY * 1000000) / 1000000,
-            shockLowRmsY: Math.round(shockLowRmsY * 1000000) / 1000000,
-            shockLowMinZ: Math.round(shockLowMinZ * 1000000) / 1000000,
-            shockLowMaxZ: Math.round(shockLowMaxZ * 1000000) / 1000000,
-            shockLowAvgZ: Math.round(shockLowAvgZ * 1000000) / 1000000,
-            shockLowRmsZ: Math.round(shockLowRmsZ * 1000000) / 1000000,
-            shockMinX: Math.round(shockMinX * 100) / 100, shockMaxX: Math.round(shockMaxX * 100) / 100,
-            shockAvgX: Math.round(shockAvgX * 100) / 100, shockRmsX: Math.round(shockRmsX * 100) / 100,
-            shockMinY: Math.round(shockMinY * 100) / 100, shockMaxY: Math.round(shockMaxY * 100) / 100,
-            shockAvgY: Math.round(shockAvgY * 100) / 100, shockRmsY: Math.round(shockRmsY * 100) / 100,
-            shockMinZ: Math.round(shockMinZ * 100) / 100, shockMaxZ: Math.round(shockMaxZ * 100) / 100,
-            shockAvgZ: Math.round(shockAvgZ * 100) / 100, shockRmsZ: Math.round(shockRmsZ * 100) / 100,
-            shockLateralMax: Math.round(shockLateralMax * 100) / 100,
-            shockLateralRms: Math.round(shockLateralRms * 100) / 100,
-            partition: part.partition
-          });
-          a0Count++;
-          if (tempVal >= -40 && tempVal <= 150) validTempCount++;
-          else invalidTempCount++;
-        } catch(e) {
-          // Skip malformed record
-        }
-        i += A0_SIZE;
-
-      } else if (recType === 0xD1) {
-        // === PhoenixOneSecondData ===
-        if (i + D1_SIZE > buf.length) { i++; continue; }
-        try {
-          var off2 = i + 1;
-          // s16 fields with appropriate scales
-          // PsiMin/Max/Avg: raw s16 values, scale TBD (output raw for now, will be calibrated)
-          var psiMin = buf.readInt16LE(off2); off2 += 2;
-          var psiMax = buf.readInt16LE(off2); off2 += 2;
-          var psiAvg = buf.readInt16LE(off2); off2 += 2;
-          // TempAvg: s16 with scale=0.03125 (same as OneSecondData temperature)
-          var phoenixTempAvg = buf.readInt16LE(off2) * 0.03125; off2 += 2;
-          phoenixRecords.push({
-            recordType: 0xD1,
-            timestamp: 0,
-            psiMin: psiMin,
-            psiMax: psiMax,
-            psiAvg: psiAvg,
-            tempAvg: Math.round(phoenixTempAvg * 10000) / 10000,
-            partition: part.partition
-          });
-          d1Count++;
-        } catch(e) {}
-        i += D1_SIZE;
-
-      } else if (recType === 0x01) {
-        // === FirmwareVersion: variable size ===
-        // Cannot reliably determine size from content.
-        // Strategy: scan forward for next validated 0xA0 or 0xD1 boundary.
-        var j = i + 1;
-        var foundNext = false;
-        while (j < buf.length - A0_SIZE) {
-          if (buf[j] === 0xA0) {
-            // Validate: temperature in [-40, 150]
-            var vTemp = buf.readInt16LE(j + 1) * 0.03125;
-            if (vTemp >= -40 && vTemp <= 150) {
-              i = j;
-              foundNext = true;
-              break;
-            }
-          } else if (buf[j] === 0xD1) {
-            // Validate: psiMin should be small (0-50000 range)
-            var vPsi = buf.readInt16LE(j + 1);
-            if (vPsi >= -1000 && vPsi <= 100000) {
-              i = j;
-              foundNext = true;
-              break;
-            }
-          } else if (buf[j] === 0xFF) {
-            // FF padding - jump past it
-            i = j;
-            foundNext = true;
-            break;
-          }
-          j++;
-          // Safety: don't scan more than 500 bytes
-          if (j > i + 500) break;
-        }
-        if (!foundNext) i = j;
-
-      } else {
-        // All other record types: use fixed size from table
-        var sz = REC_SIZES[recType];
-        if (sz && sz > 0) {
-          i += sz;
-        } else {
-          // Unknown type or variable-size type we can't handle:
-          // scan forward to next validated 0xA0 or 0xD1 boundary
-          var j2 = i + 1;
-          var foundNext2 = false;
-          while (j2 < buf.length - A0_SIZE) {
-            if (buf[j2] === 0xA0) {
-              var vTemp2 = buf.readInt16LE(j2 + 1) * 0.03125;
-              if (vTemp2 >= -40 && vTemp2 <= 150) {
-                i = j2;
-                foundNext2 = true;
-                break;
-              }
-            } else if (buf[j2] === 0xD1) {
-              i = j2;
-              foundNext2 = true;
-              break;
-            } else if (buf[j2] === 0xFF) {
-              i = j2;
-              foundNext2 = true;
-              break;
-            }
-            j2++;
-            if (j2 > i + 500) break;
-          }
-          if (!foundNext2) i = j2;
-        }
-      }
+    // Validate temperature range
+    if (temp < -40 || temp > 150) {
+      i++;
+      skippedBytes++;
+      continue;
     }
 
-    var typeStr = Object.keys(typeCounts).map(function(k) { return '0x' + parseInt(k).toString(16) + '=' + typeCounts[k]; }).join(', ');
-    debug.push('P' + part.partition + ': A0=' + a0Count + ', D1=' + d1Count + ', resyncs=' + resyncCount + ', types: ' + typeStr);
-    debug.push('P' + part.partition + ': temp valid=' + validTempCount + ', invalid=' + invalidTempCount +
-      ' (valid range: -40 to 150°C)');
-    if (a0Count > 0) {
-      debug.push('P' + part.partition + ': first A0 temp=' + oneSecondRecords[oneSecondRecords.length - a0Count].temperature +
-        ', batt=' + oneSecondRecords[oneSecondRecords.length - a0Count].batteryV);
+    // Read candidate battery (s16 LE at offset 3)
+    var rawBatt = buf.readInt16LE(i + 3);
+    var batt = rawBatt * 0.001027;
+
+    // Validate battery range
+    if (batt < 0 || batt > 5) {
+      i++;
+      skippedBytes++;
+      continue;
     }
+
+    // Read first rpm value (s16 LE at offset 5)
+    var rawRpmXMin = buf.readInt16LE(i + 5);
+    var rpmXMin = rawRpmXMin * 0.02333;
+
+    // Validate rpm range (allow wider range for rotating tools)
+    if (Math.abs(rpmXMin) > 2000) {
+      i++;
+      skippedBytes++;
+      continue;
+    }
+
+    // All validations passed - this is a real 0xA0 record
+    // Parse all fields
+    var rec = {
+      type: 0xA0,
+      temperature: temp,
+      batteryVoltage: batt,
+      // Rpm (12 fields, 3 axes × 4 stats)
+      rpmXMin: rpmXMin,
+      rpmXMax: buf.readInt16LE(i + 7) * 0.02333,
+      rpmXAvg: buf.readInt16LE(i + 9) * 0.02333,
+      rpmXRms: buf.readInt16LE(i + 11) * 0.02333,
+      rpmYMin: buf.readInt16LE(i + 13) * 0.02333,
+      rpmYMax: buf.readInt16LE(i + 15) * 0.02333,
+      rpmYAvg: buf.readInt16LE(i + 17) * 0.02333,
+      rpmYRms: buf.readInt16LE(i + 19) * 0.02333,
+      rpmZMin: buf.readInt16LE(i + 21) * 0.02333,
+      rpmZMax: buf.readInt16LE(i + 23) * 0.02333,
+      rpmZAvg: buf.readInt16LE(i + 25) * 0.02333,
+      rpmZRms: buf.readInt16LE(i + 27) * 0.02333,
+      // ShockLow (12 fields, 3 axes × 4 stats)
+      shockLowXMin: buf.readInt16LE(i + 29) * 0.000244,
+      shockLowXMax: buf.readInt16LE(i + 31) * 0.000244,
+      shockLowXAvg: buf.readInt16LE(i + 33) * 0.000244,
+      shockLowXRms: buf.readInt16LE(i + 35) * 0.000244,
+      shockLowYMin: buf.readInt16LE(i + 37) * 0.000244,
+      shockLowYMax: buf.readInt16LE(i + 39) * 0.000244,
+      shockLowYAvg: buf.readInt16LE(i + 41) * 0.000244,
+      shockLowYRms: buf.readInt16LE(i + 43) * 0.000244,
+      shockLowZMin: buf.readInt16LE(i + 45) * 0.000244,
+      shockLowZMax: buf.readInt16LE(i + 47) * 0.000244,
+      shockLowZAvg: buf.readInt16LE(i + 49) * 0.000244,
+      shockLowZRms: buf.readInt16LE(i + 51) * 0.000244,
+      // Shock/HighShock (12 fields, 3 axes × 4 stats)
+      shockXMin: buf.readInt16LE(i + 53) * 0.2,
+      shockXMax: buf.readInt16LE(i + 55) * 0.2,
+      shockXAvg: buf.readInt16LE(i + 57) * 0.2,
+      shockXRms: buf.readInt16LE(i + 59) * 0.2,
+      shockYMin: buf.readInt16LE(i + 61) * 0.2,
+      shockYMax: buf.readInt16LE(i + 63) * 0.2,
+      shockYAvg: buf.readInt16LE(i + 65) * 0.2,
+      shockYRms: buf.readInt16LE(i + 67) * 0.2,
+      shockZMin: buf.readInt16LE(i + 69) * 0.2,
+      shockZMax: buf.readInt16LE(i + 71) * 0.2,
+      shockZAvg: buf.readInt16LE(i + 73) * 0.2,
+      shockZRms: buf.readInt16LE(i + 75) * 0.2,
+      // Shock lateral
+      shockLateralMax: buf.readInt16LE(i + 77) * 0.2,
+      shockLateralRms: buf.readInt16LE(i + 79) * 0.2,
+      // Timestamp placeholder (filled later)
+      timestamp: 0
+    };
+
+    oneSecondRecords.push(rec);
+    foundCount++;
+    i += A0_SIZE;
   }
 
-  // Generate timestamps: use current download time as the "now" end
-  // Records are stored newest-first in flash, so the first record is most recent
-  // Each record = 1 second, counting backward from download time
+  // Also scan for 0xD1 PhoenixOneSecondData records
+  i = 0;
+  var d1FoundCount = 0;
+  while (i < buf.length - D1_SIZE) {
+    if (buf[i] !== 0xD1) {
+      i++;
+      continue;
+    }
+    var prec = {
+      type: 0xD1,
+      psiMin: buf.readInt16LE(i + 1),
+      psiMax: buf.readInt16LE(i + 3),
+      psiAvg: buf.readInt16LE(i + 5),
+      tempAvg: buf.readInt16LE(i + 7) * 0.03125,
+      timestamp: 0
+    };
+    phoenixRecords.push(prec);
+    d1FoundCount++;
+    i += D1_SIZE;
+  }
+
+  // Generate timestamps: use Date.now() as the time of the LAST record
+  // Records are stored oldest-first, so last record = now
   var nowMs = Date.now();
   for (var ti = 0; ti < oneSecondRecords.length; ti++) {
     oneSecondRecords[ti].timestamp = nowMs - (oneSecondRecords.length - 1 - ti) * 1000;
   }
-  for (var ti2 = 0; ti2 < phoenixRecords.length; ti2++) {
-    phoenixRecords[ti2].timestamp = nowMs - (phoenixRecords.length - 1 - ti2) * 1000;
+  for (var pi = 0; pi < phoenixRecords.length; pi++) {
+    phoenixRecords[pi].timestamp = nowMs - (phoenixRecords.length - 1 - pi) * 1000;
   }
 
-  debug.push('Total OneSecondData records: ' + oneSecondRecords.length);
-  debug.push('Total PhoenixOneSecondData records: ' + phoenixRecords.length);
+  debug.oneSecondCount = foundCount;
+  debug.phoenixCount = d1FoundCount;
+  debug.skippedBytes = skippedBytes;
+  debug.totalScanned = buf.length;
 
   return { oneSecondRecords: oneSecondRecords, phoenixRecords: phoenixRecords, debug: debug };
 }
+
 
 ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
   var savedTimeout = READ_TIMEOUT;
@@ -1465,127 +1303,102 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
           ', value="' + (retryResp.value || '') + '"');
         if (retryResp.success) {
           usbWorking = true;
-          chunkReadDebug.push('[Step0.1] USB recovered after clearHalt!');
-        }
-      } catch(e) {
-        chunkReadDebug.push('[Step0.1] Still failing after clearHalt: ' + e.message);
+function readChunk(partition, chunkNum, timeout) {
+  var CMD = GET_MEMORY_DUMP_CHUNK_DATA;
+  var expectedRespCmd = CMD + 1; // 0x0011
+  var expectedRespLo = expectedRespCmd & 0xFF;  // 0x11
+  var expectedRespHi = (expectedRespCmd >> 8) & 0xFF; // 0x00
+  var MAX_RETRIES = 3;
+
+  for (var attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    // Step 1: Aggressive flush - read until 3 consecutive timeouts
+    var flushTotal = 0;
+    var emptyStreak = 0;
+    while (emptyStreak < 3) {
+      var junk = _readFromDevice(4096, 30);
+      if (!junk || junk.length === 0) {
+        emptyStreak++;
+      } else {
+        emptyStreak = 0;
+        flushTotal += junk.length;
       }
     }
-
-    // === Step 0.2: If still not working, try usb_reset + re-claim ===
-    if (!usbWorking) {
-      chunkReadDebug.push('[Step0.2] USB still not responding! Attempting usb_reset...');
-      var resetResult = this.resetDevice();
-      chunkReadDebug.push('[Step0.2] usb_reset result: ' + JSON.stringify(resetResult));
-      await new Promise(function(resolve) { setTimeout(resolve, 500); });
-      // After usb_reset, re-claim the interface
-      try {
-        var claimRet = fn_usb_claim_interface(this.handle, INTERFACE_NUMBER);
-        chunkReadDebug.push('[Step0.2] Re-claim interface: ret=' + claimRet);
-      } catch(e) {
-        chunkReadDebug.push('[Step0.2] Re-claim failed: ' + e.message);
-      }
-      // Retry basic command
-      try {
-        var retryResp2 = await this.sendCommand(CMD.GET_FIRMWARE_VERSION, []);
-        chunkReadDebug.push('[Step0.2] After reset: success=' + retryResp2.success +
-          ', value="' + (retryResp2.value || '') + '"');
-        if (retryResp2.success) {
-          usbWorking = true;
-          chunkReadDebug.push('[Step0.2] USB recovered after reset!');
-        }
-      } catch(e) {
-        chunkReadDebug.push('[Step0.2] Still failing after reset: ' + e.message);
-      }
+    if (attempt === 0 && flushTotal > 0) {
+      console.log('[USB] readChunk pre-flush: ' + flushTotal + ' bytes drained');
     }
 
-    // === Step 0.3: If STILL not working, try full disconnect/reconnect ===
-    if (!usbWorking) {
-      chunkReadDebug.push('[Step0.3] USB not responding! Attempting full disconnect/reconnect...');
-      try {
-        await this.disconnect();
-        await new Promise(function(resolve) { setTimeout(resolve, 1000); });
-        var connectResult = await this.connect();
-        chunkReadDebug.push('[Step0.3] Reconnect result: success=' + connectResult.success +
-          (connectResult.error ? ', error=' + connectResult.error : ''));
-        if (connectResult.success) {
-          try {
-            var retryResp3 = await this.sendCommand(CMD.GET_FIRMWARE_VERSION, []);
-            if (retryResp3.success) {
-              usbWorking = true;
-              chunkReadDebug.push('[Step0.3] USB recovered after reconnect!');
-            }
-          } catch(e) {}
-        }
-      } catch(e) {
-        chunkReadDebug.push('[Step0.3] Reconnect failed: ' + e.message);
-      }
+    // Step 2: Small delay to let device settle
+    _sleep(50);
+
+    // Step 3: Send command
+    var data = Buffer.alloc(5);
+    data[0] = partition & 0xFF;
+    data.writeInt32BE(chunkNum, 1);
+    var writeOk = _writeToDevice(CMD, data, 1000);
+    if (!writeOk) {
+      console.log('[USB] readChunk write failed (attempt ' + (attempt+1) + ')');
+      continue;
     }
 
-    if (!usbWorking) {
-      chunkReadDebug.push('[Step0] FATAL: USB communication cannot be recovered. Please physically disconnect and reconnect the device.');
-      return {
-        success: false,
-        error: 'USB communication cannot be recovered. Please physically disconnect and reconnect the USB cable, then click Connect.',
-        partitions: [],
-        partitionDebugInfo: [],
-        chunkReadDebug: chunkReadDebug,
-      };
+    // Step 4: Read response - use 4096 to get everything in one shot
+    var resp = _readFromDevice(4096, timeout || 5000);
+    if (!resp || resp.length < 4) {
+      console.log('[USB] readChunk no response (attempt ' + (attempt+1) + ', got ' + (resp ? resp.length : 0) + ' bytes)');
+      continue;
     }
 
-    // USB is working. Now flush stale data and enter dump mode.
-    chunkReadDebug.push('[Step0] USB communication OK. Proceeding to dump mode...');
-
-    // === Step 0.5: Flush USB buffer of any stale data ===
-    chunkReadDebug.push('[Step0.5] Flushing USB read buffer...');
-    try {
-      var flushed = 0;
-      for (var fi = 0; fi < 5; fi++) {
-        var flushBuf = Buffer.alloc(4096);
-        try {
-          var flushN = fn_usb_bulk_read(this.handle, EP_IN, flushBuf, 4096, 50);
-          if (flushN > 0) {
-            flushed += flushN;
-            chunkReadDebug.push('[Step0.5] Flush read ' + flushN + ' bytes: ' + flushBuf.slice(0, Math.min(16, flushN)).toString('hex'));
-          } else {
-            break;
-          }
-        } catch(e) {
+    // Step 5: Search for the expected response header in the data
+    // The expected header is [0x11, 0x00, lenLo, lenHi]
+    // Search for 0x11 followed by 0x00
+    var foundAt = -1;
+    for (var si = 0; si < resp.length - 3; si++) {
+      if (resp[si] === expectedRespLo && resp[si+1] === expectedRespHi) {
+        // Found potential header, check if length makes sense
+        var rLen = resp[si+2] | (resp[si+3] << 8);
+        // Chunk response should be 4 header + up to 8058 data bytes
+        if (rLen >= 0 && rLen <= 8062 && si + 4 + rLen <= resp.length) {
+          foundAt = si;
           break;
         }
       }
-      chunkReadDebug.push('[Step0.5] Total flushed: ' + flushed + ' bytes');
-    } catch(e) {
-      chunkReadDebug.push('[Step0.5] Flush exception: ' + e.message);
     }
 
-    // === Step 0.7: Send MEMORY_DUMP_END first to reset any stuck dump state ===
-    chunkReadDebug.push('[Step0.7] Sending MEMORY_DUMP_END (0x000E) to reset any stuck dump state...');
-    try {
-      var endResp = await this.sendCommand(CMD.MEMORY_DUMP_END, []);
-      var endMsg = 'MEMORY_DUMP_END: success=' + endResp.success +
-        ', cmdCode=0x' + (endResp.commandCode ? endResp.commandCode.toString(16) : 'N/A') +
-        ', value="' + (endResp.value || '') + '"' +
-        (endResp.error ? ', error=' + endResp.error : '');
-      console.log('[USB] ' + endMsg);
-      chunkReadDebug.push('[Step0.7] ' + endMsg);
-    } catch(e) {
-      chunkReadDebug.push('[Step0.7] MEMORY_DUMP_END exception (may be normal if not in dump mode): ' + e.message);
+    if (foundAt < 0) {
+      // Could not find expected header - log what we got
+      var hdrHex = Array.from(resp.slice(0, Math.min(16, resp.length))).map(function(b) { return (b & 0xFF).toString(16).padStart(2, '0'); }).join(', ');
+      console.log('[USB] readChunk header not found in ' + resp.length + ' bytes: ' + hdrHex + ' (attempt ' + (attempt+1) + ')');
+      continue;
     }
-    await new Promise(function(resolve) { setTimeout(resolve, 500); });
 
-    // === Step 1: Notify device about dump start ===
-    var dumpStartOk = false;
-    chunkReadDebug.push('[Step1] Sending MEMORY_DUMP_START (0x000C)...');
-    try {
-      var startResp = await this.sendCommand(CMD.MEMORY_DUMP_START, []);
-      var startMsg = 'MEMORY_DUMP_START: success=' + startResp.success +
-        ', cmdCode=0x' + (startResp.commandCode ? startResp.commandCode.toString(16) : 'N/A') +
-        ', value="' + (startResp.value || '') + '"' +
-        ', dataLen=' + (startResp.data ? startResp.data.length : 0) +
-        (startResp.error ? ', error=' + startResp.error : '');
-      console.log('[USB] ' + startMsg);
-      chunkReadDebug.push('[Step1] ' + startMsg);
+    if (foundAt > 0) {
+      console.log('[USB] readChunk found header at offset ' + foundAt + ' (skipped ' + foundAt + ' junk bytes)');
+    }
+
+    // Extract header and payload
+    var header = resp.slice(foundAt, foundAt + 4);
+    var respLen = header[2] | (header[3] << 8);
+    var payload = resp.slice(foundAt + 4, foundAt + 4 + respLen);
+
+    // Verify we got enough data
+    if (payload.length < respLen) {
+      console.log('[USB] readChunk payload short: got ' + payload.length + ' expected ' + respLen + ' (attempt ' + (attempt+1) + ')');
+      continue;
+    }
+
+    return {
+      success: true,
+      cmd: expectedRespCmd,
+      dataLen: respLen,
+      data: payload,
+      header: header
+    };
+  }
+
+  // All retries failed
+  return null;
+}
+
+
       if (startResp.success && startResp.commandCode === CMD.MEMORY_DUMP_START + 1) {
         dumpStartOk = true;
         chunkReadDebug.push('[Step1] Dump start ACKed OK');
@@ -1649,97 +1462,94 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
 
     // Helper: send chunk request and read response with dynamic length (v23 proven approach)
     var self = this;
-    async function readChunk(partition, chunkNum, timeout) {
-      if (!timeout) timeout = 5000;
-      var dataBytes = [
-        partition & 0xFF,
-        chunkNum & 0xFF,
-        (chunkNum >> 8) & 0xFF,
-        (chunkNum >> 16) & 0xFF,
-        (chunkNum >> 24) & 0xFF
-      ];
-      var packet = buildCommandPacket(CMD.GET_MEMORY_DUMP_CHUNK_DATA, dataBytes);
+function readChunk(partition, chunkNum, timeout) {
+  var CMD = GET_MEMORY_DUMP_CHUNK_DATA;
+  var expectedRespCmd = CMD + 1; // 0x0011
+  var MAX_RETRIES = 3;
 
-      try {
-        await self._writeToDevice(packet);
-
-        // Small delay to let device prepare response
-        await new Promise(function(r) { setTimeout(r, 5); });
-
-        // Step 1: Read response - use 4096 like sendCommand does (proven to work)
-        // The device may take time to prepare chunk data, so use full read
-        var firstRead = await self._readFromDevice(4096, timeout);
-        if (!firstRead || firstRead.length < 4) {
-          // Flush any remaining data from USB buffer
-          try { await self._readFromDevice(4096, 100); } catch(e) {}
-          return { success: false, reason: 'no header (got ' + (firstRead ? firstRead.length : 0) + ' bytes)' };
+  for (var attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    // On retry, do aggressive flush first
+    if (attempt > 0) {
+      var emptyStreak = 0;
+      var flushTotal = 0;
+      while (emptyStreak < 5) {
+        var junk = _readFromDevice(4096, 30);
+        if (!junk || junk.length === 0) {
+          emptyStreak++;
+        } else {
+          emptyStreak = 0;
+          flushTotal += junk.length;
         }
+      }
+      if (flushTotal > 0) {
+        console.log('[USB] readChunk retry-flush: ' + flushTotal + ' bytes drained');
+      }
+      _sleep(100);
+    }
 
-        // Parse header from first read: [cmdlow_resp, cmdhigh_resp, lengthlow, lengthhigh]
-        var respCmd = firstRead[0] | (firstRead[1] << 8);
-        var respLen = firstRead[2] | (firstRead[3] << 8);
-        
-        // Data already received in first read (after 4-byte header)
-        var dataReceived = firstRead.length - 4;
+    // Send command
+    var data = Buffer.alloc(5);
+    data[0] = partition & 0xFF;
+    data.writeInt32BE(chunkNum, 1);
+    var writeOk = _writeToDevice(CMD, data, 1000);
+    if (!writeOk) {
+      console.log('[USB] readChunk write failed (attempt ' + (attempt+1) + ')');
+      continue;
+    }
 
-        // Validate: response command should be request command + 1
-        var expectedRespCmd = CMD.GET_MEMORY_DUMP_CHUNK_DATA + 1; // 0x0011
-        if (respCmd !== expectedRespCmd) {
-          // Flush any remaining data from USB buffer
-          try { await self._readFromDevice(4096, 100); } catch(e) {}
-          return { success: false, reason: 'wrong cmd: got 0x' + respCmd.toString(16) + ' expected 0x' + expectedRespCmd.toString(16) + ', hdr=' + hexStr(firstRead.slice(0, 16)) };
-        }
+    // Read response - use 4096 as first read (proven to work with libusb-win32)
+    var resp = _readFromDevice(4096, timeout || 5000);
+    if (!resp || resp.length < 4) {
+      console.log('[USB] readChunk no response (attempt ' + (attempt+1) + ', got ' + (resp ? resp.length : 0) + ' bytes)');
+      continue;
+    }
 
-        // Step 2: Assemble the full data portion (respLen bytes)
-        if (respLen === 0) {
-          // Zero-length data = empty chunk
-          return { success: true, empty: true, data: [], respLen: 0 };
-        }
+    // Parse header from first 4 bytes
+    var respCmd = resp[0] | (resp[1] << 8);
+    var respLen = resp[2] | (resp[3] << 8);
 
-        // Sanity check: respLen should not be unreasonably large
-        if (respLen > 10000) {
-          // Likely corrupted header, flush and fail
-          try { await self._readFromDevice(8192, 100); } catch(e) {}
-          return { success: false, reason: 'respLen too large: ' + respLen + ', hdr=' + hexStr(firstRead.slice(0, 16)) };
-        }
+    // Validate response command
+    if (respCmd !== expectedRespCmd) {
+      var hdrHex = Array.from(resp.slice(0, Math.min(16, resp.length))).map(function(b) { return (b & 0xFF).toString(16).padStart(2, '0'); }).join(', ');
+      console.log('[USB] readChunk wrong cmd: got 0x' + respCmd.toString(16) + ' expected 0x' + expectedRespCmd.toString(16) + ', first16=' + hdrHex + ' (attempt ' + (attempt+1) + ')');
+      continue;
+    }
 
-        // We already have some data from the first read
-        var dataParts = [];
-        if (dataReceived > 0) {
-          dataParts.push(firstRead.slice(4, 4 + Math.min(dataReceived, respLen)));
-        }
-        var dataStillNeeded = respLen - dataReceived;
+    // Validate response length
+    if (respLen < 0 || respLen > 8062) {
+      console.log('[USB] readChunk invalid len: ' + respLen + ' (attempt ' + (attempt+1) + ')');
+      continue;
+    }
 
-        // Read remaining data if needed
-        while (dataStillNeeded > 0) {
-          var readSize = Math.min(dataStillNeeded, 8192);
-          var moreData = await self._readFromDevice(readSize, 3000);
-          if (!moreData || moreData.length === 0) {
-            // Timeout - return what we have so far
-            var partialData = Buffer.concat(dataParts);
-            if (partialData.length >= 10) {
-              // We have enough data to be useful, just return partial
-              return { success: true, empty: false, data: partialData, respLen: respLen, partial: true };
-            }
-            return { success: false, reason: 'short data: got ' + partialData.length + ' expected ' + respLen };
-          }
-          dataParts.push(moreData);
-          dataStillNeeded -= moreData.length;
-        }
-
-        var dataBuf = Buffer.concat(dataParts);
-        // Trim to exact length (in case we over-read)
-        if (dataBuf.length > respLen) {
-          dataBuf = dataBuf.slice(0, respLen);
-        }
-
-        return { success: true, empty: false, data: dataBuf, respLen: respLen };
-      } catch(e) {
-        // Flush on exception too
-        try { await self._readFromDevice(4096, 100); } catch(e2) {}
-        return { success: false, reason: 'exception: ' + e.message };
+    // Extract payload (may need to read more if 4096 wasn't enough)
+    var payload = resp.slice(4, 4 + respLen);
+    if (payload.length < respLen) {
+      // Need to read more
+      var remaining = respLen - payload.length;
+      var more = _readFromDevice(remaining, timeout || 3000);
+      if (more && more.length > 0) {
+        payload = Buffer.concat([payload, more]);
       }
     }
+
+    if (payload.length < respLen) {
+      console.log('[USB] readChunk payload short: got ' + payload.length + ' expected ' + respLen + ' (attempt ' + (attempt+1) + ')');
+      continue;
+    }
+
+    return {
+      success: true,
+      cmd: respCmd,
+      dataLen: respLen,
+      data: payload,
+      header: resp.slice(0, 4)
+    };
+  }
+
+  // All retries failed
+  return null;
+}
+
 
     READ_TIMEOUT = 3000;
 
