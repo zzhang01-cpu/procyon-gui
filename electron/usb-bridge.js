@@ -1702,8 +1702,10 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       }
     }
 
-    // === Step 5: Parse binary records in main process ===
-    var parseResult = parseDownloadedRecords(allData);
+    // === Step 5: Concatenate all partition data and parse binary records ===
+    var combinedBuffer = Buffer.concat(allData.map(function(p) { return p.data; }));
+    console.log('[v47] Combined buffer: ' + combinedBuffer.length + ' bytes from ' + allData.length + ' partitions');
+    var parseResult = parseDownloadedRecords(combinedBuffer);
 
     // === Step 6: Notify device about dump end ===
     READ_TIMEOUT = savedTimeout;
@@ -1711,7 +1713,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     // Store parsed records in main process for CSV export
     _lastParsedRecords = parseResult.oneSecondRecords;
     _lastPhoenixRecords = parseResult.phoenixRecords;
-    _lastParseDebug = parseResult.debugLog || [];
+    _lastParseDebug = parseResult.debug || [];
     var totalRecords = parseResult.oneSecondRecords.length + parseResult.phoenixRecords.length;
     console.log('[v39] Stored ' + parseResult.oneSecondRecords.length + ' A0 + ' + parseResult.phoenixRecords.length + ' D1 records in main process');
 
@@ -1722,7 +1724,7 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
       partitionInfo: [],
       partitionDebug: partitionDebug,
       chunkReadDebug: chunkReadDebug,
-      parseDebug: parseResult.debugLog || [],
+      parseDebug: parseResult.debug || [],
       // Summary info (lightweight)
       recordCount: totalRecords,
       a0Count: parseResult.oneSecondRecords.length,

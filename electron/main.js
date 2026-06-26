@@ -36,7 +36,7 @@ function createWindow() {
 
 // Initialize USB bridge IPC handlers
 function initUsbBridge() {
-  console.log('[Procyon GUI] USB Bridge version: 2024-06-27-v44 (fixed syntax error: removed duplicate readChunk, fixed try/catch, null-safety)');
+  console.log('[Procyon GUI] USB Bridge version: 2024-06-27-v47 (fix: concat partition buffers before parse, correct debug field name)');
 
   // List USB devices
   ipcMain.handle('usb:list-devices', async () => {
