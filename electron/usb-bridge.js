@@ -1423,8 +1423,8 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
           continue;
         }
 
-        // Read response - use 4096 as first read (proven to work with libusb-win32)
-        var resp = await self._readFromDevice(4096, timeout || 5000);
+        // Read response - use 8192 to fit full chunk (4 header + 8058 data = 8062 bytes)
+        var resp = await self._readFromDevice(8192, timeout || 5000);
         if (!resp || resp.length < 4) {
           console.log('[USB] readChunk no response (attempt ' + (attempt+1) + ', got ' + (resp ? resp.length : 0) + ' bytes)');
           continue;
