@@ -36,7 +36,7 @@ function createWindow() {
 
 // Initialize USB bridge IPC handlers
 function initUsbBridge() {
-  console.log('[Procyon GUI] USB Bridge version: 2024-06-29-v48 (structured binary parser, .pcmbin + main.csv + per-type CSVs matching Procyon.exe format)');
+  console.log('[Procyon GUI] USB Bridge version: 2024-06-29-v49 (device params in file naming, csv_chain chain validation)');
 
   // List USB devices
   ipcMain.handle('usb:list-devices', async () => {

@@ -144,6 +144,8 @@ var _lastParseDebug = null;
 var _lastAllRecords = [];
 var _lastPartitionData = [];
 var _lastCombinedBuffer = null;
+var _lastCustomer = 'DRS';
+var _lastRunId = '1';
 
 function ensureLibusbInit() {
   if (!libusbInitialized) {
@@ -2099,8 +2101,16 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     // Save per-partition raw data for .pcmbin file generation
     _lastPartitionData = allData.map(function(p) { return { partition: p.partition, data: p.data }; });
     _lastCombinedBuffer = combinedBuffer;
+    // Store device parameters for file naming
+    try {
+      _lastCustomer = await this.getCustomer();
+      _lastRunId = await this.getRunID();
+    } catch(e) {
+      _lastCustomer = 'DRS';
+      _lastRunId = '1';
+    }
     var totalRecords = parseResult.oneSecondRecords.length + parseResult.phoenixRecords.length;
-    console.log('[v48] Stored ' + parseResult.oneSecondRecords.length + ' A0 + ' + parseResult.phoenixRecords.length + ' D1 + ' + (_lastAllRecords.length - totalRecords) + ' other records in main process');
+    console.log('[v48] Stored ' + parseResult.oneSecondRecords.length + ' A0 + ' + parseResult.phoenixRecords.length + ' D1 + ' + (_lastAllRecords.length - totalRecords) + ' other records in main process, customer=' + _lastCustomer + ' runId=' + _lastRunId);
 
     return {
       success: true,
@@ -2199,6 +2209,8 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
   if (!_lastAllRecords || _lastAllRecords.length === 0) {
     return { success: false, error: 'No records to export. Download data first.' };
   }
+  var cust = (_lastCustomer || 'DRS').replace(/[^a-zA-Z0-9_-]/g, '_');
+  var runId = (_lastRunId || '1').replace(/[^a-zA-Z0-9_-]/g, '_');
   try {
     var fs = require('fs');
     var path = require('path');
@@ -2234,7 +2246,7 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
     if (_lastPartitionData && _lastPartitionData.length > 0) {
       for (var pi = 0; pi < _lastPartitionData.length; pi++) {
         var pd = _lastPartitionData[pi];
-        var pcmbinName = 'PCM_DRS_1_1_' + dateStr + ' - ' + timeStr + '._P' + (pd.partition + 1) + '.pcmbin';
+        var pcmbinName = 'PCM_' + cust + '_' + runId + '_' + dateStr + ' - ' + timeStr + '._P' + (pd.partition + 1) + '.pcmbin';
         var pcmbinPath = path.join(saveDir, pcmbinName);
         fs.writeFileSync(pcmbinPath, pd.data);
         savedFiles.push('.pcmbin: ' + pcmbinPath);
@@ -2244,7 +2256,7 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
 
     // --- Generate main.csv (record index, Procyon.exe format) ---
     var mainCsv = generateMainCsv(_lastAllRecords);
-    var mainCsvName = 'PCM_DRS_1_1_' + dateStr + ' - ' + timeStr + '._P1.pcmbin.main.csv';
+    var mainCsvName = 'PCM_' + cust + '_' + runId + '_' + dateStr + ' - ' + timeStr + '._P1.pcmbin.main.csv';
     var mainCsvPath = path.join(saveDir, mainCsvName);
     fs.writeFileSync(mainCsvPath, mainCsv, 'utf-8');
     savedFiles.push('main.csv: ' + mainCsvPath);
@@ -2259,7 +2271,7 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
       if (typeCsv && typeCsv.length > 0) {
         var typeHex = '0x' + ct.toString(16).toLowerCase();
         var typeName = chainNames[ct] || ('type_' + ct.toString(16));
-        var csvName = 'PCM_DRS_1_1_' + dateStr + ' - ' + timeStr + '._P1.pcmbin.' + typeHex + '_' + typeName + '.csv';
+        var csvName = 'PCM_' + cust + '_' + runId + '_' + dateStr + ' - ' + timeStr + '._P1.pcmbin.' + typeHex + '_' + typeName + '.csv';
         var csvPath = path.join(saveDir, csvName);
         fs.writeFileSync(csvPath, typeCsv, 'utf-8');
         savedFiles.push(typeHex + '_' + typeName + '.csv: ' + csvPath);
