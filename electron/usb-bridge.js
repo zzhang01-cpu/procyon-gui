@@ -1140,11 +1140,14 @@ var RECORD_DEFS = {
   0x0D: { name: 'FlashDeviceID', bodySize: 16, fields: [
     { name: 'DeviceID', count: 16, fmt: 'u8' }
   ]},
-  0x0E: { name: 'FlashBadBlockList', bodySize: 'variable', fields: [
-    { name: 'BadBlockList', count: 'auto', fmt: 'u16' }
+  0x0E: { name: 'FlashBadBlockList', bodySize: 160, fields: [
+    { name: 'BadBlockList', count: 80, fmt: 'u16' }
   ]},
-  0x80: { name: 'RpmAxialWaveform', bodySize: 'csv_chain', csvChain: true, fields: [
-    { name: 'RpmXAxis', count: 'auto', fmt: 's16' }
+  0x1F: { name: 'UsbConnection', bodySize: 1, fields: [
+    { name: 'Connected', count: 1, fmt: 'u8' }
+  ]},
+  0x80: { name: 'RpmAxialWaveform', bodySize: 6666, csvChain: true, fields: [
+    { name: 'RpmXAxis', count: 3333, fmt: 's16' }
   ]},
   0x81: { name: 'GyroTagDataCorrupt', bodySize: 4, fields: [
     { name: 'Count', count: 1, fmt: 'u32' }
@@ -1169,15 +1172,23 @@ var RECORD_DEFS = {
     { name: 'Peak5', count: 1, fmt: 's16' },
     { name: 'Peak6', count: 1, fmt: 's16' }
   ]},
-  0x90: { name: 'AccelWaveform', bodySize: 'csv_chain', csvChain: true, fields: [
-    { name: 'AccelX', count: 'auto', fmt: 's16' },
-    { name: 'AccelY', count: 'auto', fmt: 's16' },
-    { name: 'AccelZ', count: 'auto', fmt: 's16' }
+  0x86: { name: 'FilteredRpmFftPeaks', bodySize: 12, fields: [
+    { name: 'Peak1', count: 1, fmt: 's16' },
+    { name: 'Peak2', count: 1, fmt: 's16' },
+    { name: 'Peak3', count: 1, fmt: 's16' },
+    { name: 'Peak4', count: 1, fmt: 's16' },
+    { name: 'Peak5', count: 1, fmt: 's16' },
+    { name: 'Peak6', count: 1, fmt: 's16' }
   ]},
-  0x91: { name: 'LowShockWaveform', bodySize: 'csv_chain', csvChain: true, fields: [
-    { name: 'ShockX', count: 'auto', fmt: 's16' },
-    { name: 'ShockY', count: 'auto', fmt: 's16' },
-    { name: 'ShockZ', count: 'auto', fmt: 's16' }
+  0x90: { name: 'AccelWaveform', bodySize: 15360, csvChain: true, fields: [
+    { name: 'AccelX', count: 2560, fmt: 's16' },
+    { name: 'AccelY', count: 2560, fmt: 's16' },
+    { name: 'AccelZ', count: 2560, fmt: 's16' }
+  ]},
+  0x91: { name: 'LowShockWaveform', bodySize: 19998, csvChain: true, fields: [
+    { name: 'ShockX', count: 3333, fmt: 's16' },
+    { name: 'ShockY', count: 3333, fmt: 's16' },
+    { name: 'ShockZ', count: 3333, fmt: 's16' }
   ]},
   0x92: { name: 'ShockXFftPeaks', bodySize: 12, fields: [
     { name: 'Peak1', count: 1, fmt: 's16' },
@@ -1280,6 +1291,11 @@ function fmtSize(fmt) {
 
 // Parse ALL binary records from raw buffer
 // Returns: { records: [...], debug: [...] }
+// All records are contiguous with known body sizes.
+// Record format: [rawType(1B)][metadata(7B)][body(N bytes)]
+//   rawType: type | 0x01 (bit 0 = validity flag)
+//   metadata: [timestamp(4B)][seqNumber(2B)][bodySize(1B)]
+//   bodySize: from RECORD_DEFS (all fixed except 0xFF Flush)
 function parseBinaryRecords(rawData) {
   var buf = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
   var records = [];
@@ -1288,127 +1304,133 @@ function parseBinaryRecords(rawData) {
 
   debug.push('parseBinaryRecords: buffer size=' + buf.length + ' bytes');
 
-  // After the Flush record (which marks end of metadata area), only recognize
-  // sensor record types (0x80-0x91, 0xA0, 0xD1) to avoid false positives
-  // from metadata bytes appearing in sensor data values
-  var afterFlush = false;
-  var SENSOR_TYPES = { 0x80:1, 0x81:1, 0x82:1, 0x83:1, 0x84:1, 0x85:1, 0x90:1, 0x91:1, 0x92:1, 0x93:1, 0x94:1, 0xA0:1, 0xD1:1 };
-
-  // In the sensor area, records form a continuous chain with no gaps.
-  // Track the expected next offset and validate that each record starts there.
-  var expectedNextOffset = null;
-
-  while (i < buf.length) {
+  // Parse contiguously - all records are packed with no gaps
+  while (i + 8 <= buf.length) {
     var rawType = buf[i];
-    var recType = rawType & 0xFE;
-    if (!RECORD_DEFS[recType]) recType = rawType;
-    if (!RECORD_DEFS[recType]) recType = rawType | 0x02;
-    if (!RECORD_DEFS[recType]) recType = rawType;
-
-    // In sensor-only mode, skip non-sensor record types
-    if (afterFlush && !SENSOR_TYPES[recType]) {
+    
+    // Handle byte stuffing (0x00 padding) and padding (0xFF)
+    if (rawType === 0x00 || rawType === 0xFF) {
       i++;
       continue;
     }
 
-    // Chain validation for sensor area: records must be contiguous.
-    // If the chain breaks, skip forward byte-by-byte to find the next valid record.
-    if (afterFlush && expectedNextOffset !== null && i !== expectedNextOffset) {
+    // Determine the corrected record type based on rawType + metadata[6]
+    var meta6 = buf[i + 7];
+    var recType;
+    
+    if (rawType === 0x01) {
+      // rawType 0x01 + bodySize 4 → 0x01 FirmwareVersion (first after Flush) or 0x02 Reset
+      recType = 0x01; // Default: FirmwareVersion
+    } else if (rawType === 0x0D) {
+      recType = (meta6 === 160) ? 0x0E : 0x0D; // 160→FlashBadBlockList, 16→FlashDeviceID
+    } else if (rawType === 0x1D) {
+      recType = 0x1F; // UsbConnection
+    } else if (rawType === 0xFD) {
+      recType = 0xFF; // Flush
+    } else if (rawType === 0x81) {
+      recType = (meta6 === 6) ? 0x83 : 0x80; // 6→FilteredRpmStats, 10→RpmAxialWaveform
+    } else if (rawType === 0x85) {
+      recType = (meta6 === 52) ? 0x84 : 0x85; // 52→FilteredRpmWaveform, 12→RpmHighFreqFftPeaks/FilteredRpmFftPeaks
+    } else if (rawType === 0x91) {
+      if (meta6 === 12) recType = 0x92; // ShockXFftPeaks/ShockYFftPeaks
+      else if (meta6 === 30) recType = 0x91; // LowShockWaveform
+      else recType = 0x90; // AccelWaveform (meta6=0)
+    } else if (rawType === 0x95) {
+      recType = 0x94; // ShockZFftPeaks
+    } else if (rawType === 0xA1) {
+      recType = 0xA0; // OneSecondData
+    } else {
+      // Unknown type - skip silently (rare byte stuffing or corruption)
       i++;
       continue;
     }
 
     var def = RECORD_DEFS[recType];
     if (!def) {
+      // Unknown corrected type
+      debug.push('Unknown recType 0x' + recType.toString(16) + ' from rawType 0x' + rawType.toString(16) + ' at offset 0x' + i.toString(16));
       i++;
       continue;
     }
 
-    var metaStart = i + 1;
-    if (metaStart + 7 > buf.length) break;
-    var meta = buf.slice(metaStart, metaStart + 7);
-
-    var bodyStart = metaStart + 7;
-    var bodySize = def.bodySize;
-
-    // metadata[6] is the body size for most records. Use it when reasonable.
-    var hintSize = meta[6];
-    var useHint = false;
-
-    if (bodySize === 'variable') {
-      // For 'variable' records (0x0E FlashBadBlockList), metadata[6] IS the body size
-      // BUT NOT for 0xFF Flush which has metadata[6] that doesn't match its large body
-      if (recType !== 0xFF && hintSize > 0 && hintSize <= buf.length - bodyStart) {
-        bodySize = hintSize;
-        useHint = true;
-      }
-    } else if (bodySize === 'csv_chain') {
-      // For 'csv_chain' records, metadata[6] is body size for small records (≤200 bytes)
-      // BUT NOT for 0xFF Flush which has metadata[6] that doesn't match its large body
-      if (recType !== 0xFF && hintSize > 0 && hintSize <= 200 && bodyStart + hintSize <= buf.length) {
-        bodySize = hintSize;
-        useHint = true;
-      }
-    } else if (typeof bodySize === 'number' && bodySize > 0) {
-      // For fixed-size records: if metadata[6] differs from known size but is reasonable,
-      // trust metadata[6] (e.g. 0x0D FlashDeviceID with metadata[6]=160 is actually FlashBadBlockList)
-      if (hintSize > 0 && hintSize !== bodySize && hintSize <= 10000 && bodyStart + hintSize <= buf.length) {
-        bodySize = hintSize;
-        useHint = true;
+    // Context validation: metadata records must appear in expected order
+    if (recType === 0x01 && records.length > 0) {
+      // FirmwareVersion only at start of partition (after Flush or at offset 0)
+      var lastRec = records[records.length - 1];
+      if (lastRec.type !== 0xFF && i !== 0) {
+        recType = 0x02;
+        def = RECORD_DEFS[0x02];
       }
     }
+    
+    // FlashDeviceID (0x0D) must follow FirmwareVersion (0x01) or Reset (0x02)
+    if (recType === 0x0D && records.length > 0) {
+      var lastRec2 = records[records.length - 1];
+      if (lastRec2.type !== 0x01 && lastRec2.type !== 0x02) {
+        // Not in expected context - skip
+        i++;
+        continue;
+      }
+    }
+    
+    // FlashBadBlockList (0x0E) must follow FlashDeviceID (0x0D)
+    if (recType === 0x0E && records.length > 0) {
+      var lastRec3 = records[records.length - 1];
+      if (lastRec3.type !== 0x0D) {
+        i++;
+        continue;
+      }
+    }
+    
+    // UsbConnection (0x1F) can appear after sensor records or partition boundaries
+    if (recType === 0x1F && records.length > 0) {
+      var lastRec4 = records[records.length - 1];
+      // Allow after any record (it's a rare inline marker)
+      // No restriction needed
+    }
 
-    // If still unresolved, scan for next valid record marker
-    if (!useHint && (bodySize === 'variable' || bodySize === 'csv_chain')) {
-        for (var s = bodyStart; s < Math.min(buf.length, bodyStart + 100000); s++) {
-          var candidateRaw = buf[s];
-          // Skip 0xFF padding bytes (empty flash memory)
-          if (candidateRaw === 0xFF) continue;
-          // Determine candidate type
-          var candidateType = candidateRaw & 0xFE;
-          if (!RECORD_DEFS[candidateType] && RECORD_DEFS[candidateRaw]) {
-            candidateType = candidateRaw;
+    var meta = buf.slice(i + 1, i + 8);
+    var bodyStart = i + 8;
+    var bodySize = def.bodySize;
+
+    // For 0xFF Flush, body fills remaining space until next valid record
+    if (recType === 0xFF) {
+      // Scan forward to find the next valid record start
+      bodySize = 0;
+      for (var s = bodyStart; s < Math.min(buf.length, bodyStart + 20000); s++) {
+        var nextRaw = buf[s];
+        if (nextRaw === 0x00 || nextRaw === 0xFF) continue;
+        var nextType = nextRaw & 0xFE;
+        if (nextType === 0x1E) nextType = 0x1F;
+        if (nextRaw === 0x01 || nextRaw === 0x0D || nextRaw === 0xFD || RECORD_DEFS[nextType]) {
+          // Verify: metadata[6] should match known bodySize for fixed-size types
+          var valid = true;
+          if (s + 8 <= buf.length && RECORD_DEFS[nextType] && typeof RECORD_DEFS[nextType].bodySize === 'number' && RECORD_DEFS[nextType].bodySize > 0) {
+            var nextMeta6 = buf[s + 7];
+            if (nextMeta6 !== RECORD_DEFS[nextType].bodySize && nextType !== 0x0D && nextType !== 0x0E) {
+              valid = false;
+            }
           }
-          // Validate: the candidate must be a known type AND have valid-looking metadata
-          if (RECORD_DEFS[candidateType] && s > bodyStart) {
-            var metaValid = true;
-            if (s + 8 <= buf.length) {
-              var allFF = true, allZero = true;
-              for (var mv = 1; mv <= 7; mv++) {
-                if (buf[s + mv] !== 0xFF) allFF = false;
-                if (buf[s + mv] !== 0x00) allZero = false;
-              }
-              if (allFF || allZero) metaValid = false;
-              // Stricter: for fixed-size types, metadata[6] must match the known body size
-              if (metaValid && typeof RECORD_DEFS[candidateType].bodySize === 'number' && RECORD_DEFS[candidateType].bodySize > 0) {
-                if (buf[s + 7] !== RECORD_DEFS[candidateType].bodySize) {
-                  metaValid = false;
-                }
-              }
-            }
-            if (metaValid) {
-              bodySize = s - bodyStart;
-              break;
-            }
+          if (valid) {
+            bodySize = s - bodyStart;
+            break;
           }
         }
       }
-      if (bodySize === 'variable' || bodySize === 'csv_chain') {
+      if (bodySize === 0) {
         bodySize = buf.length - bodyStart;
       }
-
-    if (bodySize === 'to_end') {
-      bodySize = buf.length - bodyStart;
+      // Reject small Flush records (< 1000 bytes) as false positives within waveform bodies
+      if (bodySize < 1000) {
+        i++;
+        continue;
+      }
     }
 
     if (bodyStart + bodySize > buf.length) {
       bodySize = buf.length - bodyStart;
     }
-
-    if (bodySize < 0) {
-      debug.push('WARN: negative bodySize at offset 0x' + i.toString(16) + ', type=0x' + recType.toString(16));
-      break;
-    }
+    if (bodySize < 0) bodySize = 0;
 
     var body = bodySize > 0 ? buf.slice(bodyStart, bodyStart + bodySize) : Buffer.alloc(0);
 
@@ -1465,20 +1487,42 @@ function parseBinaryRecords(rawData) {
     };
 
     records.push(rec);
-
-    // After a real Flush record (body > 1000), enter sensor-only mode
-    // and set the expected next offset to the first byte after the Flush
-    if (!afterFlush && recType === 0xFF && bodySize > 1000) {
-      afterFlush = true;
-      expectedNextOffset = bodyStart + bodySize;
-    }
-
-    // Update chain validation: next record must start at bodyStart + bodySize
-    if (afterFlush) {
-      expectedNextOffset = bodyStart + bodySize;
-    }
-
     i = bodyStart + bodySize;
+    
+    // Byte-stuffing recovery: verify the next byte is a valid record start
+    // If not, skip zero/FF bytes until we find a valid record
+    var stuffedCount = 0;
+    while (i < buf.length && stuffedCount < 16) {
+      var nextByte = buf[i];
+      if (nextByte === 0x00 || nextByte === 0xFF) {
+        i++;
+        stuffedCount++;
+        continue;
+      }
+      // Check if this byte starts a valid record
+      if (nextByte === 0x01 || nextByte === 0x0D || nextByte === 0x1D || 
+          nextByte === 0xFD || nextByte === 0x81 || nextByte === 0x85 ||
+          nextByte === 0x91 || nextByte === 0x95 || nextByte === 0xA1) {
+        // Verify metadata[6] matches expected bodySize for this type
+        if (i + 8 <= buf.length) {
+          var verifyMeta6 = buf[i + 7];
+          var verifyOk = true;
+          if (nextByte === 0x81) verifyOk = (verifyMeta6 === 6 || verifyMeta6 === 10);
+          else if (nextByte === 0x85) verifyOk = (verifyMeta6 === 52 || verifyMeta6 === 12);
+          else if (nextByte === 0x91) verifyOk = (verifyMeta6 === 12 || verifyMeta6 === 30 || verifyMeta6 === 0);
+          else if (nextByte === 0x95) verifyOk = (verifyMeta6 === 12);
+          else if (nextByte === 0xA1) verifyOk = (verifyMeta6 === 80);
+          else if (nextByte === 0x0D) verifyOk = (verifyMeta6 === 16 || verifyMeta6 === 160);
+          else if (nextByte === 0x01) verifyOk = (verifyMeta6 === 4);
+          else if (nextByte === 0x1D) verifyOk = (verifyMeta6 === 1);
+          // 0xFD (Flush) always valid
+          if (verifyOk) break;
+        }
+      }
+      // Not a valid record start - skip this byte
+      i++;
+      stuffedCount++;
+    }
   }
 
   // Generate debug summary
@@ -1503,14 +1547,36 @@ function parseBinaryRecords(rawData) {
 // Columns: Location, StatusMsg, RecordId, RecordName, Timestamp, BodyByteLen, {type-specific fields}
 function generateMainCsv(records) {
   var lines = [];
-  lines.push('Location,StatusMsg,RecordId,RecordName,Timestamp,BodyByteLen');
+  lines.push('Location,StatusMsg,RecordId,RecordName,Timestamp,BodyByteLen,DataStart');
+  
+  // Base timestamp: use first sensor record's metadata bytes 1-4 (LE uint32)
+  var baseTs = 0;
+  for (var bi = 0; bi < records.length; bi++) {
+    var br = records[bi];
+    if (br.metadata && br.metadata.length >= 4 && br.type >= 0x80) {
+      baseTs = br.metadata.readUInt32LE(0);
+      if (baseTs > 1000000000 && baseTs < 2000000000) break;
+    }
+  }
+  if (baseTs === 0) baseTs = Math.floor(Date.now() / 1000);
+  
+  var currentTs = baseTs;
+  var lastA0Count = 0;
+  var a0Count = 0;
+  
   for (var i = 0; i < records.length; i++) {
     var rec = records[i];
-    var ts = new Date();
-    if (i > 0 && records[0]._timestamp) {
-      ts = new Date(records[0]._timestamp + i * 1000);
+    
+    // Increment timestamp for each OneSecondData record (1 record = 1 second)
+    if (rec.type === 0xA0) {
+      if (a0Count > lastA0Count) {
+        currentTs = baseTs + a0Count;
+        lastA0Count = a0Count;
+      }
+      a0Count++;
     }
-
+    
+    var ts = new Date(currentTs * 1000);
     var tsStr = ts.getFullYear() + '-' +
       String(ts.getMonth() + 1).padStart(2, '0') + '-' +
       String(ts.getDate()).padStart(2, '0') + ' ' +
@@ -1518,19 +1584,28 @@ function generateMainCsv(records) {
       String(ts.getMinutes()).padStart(2, '0') + ':' +
       String(ts.getSeconds()).padStart(2, '0');
 
-    var row = '0x' + rec.offset.toString(16) + ',okay,0x' +
-      rec.type.toString(16).toUpperCase().padStart(2, '0') + ',' +
+    var recIdHex = '0x' + rec.type.toString(16).toLowerCase();
+    var row = '0x' + rec.offset.toString(16) + ',okay,' + recIdHex + ',' +
       rec.name + ',' + tsStr + ',' + rec.bodySize;
 
     var p = rec.parsed;
     var fieldKeys = Object.keys(p);
-    for (var fi = 0; fi < fieldKeys.length; fi++) {
-      var fk = fieldKeys[fi];
-      var fv = p[fk];
-      if (Array.isArray(fv)) {
-        row += ',' + fk + '=,' + fv.join(',');
-      } else {
-        row += ',' + fk + '=,' + fv;
+    if (fieldKeys.length === 0 && rec.bodySize > 0) {
+      row += ',BodyBytes=';
+      var maxBytes = Math.min(rec.bodySize, 200);
+      for (var bi = 0; bi < maxBytes; bi++) {
+        row += (bi > 0 ? ',' : '') + rec.body[bi];
+      }
+      if (rec.bodySize > 200) row += ',TRUNCATED';
+    } else {
+      for (var fi = 0; fi < fieldKeys.length; fi++) {
+        var fk = fieldKeys[fi];
+        var fv = p[fk];
+        if (Array.isArray(fv)) {
+          row += ',' + fk + '=,' + fv.join(',');
+        } else {
+          row += ',' + fk + '=,' + fv;
+        }
       }
     }
     lines.push(row);
@@ -1582,7 +1657,7 @@ function generateTypeCsv(records, typeId) {
       String(ts.getSeconds()).padStart(2, '0');
 
     var row = '0x' + rec.offset.toString(16) + ',okay,0x' +
-      rec.type.toString(16).toUpperCase().padStart(2, '0') + ',' +
+      rec.type.toString(16).toLowerCase() + ',' +
       rec.name + ',' + tsStr + ',' + rec.bodySize;
 
     var p = rec.parsed;
