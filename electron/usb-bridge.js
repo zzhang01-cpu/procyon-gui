@@ -1355,12 +1355,19 @@ function parseBinaryRecords(rawData) {
 
     // Context validation: metadata records must appear in expected order
     if (recType === 0x01 && records.length > 0) {
-      // FirmwareVersion only at start of partition (after Flush or at offset 0)
+      // 0x01 after Flush → Reset (0x02)
+      // 0x01 after Reset or at offset 0 → FirmwareVersion (0x01)
+      // 0x01 after anything else → false positive, skip
       var lastRec = records[records.length - 1];
-      if (lastRec.type !== 0xFF && i !== 0) {
+      if (lastRec.type === 0xFF) {
         recType = 0x02;
         def = RECORD_DEFS[0x02];
+      } else if (lastRec.type !== 0x02 && i !== 0) {
+        // FirmwareVersion must follow Reset (or be at start of file)
+        i++;
+        continue;
       }
+      // Otherwise keep as FirmwareVersion (0x01)
     }
     
     // FlashDeviceID (0x0D) must follow FirmwareVersion (0x01) or Reset (0x02)
@@ -1402,7 +1409,8 @@ function parseBinaryRecords(rawData) {
         if (nextRaw === 0x00 || nextRaw === 0xFF) continue;
         var nextType = nextRaw & 0xFE;
         if (nextType === 0x1E) nextType = 0x1F;
-        if (nextRaw === 0x01 || nextRaw === 0x0D || nextRaw === 0xFD || RECORD_DEFS[nextType]) {
+        if (nextRaw === 0x1D) nextType = 0x1F;
+        if (nextRaw === 0x01 || nextRaw === 0x0D || nextRaw === 0x1D || nextRaw === 0xFD || RECORD_DEFS[nextType]) {
           // Verify: metadata[6] should match known bodySize for fixed-size types
           var valid = true;
           if (s + 8 <= buf.length && RECORD_DEFS[nextType] && typeof RECORD_DEFS[nextType].bodySize === 'number' && RECORD_DEFS[nextType].bodySize > 0) {
@@ -1420,8 +1428,20 @@ function parseBinaryRecords(rawData) {
       if (bodySize === 0) {
         bodySize = buf.length - bodyStart;
       }
-      // Reject small Flush records (< 1000 bytes) as false positives within waveform bodies
-      if (bodySize < 1000) {
+      // Reject Flush records whose body doesn't look like padding:
+      // First 8 bytes of body should be all 0x00 or 0xFF (flash page padding)
+      var isPadding = true;
+      var checkLen = Math.min(8, bodySize);
+      for (var ci = 0; ci < checkLen; ci++) {
+        if (bodyStart + ci < buf.length) {
+          var cb = buf[bodyStart + ci];
+          if (cb !== 0x00 && cb !== 0xFF) {
+            isPadding = false;
+            break;
+          }
+        }
+      }
+      if (!isPadding || bodySize < 1000) {
         i++;
         continue;
       }
