@@ -317,6 +317,28 @@ s16 ShockLateralMax/Rms  offset=0.0  scale=0.2
 - Main CSV: only non-chain records (OneSecondData, etc.)
 - Stats CSV: record count and byte totals per record type
 
+**二进制解析实现**（`electron/usb-bridge.js` parseBinaryRecords）：
+- 连续解析器：所有记录紧密排列，无间隙，按 `[rawType(1B)][metadata(7B)][body(N)]` 格式顺序解析
+- 类型分发：rawType + metadata[6]（bodySize hint）组合确定精确记录类型
+  - `0x81+6→0x83` FilteredRpmStats, `0x81+10→0x80` RpmAxialWaveform
+  - `0x85+52→0x84` FilteredRpmWaveform, `0x85+12→0x85` RpmHighFreqFftPeaks
+  - `0x91+12→0x92/0x93` ShockX/YFftPeaks（交替）, `0x91+30→0x91` LowShockWaveform, `0x91+0→0x90` AccelWaveform
+  - `0x95+12→0x94` ShockZFftPeaks, `0xA1+80→0xA0` OneSecondData
+  - `0x0D+16→0x0D` FlashDeviceID, `0x0D+160→0x0E` FlashBadBlockList
+  - `0x1D+1→0x1F` UsbConnection, `0xFD→0xFF` Flush, `0x01+4→0x01/0x02` FirmwareVersion/Reset
+- Flush 处理：前向扫描找到下一个有效记录起始位置，验证前8字节填充（全0x00或0xFF）
+- Byte-stuffing 恢复：记录推送后验证下一个字节是否为有效记录起始，跳过0x00填充字节
+- 上下文验证：FirmwareVersion/Reset/FlashDeviceID/FlashBadBlockList 按分区结构预期顺序出现
+- 已验证：34,278/34,278 记录 100% 匹配 Procyon.exe 参考输出
+
+**CSV 输出格式**：
+- `main.csv`：Location, StatusMsg, RecordId, RecordName, Timestamp, BodyByteLen, DataStart
+- RecordId 小写2位十六进制（`0x01`, `0xff`）
+- 波形数组字段使用 `[count]` 后缀（`Samples[26]=`），元数据数组无后缀（`VersionBytes=`, `DeviceID=`）
+- 浮点数精度 7 位有效数字，长数组/长字段截断 + TRUNCATED 标记
+- 时间戳基于 OneSecondData 记录计数顺序生成（每个 OneSecondData = 1 秒）
+- `generateTypeCsv()` 为 csv_chain 类型（0x80/0x84/0x90/0x91）生成 per-type CSV
+
 ### 原始软件配置
 - **版本**: Procyon.exe v4.6.7.0, .NET 7.0 WinForms
 - **UI 框架**: Bunifu.UI.WinForms + DevExpress v23.2

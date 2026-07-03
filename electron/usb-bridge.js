@@ -146,6 +146,7 @@ var _lastPartitionData = [];
 var _lastCombinedBuffer = null;
 var _lastCustomer = 'DRS';
 var _lastRunId = '1';
+var _lastShockFftType = 0x93; // Alternating 0x92/0x93 shock FFT dispatch
 
 function ensureLibusbInit() {
   if (!libusbInitialized) {
@@ -1165,20 +1166,20 @@ var RECORD_DEFS = {
     { name: 'Samples', count: 26, fmt: 's16' }
   ]},
   0x85: { name: 'RpmHighFreqFftPeaks', bodySize: 12, fields: [
-    { name: 'Peak1', count: 1, fmt: 's16' },
-    { name: 'Peak2', count: 1, fmt: 's16' },
-    { name: 'Peak3', count: 1, fmt: 's16' },
-    { name: 'Peak4', count: 1, fmt: 's16' },
-    { name: 'Peak5', count: 1, fmt: 's16' },
-    { name: 'Peak6', count: 1, fmt: 's16' }
+    { name: 'Freq1', count: 1, fmt: 's16', offset: 0.0, scale: 0.152587890625 },
+    { name: 'Ampl1', count: 1, fmt: 's16', offset: 0.0, scale: 0.006666666828693639 },
+    { name: 'Freq2', count: 1, fmt: 's16', offset: 0.0, scale: 0.152587890625 },
+    { name: 'Ampl2', count: 1, fmt: 's16', offset: 0.0, scale: 0.006666666828693639 },
+    { name: 'Freq3', count: 1, fmt: 's16', offset: 0.0, scale: 0.152587890625 },
+    { name: 'Ampl3', count: 1, fmt: 's16', offset: 0.0, scale: 0.006666666828693639 }
   ]},
   0x86: { name: 'FilteredRpmFftPeaks', bodySize: 12, fields: [
-    { name: 'Peak1', count: 1, fmt: 's16' },
-    { name: 'Peak2', count: 1, fmt: 's16' },
-    { name: 'Peak3', count: 1, fmt: 's16' },
-    { name: 'Peak4', count: 1, fmt: 's16' },
-    { name: 'Peak5', count: 1, fmt: 's16' },
-    { name: 'Peak6', count: 1, fmt: 's16' }
+    { name: 'Freq1', count: 1, fmt: 's16', offset: 0.0, scale: 0.152587890625 },
+    { name: 'Ampl1', count: 1, fmt: 's16', offset: 0.0, scale: 0.006666666828693639 },
+    { name: 'Freq2', count: 1, fmt: 's16', offset: 0.0, scale: 0.152587890625 },
+    { name: 'Ampl2', count: 1, fmt: 's16', offset: 0.0, scale: 0.006666666828693639 },
+    { name: 'Freq3', count: 1, fmt: 's16', offset: 0.0, scale: 0.152587890625 },
+    { name: 'Ampl3', count: 1, fmt: 's16', offset: 0.0, scale: 0.006666666828693639 }
   ]},
   0x90: { name: 'AccelWaveform', bodySize: 15360, csvChain: true, fields: [
     { name: 'AccelX', count: 2560, fmt: 's16' },
@@ -1191,28 +1192,28 @@ var RECORD_DEFS = {
     { name: 'ShockZ', count: 3333, fmt: 's16' }
   ]},
   0x92: { name: 'ShockXFftPeaks', bodySize: 12, fields: [
-    { name: 'Peak1', count: 1, fmt: 's16' },
-    { name: 'Peak2', count: 1, fmt: 's16' },
-    { name: 'Peak3', count: 1, fmt: 's16' },
-    { name: 'Peak4', count: 1, fmt: 's16' },
-    { name: 'Peak5', count: 1, fmt: 's16' },
-    { name: 'Peak6', count: 1, fmt: 's16' }
+    { name: 'Freq1', count: 1, fmt: 's16', offset: 0.0, scale: 0.5 },
+    { name: 'Ampl1', count: 1, fmt: 's16', offset: 0.0, scale: 0.04 },
+    { name: 'Freq2', count: 1, fmt: 's16', offset: 0.0, scale: 0.5 },
+    { name: 'Ampl2', count: 1, fmt: 's16', offset: 0.0, scale: 0.04 },
+    { name: 'Freq3', count: 1, fmt: 's16', offset: 0.0, scale: 0.5 },
+    { name: 'Ampl3', count: 1, fmt: 's16', offset: 0.0, scale: 0.04 }
   ]},
   0x93: { name: 'ShockYFftPeaks', bodySize: 12, fields: [
-    { name: 'Peak1', count: 1, fmt: 's16' },
-    { name: 'Peak2', count: 1, fmt: 's16' },
-    { name: 'Peak3', count: 1, fmt: 's16' },
-    { name: 'Peak4', count: 1, fmt: 's16' },
-    { name: 'Peak5', count: 1, fmt: 's16' },
-    { name: 'Peak6', count: 1, fmt: 's16' }
+    { name: 'Freq1', count: 1, fmt: 's16', offset: 0.0, scale: 0.5 },
+    { name: 'Ampl1', count: 1, fmt: 's16', offset: 0.0, scale: 0.04 },
+    { name: 'Freq2', count: 1, fmt: 's16', offset: 0.0, scale: 0.5 },
+    { name: 'Ampl2', count: 1, fmt: 's16', offset: 0.0, scale: 0.04 },
+    { name: 'Freq3', count: 1, fmt: 's16', offset: 0.0, scale: 0.5 },
+    { name: 'Ampl3', count: 1, fmt: 's16', offset: 0.0, scale: 0.04 }
   ]},
   0x94: { name: 'ShockZFftPeaks', bodySize: 12, fields: [
-    { name: 'Peak1', count: 1, fmt: 's16' },
-    { name: 'Peak2', count: 1, fmt: 's16' },
-    { name: 'Peak3', count: 1, fmt: 's16' },
-    { name: 'Peak4', count: 1, fmt: 's16' },
-    { name: 'Peak5', count: 1, fmt: 's16' },
-    { name: 'Peak6', count: 1, fmt: 's16' }
+    { name: 'Freq1', count: 1, fmt: 's16', offset: 0.0, scale: 0.5 },
+    { name: 'Ampl1', count: 1, fmt: 's16', offset: 0.0, scale: 0.04 },
+    { name: 'Freq2', count: 1, fmt: 's16', offset: 0.0, scale: 0.5 },
+    { name: 'Ampl2', count: 1, fmt: 's16', offset: 0.0, scale: 0.04 },
+    { name: 'Freq3', count: 1, fmt: 's16', offset: 0.0, scale: 0.5 },
+    { name: 'Ampl3', count: 1, fmt: 's16', offset: 0.0, scale: 0.04 }
   ]},
   0xA0: { name: 'OneSecondData', bodySize: 80, csvChain: true, fields: [
     { name: 'Temperature', count: 1, fmt: 's16', offset: 0.0, scale: 0.03125 },
@@ -1328,13 +1329,18 @@ function parseBinaryRecords(rawData) {
     } else if (rawType === 0xFD) {
       recType = 0xFF; // Flush
     } else if (rawType === 0x81) {
-      recType = (meta6 === 6) ? 0x83 : 0x80; // 6→FilteredRpmStats, 10→RpmAxialWaveform
+      if (meta6 === 6) recType = 0x83;           // FilteredRpmStats
+      else if (meta6 === 10) recType = 0x80;      // RpmAxialWaveform
+      else { i++; continue; }                     // Unknown meta6, skip
     } else if (rawType === 0x85) {
-      recType = (meta6 === 52) ? 0x84 : 0x85; // 52→FilteredRpmWaveform, 12→RpmHighFreqFftPeaks/FilteredRpmFftPeaks
+      if (meta6 === 52) recType = 0x84;           // FilteredRpmWaveform
+      else if (meta6 === 12) recType = 0x85;      // RpmHighFreqFftPeaks
+      else { i++; continue; }                     // Unknown meta6, skip
     } else if (rawType === 0x91) {
-      if (meta6 === 12) recType = 0x92; // ShockXFftPeaks/ShockYFftPeaks
-      else if (meta6 === 30) recType = 0x91; // LowShockWaveform
-      else recType = 0x90; // AccelWaveform (meta6=0)
+      if (meta6 === 12) recType = 0x92;           // ShockXFftPeaks/ShockYFftPeaks
+      else if (meta6 === 30) recType = 0x91;      // LowShockWaveform
+      else if (meta6 === 0) recType = 0x90;       // AccelWaveform
+      else { i++; continue; }                     // Unknown meta6, skip
     } else if (rawType === 0x95) {
       recType = 0x94; // ShockZFftPeaks
     } else if (rawType === 0xA1) {
@@ -1494,6 +1500,37 @@ function parseBinaryRecords(rawData) {
       }
     }
 
+    // Refine type based on body content for ambiguous rawType dispatches
+    // NOTE: 0x85/0x86 share rawType=0x85+meta6=12 and can't be distinguished from binary data alone.
+    // The firmware uses internal state to assign the correct type. All are classified as 0x85.
+    
+    // 0x91 + meta6=12: alternate 0x92 ShockXFftPeaks / 0x93 ShockYFftPeaks
+    if (rawType === 0x91 && meta6 === 12) {
+      if (typeof _lastShockFftType === 'undefined') _lastShockFftType = 0x93;
+      if (_lastShockFftType === 0x92) {
+        recType = 0x93;
+        def = RECORD_DEFS[0x93];
+      } else {
+        recType = 0x92;
+        def = RECORD_DEFS[0x92];
+      }
+      _lastShockFftType = recType;
+      // Re-parse fields with new def
+      parsed = {};
+      var sfo = 0;
+      for (var sfi = 0; sfi < def.fields.length; sfi++) {
+        var sfdef = def.fields[sfi];
+        var sfcount = sfdef.count;
+        if (sfcount === 1) {
+          var sfsz = fmtSize(sfdef.fmt);
+          if (sfo + sfsz > body.length) break;
+          var sraw = readTypedValue(body, sfo, sfdef.fmt);
+          parsed[sfdef.name] = (sfdef.scale !== undefined) ? ((sfdef.offset || 0) + sraw * sfdef.scale) : sraw;
+          sfo += sfsz;
+        }
+      }
+    }
+
     var rec = {
       type: recType,
       rawType: rawType,
@@ -1604,7 +1641,7 @@ function generateMainCsv(records) {
       String(ts.getMinutes()).padStart(2, '0') + ':' +
       String(ts.getSeconds()).padStart(2, '0');
 
-    var recIdHex = '0x' + rec.type.toString(16).toLowerCase();
+    var recIdHex = '0x' + rec.type.toString(16).toLowerCase().padStart(2, '0');
     var row = '0x' + rec.offset.toString(16) + ',okay,' + recIdHex + ',' +
       rec.name + ',' + tsStr + ',' + rec.bodySize;
 
@@ -1622,15 +1659,44 @@ function generateMainCsv(records) {
         var fk = fieldKeys[fi];
         var fv = p[fk];
         if (Array.isArray(fv)) {
-          row += ',' + fk + '=,' + fv.join(',');
+          // Only waveform data arrays get [count] suffix; metadata arrays don't
+          var isWaveformField = /^(Samples|RpmXAxis|Accel[XYZ]|Shock[XYZ]|PSI|Rpm[XYZ]|ShockLow[XYZ])$/.test(fk);
+          var maxShow = Math.min(fv.length, fv.length > 12 ? 12 : fv.length);
+          var arrVals = [];
+          for (var ai = 0; ai < maxShow; ai++) {
+            arrVals.push(fmtFloat(fv[ai]));
+          }
+          var arrStr = arrVals.join(',');
+          var truncated = fv.length > maxShow ? ',TRUNCATED' : '';
+          if (isWaveformField && fv.length > 1) {
+            row += ',' + fk + '[' + fv.length + ']=,' + arrStr + truncated;
+          } else {
+            row += ',' + fk + '=,' + arrStr + truncated;
+          }
         } else {
-          row += ',' + fk + '=,' + fv;
+          row += ',' + fk + '=,' + fmtFloat(fv);
         }
       }
     }
     lines.push(row);
   }
   return lines.join('\n');
+}
+
+// Format float to match Procyon.exe precision (7 significant digits)
+function fmtFloat(v) {
+  if (typeof v !== 'number') return v;
+  if (Number.isInteger(v)) return v.toString();
+  // Use toPrecision(7) then strip trailing zeros after decimal point
+  var s = v.toPrecision(7);
+  if (s.indexOf('.') >= 0) {
+    s = s.replace(/\.?0+$/, '');
+  }
+  // Handle edge case: if result has no decimal but original had one
+  if (s.indexOf('.') < 0 && s.indexOf('e') < 0 && v % 1 !== 0) {
+    s = v.toFixed(6).replace(/\.?0+$/, '');
+  }
+  return s;
 }
 
 // Generate per-type CSV for csv_chain records (matching Procyon.exe format)
@@ -1677,7 +1743,7 @@ function generateTypeCsv(records, typeId) {
       String(ts.getSeconds()).padStart(2, '0');
 
     var row = '0x' + rec.offset.toString(16) + ',okay,0x' +
-      rec.type.toString(16).toLowerCase() + ',' +
+      rec.type.toString(16).toLowerCase().padStart(2, '0') + ',' +
       rec.name + ',' + tsStr + ',' + rec.bodySize;
 
     var p = rec.parsed;
@@ -1685,9 +1751,9 @@ function generateTypeCsv(records, typeId) {
       var fdef2 = def.fields[fi2];
       var fv2 = p[fdef2.name];
       if (Array.isArray(fv2)) {
-        row += ',' + fv2.join(',');
+        row += ',' + fv2.map(function(v) { return fmtFloat(v); }).join(',');
       } else {
-        row += ',' + (fv2 !== undefined ? fv2 : '');
+        row += ',' + (fv2 !== undefined ? fmtFloat(fv2) : '');
       }
     }
     lines.push(row);
@@ -1697,6 +1763,7 @@ function generateTypeCsv(records, typeId) {
 
 // Backward-compatible parse: extract 0xA0 OneSecondData and 0xD1 Phoenix records
 function parseDownloadedRecords(rawData) {
+  _lastShockFftType = 0x93; // Reset alternation state for each parse
   var result = parseBinaryRecords(rawData);
   var oneSecondRecords = [];
   var phoenixRecords = [];
