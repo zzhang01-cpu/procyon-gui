@@ -1454,7 +1454,9 @@ function parseBinaryRecords(rawData) {
     }
 
     if (bodyStart + bodySize > buf.length) {
-      bodySize = buf.length - bodyStart;
+      // Truncated record at end of buffer — skip it (matching Procyon.exe behavior)
+      i = bodyStart + bodySize;
+      continue;
     }
     if (bodySize < 0) bodySize = 0;
 
@@ -1699,7 +1701,9 @@ function fmtFloat(v) {
   return s;
 }
 
-// Generate per-type CSV for csv_chain records (matching Procyon.exe format)
+// Generate per-type CSV matching Procyon.exe format
+// - Non-chain types (0xA0, 0xD1): one row per record, columns for each field
+// - Chain types (0x80, 0x84, 0x90, 0x91): one row per sample value (chain CSV)
 function generateTypeCsv(records, typeId) {
   var def = RECORD_DEFS[typeId];
   if (!def) return '';
@@ -1710,53 +1714,121 @@ function generateTypeCsv(records, typeId) {
   }
   if (filtered.length === 0) return '';
 
+  // Determine if this is a chain type (waveform data with many samples)
+  var isChain = (typeId === 0x80 || typeId === 0x84 || typeId === 0x90 || typeId === 0x91);
+
   var lines = [];
-  var header = 'Location,StatusMsg,RecordId,RecordName,Timestamp,BodyByteLen';
-  var fieldNames = [];
-  for (var fi = 0; fi < def.fields.length; fi++) {
-    var fdef = def.fields[fi];
-    if (fdef.count === 1) {
-      fieldNames.push(fdef.name);
-    } else if (fdef.count > 1 && fdef.count !== 'auto') {
-      for (var ci = 0; ci < fdef.count; ci++) {
-        fieldNames.push(fdef.name + ci);
-      }
-    } else {
-      fieldNames.push(fdef.name);
-    }
-  }
-  header += ',' + fieldNames.join(',');
-  lines.push(header);
+  var baseHeader = 'Location,StatusMsg,RecordId,RecordName,Timestamp,BodyByteLen';
 
-  for (var ri = 0; ri < filtered.length; ri++) {
-    var rec = filtered[ri];
-    var ts = new Date();
-    if (ri > 0 && filtered[0]._timestamp) {
-      ts = new Date(filtered[0]._timestamp + ri * 1000);
-    }
-
-    var tsStr = ts.getFullYear() + '-' +
-      String(ts.getMonth() + 1).padStart(2, '0') + '-' +
-      String(ts.getDate()).padStart(2, '0') + ' ' +
-      String(ts.getHours()).padStart(2, '0') + ':' +
-      String(ts.getMinutes()).padStart(2, '0') + ':' +
-      String(ts.getSeconds()).padStart(2, '0');
-
-    var row = '0x' + rec.offset.toString(16) + ',okay,0x' +
-      rec.type.toString(16).toLowerCase().padStart(2, '0') + ',' +
-      rec.name + ',' + tsStr + ',' + rec.bodySize;
-
-    var p = rec.parsed;
-    for (var fi2 = 0; fi2 < def.fields.length; fi2++) {
-      var fdef2 = def.fields[fi2];
-      var fv2 = p[fdef2.name];
-      if (Array.isArray(fv2)) {
-        row += ',' + fv2.map(function(v) { return fmtFloat(v); }).join(',');
+  if (!isChain) {
+    // === Non-chain format: one row per record ===
+    var fieldNames = [];
+    for (var fi = 0; fi < def.fields.length; fi++) {
+      var fdef = def.fields[fi];
+      if (fdef.count === 1) {
+        fieldNames.push(fdef.name);
+      } else if (fdef.count > 1 && fdef.count !== 'auto') {
+        for (var ci = 0; ci < fdef.count; ci++) {
+          fieldNames.push(fdef.name + ci);
+        }
       } else {
-        row += ',' + (fv2 !== undefined ? fmtFloat(fv2) : '');
+        fieldNames.push(fdef.name);
       }
     }
-    lines.push(row);
+    lines.push(baseHeader + ',' + fieldNames.join(','));
+
+    for (var ri = 0; ri < filtered.length; ri++) {
+      var rec = filtered[ri];
+      var ts = new Date();
+      if (ri > 0 && filtered[0]._timestamp) {
+        ts = new Date(filtered[0]._timestamp + ri * 1000);
+      }
+      var tsStr = ts.getFullYear() + '-' +
+        String(ts.getMonth() + 1).padStart(2, '0') + '-' +
+        String(ts.getDate()).padStart(2, '0') + ' ' +
+        String(ts.getHours()).padStart(2, '0') + ':' +
+        String(ts.getMinutes()).padStart(2, '0') + ':' +
+        String(ts.getSeconds()).padStart(2, '0');
+
+      var row = '0x' + rec.offset.toString(16) + ',okay,0x' +
+        rec.type.toString(16).toLowerCase().padStart(2, '0') + ',' +
+        rec.name + ',' + tsStr + ',' + rec.bodySize;
+
+      var p = rec.parsed;
+      for (var fi2 = 0; fi2 < def.fields.length; fi2++) {
+        var fdef2 = def.fields[fi2];
+        var fv2 = p[fdef2.name];
+        if (Array.isArray(fv2)) {
+          row += ',' + fv2.map(function(v) { return fmtFloat(v); }).join(',');
+        } else {
+          row += ',' + (fv2 !== undefined ? fmtFloat(fv2) : '');
+        }
+      }
+      lines.push(row);
+    }
+  } else {
+    // === Chain format: one row per sample value ===
+    // Build header field names: use [count] for generic "Samples", bare name for specific names
+    var chainFieldNames = [];
+    var chainFieldCounts = [];
+    for (var cfi = 0; cfi < def.fields.length; cfi++) {
+      var cfdef = def.fields[cfi];
+      if (cfdef.count > 1) {
+        chainFieldCounts.push(cfdef.count);
+        if (cfdef.name === 'Samples') {
+          chainFieldNames.push(cfdef.name + '[' + cfdef.count + ']');
+        } else {
+          chainFieldNames.push(cfdef.name);
+        }
+      } else {
+        chainFieldCounts.push(1);
+        chainFieldNames.push(cfdef.name);
+      }
+    }
+    lines.push(baseHeader + ',' + chainFieldNames.join(','));
+
+    // For chain records, output one row per sample index
+    // Number of samples = count of the first field (all fields have same count for multi-field types)
+    var sampleCount = chainFieldCounts[0];
+
+    for (var ri = 0; ri < filtered.length; ri++) {
+      var crec = filtered[ri];
+      var cts = new Date();
+      if (ri > 0 && filtered[0]._timestamp) {
+        cts = new Date(filtered[0]._timestamp + ri * 1000);
+      }
+      var ctsStr = cts.getFullYear() + '-' +
+        String(cts.getMonth() + 1).padStart(2, '0') + '-' +
+        String(cts.getDate()).padStart(2, '0') + ' ' +
+        String(cts.getHours()).padStart(2, '0') + ':' +
+        String(cts.getMinutes()).padStart(2, '0') + ':' +
+        String(cts.getSeconds()).padStart(2, '0');
+
+      var baseRow = '0x' + crec.offset.toString(16) + ',okay,0x' +
+        crec.type.toString(16).toLowerCase().padStart(2, '0') + ',' +
+        crec.name + ',' + ctsStr + ',' + crec.bodySize;
+
+      var cp = crec.parsed;
+      for (var si = 0; si < sampleCount; si++) {
+        if (si === 0) {
+          // First row: full record info + first sample values
+          var row0 = baseRow;
+          for (var fi3 = 0; fi3 < def.fields.length; fi3++) {
+            var arr3 = cp[def.fields[fi3].name];
+            row0 += ',' + fmtFloat(arr3[si]);
+          }
+          lines.push(row0);
+        } else {
+          // Subsequent rows: empty info columns + sample values
+          var rowN = ',,,,,,';
+          for (var fi4 = 0; fi4 < def.fields.length; fi4++) {
+            var arr4 = cp[def.fields[fi4].name];
+            rowN += ',' + fmtFloat(arr4[si]);
+          }
+          lines.push(rowN);
+        }
+      }
+    }
   }
   return lines.join('\n');
 }
