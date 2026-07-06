@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getParsedRecords: (offset, limit) => ipcRenderer.invoke('device:get-parsed-records', offset, limit),
   exportRecordsCsv: () => ipcRenderer.invoke('device:export-records-csv'),
   saveRecordsCsv: (defaultPath) => ipcRenderer.invoke('device:save-records-csv', defaultPath),
+  exportAllRecordsCsv: () => ipcRenderer.invoke('device:export-all-records-csv'),
 
   // Memory operations
   eraseUsedMemory: () => ipcRenderer.invoke('device:erase-used-memory'),

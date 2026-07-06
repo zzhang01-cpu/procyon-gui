@@ -353,6 +353,15 @@ s16 ShockLateralMax/Rms  offset=0.0  scale=0.2
 - **数据转换**: LogConverter.dll (C++ native, GenericLogConverter)
 - **安装方式**: ClickOnce (Launcher.exe 入口)
 
+### 数据下载输出格式
+- **自动保存**: `downloadData()` 下载完成后自动调用 `saveRecordsCsv()` 保存到用户 Downloads 目录
+- **输出文件**:
+  - `.pcmbin` 原始二进制文件（每分区一个）
+  - `main.csv` 记录索引文件（Location, StatusMsg, RecordId, RecordName, Timestamp, BodyByteLen, DataStart）
+  - Per-type CSV（`0xa0_OneSecondData.csv`, `0x80_RpmAxialWaveform.csv` 等）
+- **文件命名**: `PCM_{CUST}_{RUNID}_{YYYYMMDD} - {HHMM}._P{Partition}.pcmbin`
+- **解析精度**: 34,277/34,278 条记录匹配 Procyon.exe 参考输出（17 条 0xA0 记录因 Flash 字节腐蚀有微小偏差）
+
 ## 编码规范
 
 - TypeScript strict 模式，禁止隐式 any

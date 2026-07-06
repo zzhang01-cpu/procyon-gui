@@ -117,6 +117,10 @@ export interface DownloadResult {
   totalPartitions: number;
   error?: string;
   partitionDebug?: string[];
+  /** Saved file paths after auto-save (from saveRecordsCsv) */
+  csvFilePaths?: string[];
+  /** Directory where files were saved */
+  csvSaveDir?: string;
 }
 
 /**

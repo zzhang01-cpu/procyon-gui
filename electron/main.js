@@ -200,6 +200,9 @@ function initUsbBridge() {
   ipcMain.handle('device:save-records-csv', async (_event, defaultPath) => {
     return bridge.saveRecordsCsv(defaultPath);
   });
+  ipcMain.handle('device:export-all-records-csv', async () => {
+    return bridge.exportAllRecordsCsv();
+  });
 
   // Test operations
   ipcMain.handle('device:run-self-test', async (_event, tests) => {

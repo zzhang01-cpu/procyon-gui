@@ -6,33 +6,57 @@ import { useDevice } from '@/lib/device/context';
 
 export default function DownloadPage() {
   const { t } = useI18n();
-  const { connected, downloadData, downloadProgress, downloadResult, clearData, exportData } = useDevice();
+  const { connected, downloadData, downloadProgress, downloadResult, clearData } = useDevice();
   const dl = t.download;
   const [activeTab, setActiveTab] = useState<'download' | 'upload'>('download');
   const [parseData, setParseData] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [savedFiles, setSavedFiles] = useState<string[]>([]);
+  const [saveDir, setSaveDir] = useState('');
 
   const handleDownload = useCallback(async () => {
     if (!connected) return;
     setDownloading(true);
+    setSavedFiles([]);
     try {
-      await downloadData();
+      const result = await downloadData();
+      // Extract saved file paths from auto-save
+      const files = (result as any).csvFilePaths as string[] || [];
+      const dir = (result as any).csvSaveDir as string || '';
+      if (files.length > 0) {
+        setSavedFiles(files);
+        setSaveDir(dir);
+      }
     } finally {
       setDownloading(false);
     }
   }, [connected, downloadData]);
 
-  const handleExport = useCallback(async () => {
-    const csv = await exportData();
-    if (!csv) return;
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'procyon_data.csv';
-    link.click();
-    URL.revokeObjectURL(url);
-  }, [exportData]);
+  const handleClear = useCallback(() => {
+    clearData();
+    setSavedFiles([]);
+    setSaveDir('');
+  }, [clearData]);
+
+  // Extract filename from full path
+  const getFileName = (path: string): string => {
+    const parts = path.replace(/\\/g, '/').split('/');
+    return parts[parts.length - 1] || path;
+  };
+
+  // Get file type label from saved file entry
+  const getFileTypeLabel = (entry: string): string => {
+    if (entry.includes('.pcmbin:')) return '.pcmbin (Raw Binary)';
+    if (entry.includes('main.csv:')) return 'main.csv (Record Index)';
+    if (entry.includes('OneSecondData')) return 'OneSecondData CSV';
+    if (entry.includes('PhoenixOneSecondData')) return 'PhoenixOneSecondData CSV';
+    if (entry.includes('RpmAxialWaveform')) return 'RpmAxialWaveform CSV';
+    if (entry.includes('FilteredRpmWaveform')) return 'FilteredRpmWaveform CSV';
+    if (entry.includes('AccelWaveform')) return 'AccelWaveform CSV';
+    if (entry.includes('LowShockWaveform')) return 'LowShockWaveform CSV';
+    if (entry.includes('.csv:')) return 'CSV';
+    return 'File';
+  };
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -108,6 +132,41 @@ export default function DownloadPage() {
                   <p className="text-xs text-green-600 mt-1">
                     {dl.partitions}: {downloadResult.totalPartitions}
                   </p>
+                  {(downloadResult as any).recordCount > 0 && (
+                    <p className="text-xs text-green-600 mt-1">
+                      {dl.recordCount}: {(downloadResult as any).recordCount}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Saved Files List */}
+              {savedFiles.length > 0 && (
+                <div className="mb-4 p-3 bg-white border border-slate-200 rounded">
+                  <p className="text-sm font-medium text-slate-700 mb-2">
+                    {dl.downloadCompleteLog
+                      ? dl.downloadCompleteLog.replace('{0}', String(downloadResult?.totalPartitions || 0))
+                      : 'Files saved:'}
+                  </p>
+                  <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                    {savedFiles.map((entry, idx) => {
+                      const filePath = entry.includes(': ') ? entry.split(': ').slice(1).join(': ') : entry;
+                      const fileName = getFileName(filePath);
+                      const fileType = getFileTypeLabel(entry);
+                      return (
+                        <div key={idx} className="flex items-center gap-2 text-xs text-slate-600 py-0.5">
+                          <span className="w-2 h-2 rounded-full bg-green-400 flex-shrink-0" />
+                          <span className="font-mono text-slate-700 truncate">{fileName}</span>
+                          <span className="text-slate-400 flex-shrink-0">({fileType})</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {saveDir && (
+                    <p className="text-xs text-slate-400 mt-2">
+                      {dl.downloadPath}: {saveDir}
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -127,20 +186,12 @@ export default function DownloadPage() {
                   {downloading ? dl.dumping : dl.startDumping}
                 </button>
                 {downloadResult && (
-                  <>
-                    <button
-                      onClick={handleExport}
-                      className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700"
-                    >
-                      {dl.exportCSV}
-                    </button>
-                    <button
-                      onClick={clearData}
-                      className="px-4 py-2 text-sm border border-slate-300 text-slate-600 rounded hover:bg-slate-50"
-                    >
-                      {dl.clearData}
-                    </button>
-                  </>
+                  <button
+                    onClick={handleClear}
+                    className="px-4 py-2 text-sm border border-slate-300 text-slate-600 rounded hover:bg-slate-50"
+                  >
+                    {dl.clearData}
+                  </button>
                 )}
               </div>
             </div>
