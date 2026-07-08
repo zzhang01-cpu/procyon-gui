@@ -21,8 +21,8 @@ export default function DownloadPage() {
     try {
       const result = await downloadData();
       // Extract saved file paths from auto-save
-      const files = (result as any).csvFilePaths as string[] || [];
-      const dir = (result as any).csvSaveDir as string || '';
+      const files = result?.csvFilePaths || [];
+      const dir = result?.csvSaveDir || '';
       if (files.length > 0) {
         setSavedFiles(files);
         setSaveDir(dir);
@@ -132,9 +132,9 @@ export default function DownloadPage() {
                   <p className="text-xs text-green-600 mt-1">
                     {dl.partitions}: {downloadResult.totalPartitions}
                   </p>
-                  {(downloadResult as any).recordCount > 0 && (
+                  {downloadResult.partitions.length > 0 && (
                     <p className="text-xs text-green-600 mt-1">
-                      {dl.recordCount}: {(downloadResult as any).recordCount}
+                      {dl.partitions}: {downloadResult.partitions.reduce((sum, p) => sum + p.size, 0).toLocaleString()} bytes
                     </p>
                   )}
                 </div>

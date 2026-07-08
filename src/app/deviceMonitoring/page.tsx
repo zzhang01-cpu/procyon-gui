@@ -162,9 +162,9 @@ export default function DeviceMonitoringPage() {
         addLog('下载失败: ' + errMsg);
         setDownloadError(errMsg);
       } else {
-        const recordCount = (result as any).recordCount || 0;
-        const savedPaths = (result as any).csvFilePaths || [];
-        const savedDir = (result as any).csvSaveDir || null;
+        const recordCount = result?.partitions?.reduce((sum, p) => sum + (p.writtenChunks || 0), 0) || 0;
+        const savedPaths = result?.csvFilePaths || [];
+        const savedDir = result?.csvSaveDir || null;
         setDownloadRecordCount(recordCount);
         setCsvFilePaths(savedPaths);
         setCsvSaveDir(savedDir);
@@ -176,7 +176,7 @@ export default function DeviceMonitoringPage() {
           }
         }
         // Show parse debug info from main process
-        const parseDebugInfo = (result as any).partitionDebugInfo;
+        const parseDebugInfo = (result as { partitionDebugInfo?: string[] }).partitionDebugInfo;
         if (parseDebugInfo && Array.isArray(parseDebugInfo)) {
           for (const line of parseDebugInfo) {
             addLog('  ' + String(line));
@@ -194,7 +194,7 @@ export default function DeviceMonitoringPage() {
   // Manual CSV save button
   const handleSaveCSV = async () => {
     try {
-      const result = await usbSaveRecordsCsv('') as any;
+      const result = await usbSaveRecordsCsv('') as { success?: boolean; filePaths?: string[]; saveDir?: string; error?: string };
       if (result && result.success !== false) {
         setCsvFilePaths(result.filePaths || []);
         setCsvSaveDir(result.saveDir || null);
@@ -203,7 +203,7 @@ export default function DeviceMonitoringPage() {
           addLog('  ' + p);
         }
       } else {
-        addLog('CSV保存失败: ' + ((result as any).error || 'unknown'));
+        addLog('CSV保存失败: ' + (result?.error || 'unknown'));
       }
     } catch (err) {
       addLog('CSV保存异常: ' + (err instanceof Error ? err.message : ''));

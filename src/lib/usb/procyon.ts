@@ -758,15 +758,15 @@ export function parseBinaryRecords(partitions: { partition: number; data: Buffer
 
   console.log('[parseBinaryRecords] Called with', partitions.length, 'partitions');
   for (const part of partitions) {
-    console.log('[parseBinaryRecords] Partition', part.partition, ': size=', part.size, 'data type=', typeof part.data, Array.isArray(part.data) ? 'array[' + (part.data as any).length + ']' : Buffer.isBuffer(part.data) ? 'buffer' : part.data && typeof part.data === 'object' && (part.data as any).type === 'Buffer' ? 'serialized-buffer[' + (part.data as any).data?.length + ']' : typeof part.data);
+    console.log('[parseBinaryRecords] Partition', part.partition, ': size=', part.size, 'data type=', typeof part.data, Array.isArray(part.data) ? 'array[' + (part.data as unknown[]).length + ']' : Buffer.isBuffer(part.data) ? 'buffer' : part.data && typeof part.data === 'object' && (part.data as { type?: string }).type === 'Buffer' ? 'serialized-buffer[' + ((part.data as { data?: unknown[] }).data?.length ?? 0) + ']' : typeof part.data);
     // Handle IPC-serialized Buffer
     let buf: Buffer;
     if (Buffer.isBuffer(part.data)) {
       buf = part.data;
     } else if (Array.isArray(part.data)) {
       buf = Buffer.from(part.data);
-    } else if (part.data && typeof part.data === 'object' && (part.data as any).type === 'Buffer' && Array.isArray((part.data as any).data)) {
-      buf = Buffer.from((part.data as any).data);
+    } else if (part.data && typeof part.data === 'object' && (part.data as { type?: string }).type === 'Buffer' && Array.isArray((part.data as { data?: unknown[] }).data)) {
+      buf = Buffer.from((part.data as { data: number[] }).data);
     } else {
       console.log('[parseBinaryRecords] Partition', part.partition, ': unknown data type', typeof part.data, '- skipping');
       continue;
@@ -796,12 +796,12 @@ export function parseBinaryRecords(partitions: { partition: number; data: Buffer
     console.log('[parseBinaryRecords] P' + part.partition + ' HEX(0-128): ' + hex128);
 
     // Store debug info for page display
-    (part as any)._debugHex = hex128;
-    (part as any)._debugTopBytes = topBytes;
-    (part as any)._debugFirstByte = '0x' + firstByte.toString(16).padStart(2, '0');
+    (part as unknown as Record<string, unknown>)._debugHex = hex128;
+    (part as unknown as Record<string, unknown>)._debugTopBytes = topBytes;
+    (part as unknown as Record<string, unknown>)._debugFirstByte = '0x' + firstByte.toString(16).padStart(2, '0');
 
     let offset = 0;
-    let recordTypeCounts: Record<number, number> = {};
+    const recordTypeCounts: Record<number, number> = {};
     const firstBytes = buf.slice(0, Math.min(32, buf.length)).toString('hex');
     console.log('[parseBinaryRecords] Partition', part.partition, ': first 32 bytes hex:', firstBytes);
 

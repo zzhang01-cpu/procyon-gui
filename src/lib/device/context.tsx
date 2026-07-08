@@ -330,10 +330,17 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       const result = await usbDownloadData();
       if (result.success) {
         setDownloadResult(result);
-        const parseDebug = (result as any).parseDebug as string[] || [];
-        const chunkReadDebug = (result as any).chunkReadDebug as string[] || [];
-        const recordCount = (result as any).recordCount as number || 0;
-        const summary = (result as any).recordSummary as string || '';
+        const extResult = result as DownloadResult & {
+          parseDebug?: string[];
+          chunkReadDebug?: string[];
+          recordCount?: number;
+          recordSummary?: string;
+          partitionDebugInfo?: string[];
+        };
+        const parseDebug = extResult.parseDebug || [];
+        const chunkReadDebug = extResult.chunkReadDebug || [];
+        const recordCount = extResult.recordCount || 0;
+        const summary = extResult.recordSummary || '';
         console.log('[Download] Records parsed:', recordCount, summary);
         for (const line of parseDebug) {
           console.log('[Download] ' + line);
@@ -341,17 +348,17 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         for (const line of chunkReadDebug) {
           console.log('[Download CHUNK] ' + line);
         }
-        (result as any).partitionDebugInfo = [...parseDebug, ...chunkReadDebug];
-        (result as any).recordCount = recordCount;
-        setDownloadedData(recordCount > 0 ? [{ _count: recordCount } as any] : []);
+        extResult.partitionDebugInfo = [...parseDebug, ...chunkReadDebug];
+        extResult.recordCount = recordCount;
+        setDownloadedData(recordCount > 0 ? [{ _count: recordCount } as unknown as OneSecondRecord] : []);
 
         // Auto-save CSV if records were parsed
         if (recordCount > 0) {
           try {
-            const saveResult = await usbSaveRecordsCsv('') as any;
+            const saveResult = await usbSaveRecordsCsv('') as { filePaths?: string[]; saveDir?: string };
             if (saveResult.filePaths) {
-              (result as any).csvFilePaths = saveResult.filePaths;
-              (result as any).csvSaveDir = saveResult.saveDir;
+              extResult.csvFilePaths = saveResult.filePaths;
+              extResult.csvSaveDir = saveResult.saveDir;
               console.log('[Download] CSV files saved:', saveResult.filePaths.join(', '));
             }
           } catch (csvErr) {
@@ -380,7 +387,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   const exportData = useCallback(async (): Promise<string> => {
     if (!isElectron()) return '';
     try {
-      const csv = await (window as any).electronAPI.exportData();
+      const csv = await (window as unknown as { electronAPI: { exportData: () => Promise<string> } }).electronAPI.exportData();
       return csv || '';
     } catch {
       // Fallback: empty
