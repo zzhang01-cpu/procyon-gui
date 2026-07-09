@@ -336,6 +336,17 @@ s16 ShockLateralMax/Rms  offset=0.0  scale=0.2
   - `body[51]` (ShockLowRmsZ high): mode=0x0D, ~1条腐蚀为0xFF → 替换为0x0D
   - 这些是字节替换（非插入），body大小不变（80字节）
   - 剩余17条不匹配涉及更复杂的跨字节偏移，99.79%精度已可接受
+- **main.csv 格式对比结果**（与 Procyon.exe 参考文件逐行对比）：
+  - 34,277 条记录中，33,902 条完全匹配（排除时间戳列），匹配率 98.9%
+  - 剩余 375 条差异均为已知限制：
+    - 0x85/0x86 (189条)：两种类型共享相同 rawType=0x85 + meta6=12，无法从二进制数据区分，固件使用内部状态分配类型
+    - 0x92/0x93 (186条)：ShockXFftPeaks 和 ShockYFftPeaks 交替出现，但固件内部状态导致部分交替顺序反转
+  - 已修复的格式差异：
+    - 0x1F UsbConnection：字段名改为 `Status`，值格式改为 `0 (Disconnected)` / `1 (Connected)`
+    - 0x80/0x90/0x91：移除不必要的 `[count]` 后缀（仅 0x84 保留）
+    - 0x90 AccelWaveform：改为交错格式（AccelX, AccelY, AccelZ 按样本交替输出）
+    - 0x91 LowShockWaveform：改为交错格式（ShockX, ShockY, ShockZ 按样本交替输出）
+    - 0xFF Flush：不输出原始字节（参考格式为 `BodyBytes=,TRUNCATED`）
 
 **CSV 输出格式**：
 - `main.csv`：Location, StatusMsg, RecordId, RecordName, Timestamp, BodyByteLen, DataStart

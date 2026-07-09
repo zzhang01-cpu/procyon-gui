@@ -1145,7 +1145,7 @@ var RECORD_DEFS = {
     { name: 'BadBlockList', count: 80, fmt: 'u16' }
   ]},
   0x1F: { name: 'UsbConnection', bodySize: 1, fields: [
-    { name: 'Connected', count: 1, fmt: 'u8' }
+    { name: 'Status', count: 1, fmt: 'u8' }
   ]},
   0x80: { name: 'RpmAxialWaveform', bodySize: 6666, csvChain: true, fields: [
     { name: 'RpmXAxis', count: 3333, fmt: 's16' }
@@ -1702,32 +1702,57 @@ function generateMainCsv(records) {
     var fieldKeys = Object.keys(p);
     if (fieldKeys.length === 0 && rec.bodySize > 0) {
       row += ',BodyBytes=';
-      var maxBytes = Math.min(rec.bodySize, 200);
-      for (var bi = 0; bi < maxBytes; bi++) {
-        row += (bi > 0 ? ',' : '') + rec.body[bi];
+      // For Flush records, don't output raw bytes (reference format)
+      if (rec.type !== 0xFF) {
+        var maxBytes = Math.min(rec.bodySize, 200);
+        for (var bi = 0; bi < maxBytes; bi++) {
+          row += (bi > 0 ? ',' : '') + rec.body[bi];
+        }
       }
       if (rec.bodySize > 200) row += ',TRUNCATED';
     } else {
-      for (var fi = 0; fi < fieldKeys.length; fi++) {
-        var fk = fieldKeys[fi];
-        var fv = p[fk];
-        if (Array.isArray(fv)) {
-          // Only waveform data arrays get [count] suffix; metadata arrays don't
-          var isWaveformField = /^(Samples|RpmXAxis|Accel[XYZ]|Shock[XYZ]|PSI|Rpm[XYZ]|ShockLow[XYZ])$/.test(fk);
-          var maxShow = Math.min(fv.length, fv.length > 12 ? 12 : fv.length);
-          var arrVals = [];
-          for (var ai = 0; ai < maxShow; ai++) {
-            arrVals.push(fmtFloat(fv[ai]));
+      // Check if this is a csv_chain record with multiple array fields (interleaved format)
+      var isInterleaved = (rec.type === 0x90 || rec.type === 0x91) && fieldKeys.length > 1 && Array.isArray(p[fieldKeys[0]]);
+      
+      if (isInterleaved) {
+        // Interleaved format: for each sample, output all field values
+        var sampleCount = p[fieldKeys[0]].length;
+        var maxSamples = Math.min(sampleCount, 12);
+        for (var si = 0; si < maxSamples; si++) {
+          for (var fi = 0; fi < fieldKeys.length; fi++) {
+            var fk = fieldKeys[fi];
+            row += ',' + fk + '=,' + fmtFloat(p[fk][si]);
           }
-          var arrStr = arrVals.join(',');
-          var truncated = fv.length > maxShow ? ',TRUNCATED' : '';
-          if (isWaveformField && fv.length > 1) {
-            row += ',' + fk + '[' + fv.length + ']=,' + arrStr + truncated;
+        }
+        if (sampleCount > maxSamples) row += ',TRUNCATED';
+      } else {
+        // Standard format: output all values for each field
+        for (var fi = 0; fi < fieldKeys.length; fi++) {
+          var fk = fieldKeys[fi];
+          var fv = p[fk];
+          if (Array.isArray(fv)) {
+            // Only 0x84 (FilteredRpmWaveform) uses [count] suffix; all others don't
+            var useCountSuffix = rec.type === 0x84;
+            var maxShow = Math.min(fv.length, fv.length > 12 ? 12 : fv.length);
+            var arrVals = [];
+            for (var ai = 0; ai < maxShow; ai++) {
+              arrVals.push(fmtFloat(fv[ai]));
+            }
+            var arrStr = arrVals.join(',');
+            var truncated = fv.length > maxShow ? ',TRUNCATED' : '';
+            if (useCountSuffix && fv.length > 1) {
+              row += ',' + fk + '[' + fv.length + ']=,' + arrStr + truncated;
+            } else {
+              row += ',' + fk + '=,' + arrStr + truncated;
+            }
           } else {
-            row += ',' + fk + '=,' + arrStr + truncated;
+            // Special formatting for Status field (UsbConnection)
+            if (fk === 'Status' && (fv === 0 || fv === 1)) {
+              row += ',' + fk + '=,' + fv + (fv === 0 ? ' (Disconnected)' : ' (Connected)');
+            } else {
+              row += ',' + fk + '=,' + fmtFloat(fv);
+            }
           }
-        } else {
-          row += ',' + fk + '=,' + fmtFloat(fv);
         }
       }
     }
