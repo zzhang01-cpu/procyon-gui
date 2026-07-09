@@ -302,6 +302,15 @@ export const zh: TranslationType = {
     parseSucceeded: 'MainParse 转换成功。',
     dumpCompletedLog: '转储流程已完成，可安全拔出设备。',
     safeToUnplug: '可安全拔出设备。',
+    savedFiles: '已保存文件',
+    savedTo: '保存至',
+    rawBinary: '原始二进制',
+    recordIndex: '记录索引',
+    oneSecondDataCsv: '秒级数据 CSV',
+    filteredRpmCsv: '滤波转速 CSV',
+    lowShockWaveformCsv: '低冲击波形 CSV',
+    accelWaveformCsv: '加速度波形 CSV',
+    noFilesSaved: '未保存任何文件',
   },
 
   // Device Monitoring

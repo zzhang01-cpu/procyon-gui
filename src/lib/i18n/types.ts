@@ -285,6 +285,15 @@ export interface TranslationType {
     parseSucceeded: string;
     dumpCompletedLog: string;
     safeToUnplug: string;
+    savedFiles: string;
+    savedTo: string;
+    rawBinary: string;
+    recordIndex: string;
+    oneSecondDataCsv: string;
+    filteredRpmCsv: string;
+    lowShockWaveformCsv: string;
+    accelWaveformCsv: string;
+    noFilesSaved: string;
   };
   deviceMonitoring: {
     title: string;

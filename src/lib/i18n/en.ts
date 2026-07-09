@@ -302,6 +302,15 @@ export const en: TranslationType = {
     parseSucceeded: 'MainParse conversion succeeded.',
     dumpCompletedLog: 'Dump process completed, safe to unplug device.',
     safeToUnplug: 'Safe to unplug device.',
+    savedFiles: 'Saved Files',
+    savedTo: 'Saved to',
+    rawBinary: 'Raw Binary',
+    recordIndex: 'Record Index',
+    oneSecondDataCsv: 'OneSecondData CSV',
+    filteredRpmCsv: 'FilteredRpm CSV',
+    lowShockWaveformCsv: 'LowShock Waveform CSV',
+    accelWaveformCsv: 'Accel Waveform CSV',
+    noFilesSaved: 'No files were saved',
   },
 
   // Device Monitoring
