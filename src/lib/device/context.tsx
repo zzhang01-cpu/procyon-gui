@@ -52,6 +52,34 @@ import {
   parseBinaryRecords,
   saveRecordsCsv as usbSaveRecordsCsv,
 } from '../usb/procyon';
+import {
+  isUdlSupported,
+  getActiveBridge,
+  udlListDevices,
+  udlConnect,
+  udlDisconnect,
+  udlIsConnected,
+  udlGetDeviceInfo,
+  udlGetBatteryVoltage,
+  udlGetSensorData,
+  udlGetAllParameters,
+  udlSetParameter,
+  udlWriteIntoFlash,
+  udlInitializeLogger,
+  udlDownloadData,
+  udlRunSelfTest,
+  udlLaunchDevice,
+  udlEraseMemory,
+  udlSetDeviceTime,
+  udlEnterCommScope,
+  udlExitCommScope,
+  udlOnInitProgress,
+  udlOnDownloadProgress,
+  udlOnSelfTestProgress,
+  type UdlDeviceInfo,
+  type UdlUsbDeviceInfo,
+  type UdlSensorData,
+} from '../usb/udl';
 
 interface DeviceContextType {
   // Connection state
@@ -59,6 +87,16 @@ interface DeviceContextType {
   connecting: boolean;
   deviceInfo: DeviceInfo | null;
   error: string | null;
+
+  // Bridge type (legacy = old Procyon v4.6, udl = new Unified Data Logger v8.0)
+  bridgeType: 'legacy' | 'udl';
+  udlAvailable: boolean;
+  switchBridgeType: (type: 'legacy' | 'udl') => Promise<boolean>;
+
+  // UDL-specific device info (extended)
+  udlDeviceInfo: UdlDeviceInfo | null;
+  udlSensorData: UdlSensorData | null;
+  commScopeActive: boolean;
 
   // Connection methods
   connect: () => Promise<void>;
@@ -148,6 +186,11 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   const [selfTestProgress, setSelfTestProgress] = useState<SelfTestProgress | null>(null);
   const [deviceParams, setDeviceParams] = useState<Record<string, string>>({});
   const [initProgress, setInitProgress] = useState<InitProgress | null>(null);
+  const [bridgeType, setBridgeType] = useState<'legacy' | 'udl'>('legacy');
+  const [udlAvailable, setUdlAvailable] = useState(false);
+  const [udlDeviceInfo, setUdlDeviceInfo] = useState<UdlDeviceInfo | null>(null);
+  const [udlSensorData, setUdlSensorData] = useState<UdlSensorData | null>(null);
+  const [commScopeActive, setCommScopeActive] = useState(false);
 
   // Cleanup refs for event listeners
   const cleanupDownloadRef = useRef<(() => void) | null>(null);
@@ -166,6 +209,22 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     cleanupInitRef.current = onInitProgress((progress) => {
       setInitProgress(progress);
     });
+
+    // Check UDL support on mount
+    const checkUdlSupport = async () => {
+      const supported = isUdlSupported();
+      setUdlAvailable(supported);
+      if (supported) {
+        try {
+          const active = await getActiveBridge();
+          setBridgeType(active);
+        } catch {
+          // ignore
+        }
+      }
+    };
+    checkUdlSupport();
+
     return () => {
       cleanupDownloadRef.current?.();
       cleanupSelfTestRef.current?.();
@@ -177,37 +236,98 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     setError(null);
   }, []);
 
+  const switchBridgeType = useCallback(async (type: 'legacy' | 'udl') => {
+    if (!udlAvailable && type === 'udl') return false;
+    // Disconnect first if connected
+    if (connected) {
+      try {
+        if (bridgeType === 'legacy') {
+          await disconnectDevice();
+        } else {
+          await udlDisconnect();
+        }
+      } catch {
+        // ignore
+      }
+      setConnected(false);
+      setDeviceInfo(null);
+      setUdlDeviceInfo(null);
+    }
+    setBridgeType(type);
+    return true;
+  }, [udlAvailable, connected, bridgeType]);
+
   const refreshDevices = useCallback(async () => {
     if (!isElectron()) return;
     try {
-      const devices = await listDevices();
-      setUsbDevices(devices);
+      if (bridgeType === 'udl') {
+        const devices = await udlListDevices();
+        // Map to legacy format for compatibility
+        setUsbDevices(devices.map(d => ({
+          vendorId: `0x${d.vendorId.toString(16).padStart(4, '0')}`,
+          productId: `0x${d.productId.toString(16).padStart(4, '0')}`,
+          deviceAddress: d.deviceAddress,
+          isProcyon: d.isUdlDevice,
+        })));
+      } else {
+        const devices = await listDevices();
+        setUsbDevices(devices);
+      }
     } catch {
       // Ignore errors during device scanning
     }
-  }, []);
+  }, [bridgeType]);
 
   const connect = useCallback(async () => {
     setConnecting(true);
     setError(null);
     try {
-      const result = await connectToDevice();
-      if (result.success) {
-        setConnected(true);
-        // Auto-fetch device info after connection
-        try {
-          const infoResult = await fetchDeviceInfo();
-          if (infoResult.success && infoResult.info) {
-            setDeviceInfo(infoResult.info);
-          }
-        } catch {
-          // Ignore info fetch errors
+      let result;
+      if (bridgeType === 'udl') {
+        result = await udlConnect();
+        if (result.success && result.info) {
+          setConnected(true);
+          setUdlDeviceInfo(result.info);
+          setCommScopeActive(result.info.commScopeActive ?? false);
+          // Map to legacy DeviceInfo for backwards compatibility
+          setDeviceInfo({
+            firmwareVersion: result.info.firmwareVersion,
+            toolSN: result.info.toolSN,
+            uniqueId: result.info.uniqueId,
+            batteryVoltage: result.info.batteryVoltage,
+            temperature: result.info.temperature,
+            serialNumber: result.info.serialNumber,
+          });
         }
+      } else {
+        result = await connectToDevice();
+        if (result.success) {
+          setConnected(true);
+          // Auto-fetch device info after connection
+          try {
+            const infoResult = await fetchDeviceInfo();
+            if (infoResult.success && infoResult.info) {
+              setDeviceInfo(infoResult.info);
+            }
+          } catch {
+            // Ignore info fetch errors
+          }
+        }
+      }
+      
+      if (result.success) {
         // Auto-fetch device parameters
         try {
-          const paramResult = await getAllParameters();
-          if (paramResult.success && paramResult.params) {
-            setDeviceParams(paramResult.params);
+          if (bridgeType === 'udl') {
+            const paramResult = await udlGetAllParameters();
+            if (paramResult.success && paramResult.params) {
+              setDeviceParams(paramResult.params);
+            }
+          } else {
+            const paramResult = await getAllParameters();
+            if (paramResult.success && paramResult.params) {
+              setDeviceParams(paramResult.params);
+            }
           }
         } catch {
           // Ignore parameter fetch errors
@@ -224,29 +344,51 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
 
   const disconnect = useCallback(async () => {
     try {
-      await disconnectDevice();
+      if (bridgeType === 'udl') {
+        await udlDisconnect();
+      } else {
+        await disconnectDevice();
+      }
       setConnected(false);
       setDeviceInfo(null);
+      setUdlDeviceInfo(null);
       setDownloadedData([]);
       setDownloadResult(null);
       setTestResults([]);
       setTestSummary(null);
       setDeviceParams({});
+      setCommScopeActive(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Disconnect failed');
     }
-  }, []);
+  }, [bridgeType]);
 
   const refreshDeviceInfo = useCallback(async () => {
     try {
-      const result = await fetchDeviceInfo();
-      if (result.success && result.info) {
-        setDeviceInfo(result.info);
+      if (bridgeType === 'udl') {
+        const result = await udlGetDeviceInfo();
+        if (result.success && result.info) {
+          setUdlDeviceInfo(result.info);
+          setCommScopeActive(result.info.commScopeActive ?? false);
+          setDeviceInfo({
+            firmwareVersion: result.info.firmwareVersion,
+            toolSN: result.info.toolSN,
+            uniqueId: result.info.uniqueId,
+            batteryVoltage: result.info.batteryVoltage,
+            temperature: result.info.temperature,
+            serialNumber: result.info.serialNumber,
+          });
+        }
+      } else {
+        const result = await fetchDeviceInfo();
+        if (result.success && result.info) {
+          setDeviceInfo(result.info);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to get device info');
     }
-  }, []);
+  }, [bridgeType]);
 
   // Helper to wrap USB setter with error handling
   const createSetter = useCallback(<T extends unknown[]>(fn: (...args: T) => Promise<{ success: boolean; error?: string }>, label: string) => {
@@ -282,18 +424,22 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   const handleSetLimpetSN = useCallback((sn: string) => createSetter(usbSetLimpetSN, 'Set Limpet SN')(sn), [createSetter]);
   const handleSetDeviceTime = useCallback(async () => {
     try {
-      const result = await usbSetDeviceTime();
+      const result = bridgeType === 'udl'
+        ? await udlSetDeviceTime()
+        : await usbSetDeviceTime();
       if (!result.success) {
         setError(result.error || 'Set Device Time failed');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Set Device Time failed');
     }
-  }, []);
+  }, [bridgeType]);
 
   const handleWriteIntoFlash = useCallback(async (): Promise<boolean> => {
     try {
-      const result = await usbWriteIntoFlash();
+      const result = bridgeType === 'udl'
+        ? await udlWriteIntoFlash()
+        : await usbWriteIntoFlash();
       if (!result.success) {
         setError(result.error || 'Write Into Flash failed');
         return false;
@@ -303,12 +449,28 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       setError(err instanceof Error ? err.message : 'Write Into Flash failed');
       return false;
     }
-  }, []);
+  }, [bridgeType]);
 
-  const handleInitializeLogger = useCallback(async (params: Record<string, string>, eraseMem?: boolean) => {
+  const handleInitializeLogger = useCallback(async (params: Record<string, string>, eraseMem?: boolean): Promise<{
+    success: boolean;
+    steps?: Array<{ name: string; success: boolean; detail?: string }>;
+    error?: string;
+  }> => {
     setInitProgress({ step: 'Starting...', status: 'running' });
     setError(null);
     try {
+      if (bridgeType === 'udl') {
+        const result = await udlInitializeLogger(params, eraseMem);
+        if (!result.success) {
+          setError(result.error || 'Initialize Logger failed');
+        }
+        setInitProgress(null);
+        return {
+          success: result.success,
+          steps: result.steps?.map((s) => ({ name: s, success: result.success, detail: result.detail })),
+          error: result.error,
+        };
+      }
       const result = await usbInitializeLogger(params, eraseMem);
       if (!result.success) {
         setError(result.error || 'Initialize Logger failed');
@@ -321,13 +483,15 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       setInitProgress(null);
       return { success: false, error: errMsg };
     }
-  }, []);
+  }, [bridgeType]);
 
   const handleDownloadData = useCallback(async (): Promise<DownloadResult> => {
     setError(null);
     setDownloadProgress({ partition: 0, totalPartitions: 0, chunk: 0, totalChunks: 0, percent: 0 });
     try {
-      const result = await usbDownloadData();
+      const result = bridgeType === 'udl'
+        ? await udlDownloadData(true) as unknown as DownloadResult
+        : await usbDownloadData();
       if (result.success) {
         setDownloadResult(result);
         const extResult = result as DownloadResult & {
@@ -376,7 +540,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       setDownloadProgress(null);
       return { success: false, partitions: [], totalPartitions: 0, error: errMsg };
     }
-  }, []);
+  }, [bridgeType]);
 
   const clearData = useCallback(() => {
     setDownloadedData([]);
@@ -411,59 +575,87 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     setError(null);
     setSelfTestProgress({ current: 0, total: 0, testId: '', testName: '', status: 'starting' });
     try {
-      const result = await usbRunSelfTest(tests);
-      if (result.success && result.results) {
-        setTestResults(result.results);
-        setTestSummary(result.summary || null);
+      if (bridgeType === 'udl') {
+        const result = await udlRunSelfTest(tests);
+        if (result.success && result.results) {
+          setTestResults(result.results.map((r) => ({
+            testId: r.testId,
+            testName: r.testName,
+            passed: r.passed,
+            detail: r.detail,
+            rawData: r.rawData,
+            status: r.passed ? 'passed' : 'failed',
+          } as unknown as SelfTestResult)));
+          setTestSummary(null);
+        } else {
+          setError(result.error || 'Self test failed');
+        }
       } else {
-        setError(result.error || 'Self test failed');
+        const result = await usbRunSelfTest(tests);
+        if (result.success && result.results) {
+          setTestResults(result.results);
+          setTestSummary(result.summary || null);
+        } else {
+          setError(result.error || 'Self test failed');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Self test failed');
     } finally {
       setSelfTestProgress(null);
     }
-  }, []);
+  }, [bridgeType]);
 
   const handleLaunchDevice = useCallback(async (delaySeconds?: number) => {
     try {
-      return await usbLaunchDevice(delaySeconds);
+      return bridgeType === 'udl'
+        ? await udlLaunchDevice()
+        : await usbLaunchDevice(delaySeconds);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Launch device failed';
       setError(errMsg);
       return { success: false, error: errMsg };
     }
-  }, []);
+  }, [bridgeType]);
 
   const handleEraseMemory = useCallback(async (eraseAll: boolean) => {
     try {
-      return await usbEraseMemory(eraseAll);
+      return bridgeType === 'udl'
+        ? await udlEraseMemory(eraseAll)
+        : await usbEraseMemory(eraseAll);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Erase memory failed';
       setError(errMsg);
       return { success: false, error: errMsg };
     }
-  }, []);
+  }, [bridgeType]);
 
   // Auto-refresh battery & temperature when connected
   useEffect(() => {
     if (!connected) return;
     const interval = setInterval(async () => {
       try {
-        const battResult = await getBatteryVoltage();
-        if (battResult.success) {
-          setDeviceInfo((prev) => prev ? { ...prev, batteryVoltage: battResult.rawMv || battResult.voltage } : prev);
-        }
-        const tempResult = await getTemperature();
-        if (tempResult.success) {
-          setDeviceInfo((prev) => prev ? { ...prev, temperature: tempResult.temperature } : prev);
+        if (bridgeType === 'udl') {
+          const battResult = await udlGetBatteryVoltage();
+          if (battResult.success && battResult.voltage !== undefined) {
+            setDeviceInfo((prev) => prev ? { ...prev, batteryVoltage: battResult.voltage! } : prev);
+          }
+        } else {
+          const battResult = await getBatteryVoltage();
+          if (battResult.success) {
+            setDeviceInfo((prev) => prev ? { ...prev, batteryVoltage: battResult.rawMv || battResult.voltage } : prev);
+          }
+          const tempResult = await getTemperature();
+          if (tempResult.success) {
+            setDeviceInfo((prev) => prev ? { ...prev, temperature: tempResult.temperature } : prev);
+          }
         }
       } catch {
         // Ignore polling errors
       }
     }, 10000);
     return () => clearInterval(interval);
-  }, [connected]);
+  }, [connected, bridgeType]);
 
   // Auto-scan for USB devices when in Electron
   useEffect(() => {
@@ -478,6 +670,12 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     connecting,
     deviceInfo,
     error,
+    bridgeType,
+    udlAvailable,
+    switchBridgeType,
+    udlDeviceInfo,
+    udlSensorData,
+    commScopeActive,
     connect,
     disconnect,
     clearError,

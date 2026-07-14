@@ -5,6 +5,10 @@
 Procyon CM 随钻测量工具简化版上位机软件。支持设备连接、参数设置、数据下载和系统测试。
 无机器码验证，中英文双语界面。
 
+**双协议栈**：同时支持旧版 Procyon v4.6 协议和新版 Unified Data Logger (UDL) v8.0 协议。
+- **Legacy Bridge** (libusb0.dll): 兼容旧版 Procyon CM 设备（VID=0x2269, PID=0xBEEF）
+- **UDL Bridge** (libusb-1.0.dll): 支持新版 Unified Data Logger 平台设备（CM/EM/Retina/RetinaMini）
+
 ## 版本技术栈
 
 - **Framework**: Next.js 16 (App Router) + Electron
@@ -12,16 +16,18 @@ Procyon CM 随钻测量工具简化版上位机软件。支持设备连接、参
 - **Language**: TypeScript 5
 - **UI 组件**: shadcn/ui (基于 Radix UI)
 - **Styling**: Tailwind CSS 4
-- **Desktop**: Electron 37 + koffi FFI (libusb0.dll 直接调用，USB bulk 通信)
+- **Desktop**: Electron 37 + koffi FFI (libusb0.dll + libusb-1.0.dll 双后端，USB bulk 通信)
 - **Package Manager**: pnpm (仅限 pnpm)
 
 ## 目录结构
 
 ```
 ├── electron/                    # Electron 主进程
-│   ├── main.js                  # Electron 入口，窗口创建 + IPC 注册
+│   ├── main.js                  # Electron 入口，窗口创建 + IPC 注册（双桥切换）
 │   ├── preload.js               # Preload 脚本，暴露 electronAPI
-│   └── usb-bridge.js            # USB 通信桥接（koffi FFI + libusb0.dll，VID=0x2269 PID=0xBEEF）
+│   ├── usb-bridge.js            # Legacy USB 桥接（koffi FFI + libusb0.dll，VID=0x2269 PID=0xBEEF）
+│   ├── usb-bridge-v1.js         # UDL USB 桥接（koffi FFI + libusb-1.0.dll，新协议栈）
+│   └── udl-protocol.js          # UDL 协议层（命令枚举 + ECC + FastDump + 多设备类型）
 ├── public/                      # 静态资源
 ├── scripts/                     # 构建与启动脚本
 │   ├── build.sh                 # Next.js 构建
@@ -48,9 +54,10 @@ Procyon CM 随钻测量工具简化版上位机软件。支持设备连接、参
 │   │   ├── layout/              # 布局组件 (AppLayout, Sidebar, Header)
 │   │   └── ui/                  # shadcn/ui 组件库
 │   ├── lib/
-│   │   ├── device/context.tsx   # DeviceContext（设备状态管理）
+│   │   ├── device/context.tsx   # DeviceContext（设备状态管理，支持双协议栈切换）
 │   │   ├── i18n/                # 国际化 (zh.ts, en.ts, context.tsx)
-│   │   ├── usb/procyon.ts       # 渲染进程 USB 通信层（IPC 桥接）
+│   │   ├── usb/procyon.ts       # 渲染进程 Legacy USB 通信层（IPC 桥接）
+│   │   ├── usb/udl.ts           # 渲染进程 UDL USB 通信层（新协议栈）
 │   │   └── utils.ts             # 工具函数
 │   └── server.ts                # 自定义服务端入口
 ├── next.config.ts               # Next.js 配置
@@ -64,19 +71,56 @@ Procyon CM 随钻测量工具简化版上位机软件。支持设备连接、参
 - **Web 模式**: `pnpm dev` 启动 Next.js 开发服务器（端口 5000），USB 功能不可用
 - **Electron 模式**: `pnpm electron:dev` 启动 Next.js + Electron，USB 功能可用
 
+### 双协议栈架构
+软件支持两套 USB 通信协议栈，通过 Header 中的 Bridge Selector 切换：
+
+- **Legacy Bridge** (Procyon v4.6 兼容)：libusb0.dll + 旧命令集
+- **UDL Bridge** (Unified Data Logger v8.0)：libusb-1.0.dll + 新命令集 + ECC + FastDump
+
+DeviceContext 自动适配两种模式，UI 层通过统一接口调用，无需关心底层实现。
+
 ### USB 通信链路
 ```
-页面组件 → useDevice() (DeviceContext)
-         → procyon.ts (IPC 调用)
-         → window.electronAPI (preload.js 暴露)
-         → ipcMain.handle (main.js)
-         → usb-bridge.js (koffi FFI → libusb0.dll USB bulk 传输)
-         → Procyon CM 硬件 (VID=0x2269, PID=0xBEEF)
+页面组件 → useDevice() (DeviceContext, bridgeType='legacy'|'udl')
+         ↙                          ↘
+  procyon.ts (Legacy IPC)         udl.ts (UDL IPC)
+         ↓                              ↓
+  window.electronAPI (preload.js 暴露)
+         ↓
+  ipcMain.handle (main.js) → activeBridge (legacyBridge / udlBridge)
+         ↓                              ↓
+  usb-bridge.js (libusb0)      usb-bridge-v1.js (libusb-1.0)
+         ↓                              ↓
+  Procyon CM 硬件               UDL 平台硬件 (CM/EM/Retina/RetinaMini)
+  VID=0x2269, PID=0xBEEF
 ```
+
+### UDL 新特性
+- **多设备类型**: CM / EM / Retina / RetinaMini 统一平台
+- **FastDump**: 高速内存转储模式，比标准转储快 5-10 倍
+- **Reed-Solomon ECC**: 数据传输纠错编码
+- **EnterCommScope**: 高级命令解锁模式
+- **新传感器**: Magnetometer（磁力计）、StrainMeasurement（应变测量）、PWASN
+- **新命令集**: 150+ USBCOM_CMD_ 命令，完全重设计的协议
 
 ### DeviceContext 接口
 ```typescript
 interface DeviceContextType {
+  // Connection state
+  connected: boolean;
+  connecting: boolean;
+  deviceInfo: DeviceInfo | null;
+  error: string | null;
+  
+  // Bridge management (new!)
+  bridgeType: 'legacy' | 'udl';
+  udlAvailable: boolean;
+  switchBridgeType: (type: 'legacy' | 'udl') => Promise<boolean>;
+  
+  // UDL-specific info
+  udlDeviceInfo: UdlDeviceInfo | null;
+  udlSensorData: UdlSensorData | null;
+  commScopeActive: boolean;
   connected: boolean;
   connecting: boolean;
   deviceInfo: DeviceInfo | null;

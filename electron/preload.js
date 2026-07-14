@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  // Bridge management (new for UDL v8 support)
+  getBridgeInfo: () => ipcRenderer.invoke('bridge:get-info'),
+  switchBridge: (bridgeType) => ipcRenderer.invoke('bridge:switch', bridgeType),
+  listAllDevices: () => ipcRenderer.invoke('bridge:list-all-devices'),
+
   // USB device operations
   listDevices: () => ipcRenderer.invoke('usb:list-devices'),
   connect: () => ipcRenderer.invoke('usb:connect'),

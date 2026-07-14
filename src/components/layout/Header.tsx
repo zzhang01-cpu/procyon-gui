@@ -65,7 +65,7 @@ const pageTitles: Record<string, { zh: string; en: string; subtitleZh: string; s
 
 export function Header({ currentPage }: HeaderProps) {
   const { language, setLanguage, t } = useI18n();
-  const { error, clearError, refreshDeviceInfo, connected } = useDevice();
+  const { error, clearError, refreshDeviceInfo, connected, bridgeType, udlAvailable, switchBridgeType } = useDevice();
 
   const pageInfo = pageTitles[currentPage] || pageTitles.dashboard;
   const title = language === 'zh' ? pageInfo.zh : pageInfo.en;
@@ -109,6 +109,26 @@ export function Header({ currentPage }: HeaderProps) {
           >
             <RefreshCw className="h-4 w-4" />
           </Button>
+        )}
+
+        {/* Bridge Type Selector (UDL v8.0 vs Legacy v4.6) */}
+        {udlAvailable && (
+          <Select
+            value={bridgeType}
+            onValueChange={async (val) => {
+              await switchBridgeType(val as 'legacy' | 'udl');
+            }}
+          >
+            <SelectTrigger className="w-[160px]">
+              <span className="text-xs text-slate-600">
+                {bridgeType === 'udl' ? 'UDL v8.0' : 'Legacy v4.6'}
+              </span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="legacy">Legacy (v4.6)</SelectItem>
+              <SelectItem value="udl">UDL v8.0 (New)</SelectItem>
+            </SelectContent>
+          </Select>
         )}
 
         {/* Language Switcher */}
