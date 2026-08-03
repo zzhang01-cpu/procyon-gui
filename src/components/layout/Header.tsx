@@ -111,25 +111,23 @@ export function Header({ currentPage }: HeaderProps) {
           </Button>
         )}
 
-        {/* Bridge Type Selector (UDL v8.0 vs Legacy v4.6) */}
-        {udlAvailable && (
-          <Select
-            value={bridgeType}
-            onValueChange={async (val) => {
-              await switchBridgeType(val as 'legacy' | 'udl');
-            }}
-          >
-            <SelectTrigger className="w-[160px]">
-              <span className="text-xs text-slate-600">
-                {bridgeType === 'udl' ? 'UDL v8.0' : 'Legacy v4.6'}
-              </span>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="legacy">Legacy (v4.6)</SelectItem>
-              <SelectItem value="udl">UDL v8.0 (New)</SelectItem>
-            </SelectContent>
-          </Select>
-        )}
+        {/* Bridge Type Selector (UDL v8.0 vs Legacy v4.6) - Always visible */}
+        <Select
+          value={bridgeType}
+          onValueChange={async (val) => {
+            await switchBridgeType(val as 'legacy' | 'udl');
+          }}
+        >
+          <SelectTrigger className="w-[160px]">
+            <span className="text-xs text-slate-600">
+              {bridgeType === 'udl' ? 'UDL v8.0' : 'Legacy v4.6'}
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="legacy">Legacy (v4.6)</SelectItem>
+            <SelectItem value="udl">UDL v8.0 (New)</SelectItem>
+          </SelectContent>
+        </Select>
 
         {/* Language Switcher */}
         <Select value={language} onValueChange={(val) => setLanguage(val as 'zh' | 'en')}>
