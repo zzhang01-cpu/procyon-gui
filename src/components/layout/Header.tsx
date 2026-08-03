@@ -5,13 +5,6 @@ import { useI18n } from '@/lib/i18n/context';
 import { useDevice } from '@/lib/device/context';
 import { Globe, RefreshCw, AlertCircle, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface HeaderProps {
@@ -112,22 +105,18 @@ export function Header({ currentPage }: HeaderProps) {
         )}
 
         {/* Bridge Type Selector (UDL v8.0 vs Legacy v4.6) - Always visible */}
-        <Select
+        <select
           value={bridgeType}
-          onValueChange={async (val) => {
-            await switchBridgeType(val as 'legacy' | 'udl');
+          onChange={async (e) => {
+            const val = e.target.value as 'legacy' | 'udl';
+            console.log('[Header] Switching bridge to:', val);
+            await switchBridgeType(val);
           }}
+          className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
-          <SelectTrigger className="w-[160px]">
-            <span className="text-xs text-slate-600">
-              {bridgeType === 'udl' ? 'UDL v8.0' : 'Legacy v4.6'}
-            </span>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="legacy">Legacy (v4.6)</SelectItem>
-            <SelectItem value="udl">UDL v8.0 (New)</SelectItem>
-          </SelectContent>
-        </Select>
+          <option value="legacy">Legacy (v4.6)</option>
+          <option value="udl">UDL v8.0 (New)</option>
+        </select>
 
         {/* Language Switcher */}
         <Select value={language} onValueChange={(val) => setLanguage(val as 'zh' | 'en')}>
