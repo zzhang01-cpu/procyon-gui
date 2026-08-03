@@ -99,12 +99,12 @@ var libusb_device_descriptor = koffi.struct('libusb_device_descriptor', {
 // libusb_device *** is output parameter, but we use pointer to pointer array
 
 // Function declarations (libusb-1.0 API)
-var fn_init = lib1.func('libusb_init', 'int', ['void**']);
+var fn_init = lib1.func('libusb_init', 'int', [libusb_context_ptr]);
 var fn_exit = lib1.func('libusb_exit', 'void', [libusb_context_ptr]);
-var fn_get_device_list = lib1.func('libusb_get_device_list', 'int', [libusb_context_ptr, 'void**']);
-var fn_free_device_list = lib1.func('libusb_free_device_list', 'void', [libusb_context_ptr, 'void*', 'int']);
+var fn_get_device_list = lib1.func('libusb_get_device_list', 'int', [libusb_context_ptr, libusb_device_ptr]);
+var fn_free_device_list = lib1.func('libusb_free_device_list', 'void', [libusb_device_ptr, 'int']);
 var fn_get_device_descriptor = lib1.func('libusb_get_device_descriptor', 'int', [libusb_device_ptr, 'void*']);
-var fn_open = lib1.func('libusb_open', 'int', [libusb_device_ptr, 'void**']);
+var fn_open = lib1.func('libusb_open', 'int', [libusb_device_ptr, libusb_device_handle_ptr]);
 var fn_close = lib1.func('libusb_close', 'void', [libusb_device_handle_ptr]);
 var fn_claim_interface = lib1.func('libusb_claim_interface', 'int', [libusb_device_handle_ptr, 'int']);
 var fn_release_interface = lib1.func('libusb_release_interface', 'int', [libusb_device_handle_ptr, 'int']);
@@ -122,7 +122,7 @@ var fn_reset_device = lib1.func('libusb_reset_device', 'int', [libusb_device_han
 var fn_error_name = lib1.func('libusb_error_name', 'str', ['int']);
 var fn_strerror = lib1.func('libusb_strerror', 'str', ['int']);
 
-// libusb_context instance
+// libusb_context instance (keep as Buffer for koffi compatibility)
 var ctx = null;
 
 function ensureInit() {
@@ -133,8 +133,8 @@ function ensureInit() {
     console.error('[USB1] libusb_init failed: ' + fn_error_name(ret));
     return;
   }
-  // Read the context pointer from the output buffer (64-bit address)
-  ctx = ctxPtr.readBigUInt64LE(0);
+  // Keep the context as a Buffer for koffi compatibility
+  ctx = ctxPtr;
   initDone = true;
   console.log('[USB1] libusb-1.0 initialized');
 }
