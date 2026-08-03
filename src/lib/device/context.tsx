@@ -237,6 +237,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const switchBridgeType = useCallback(async (type: 'legacy' | 'udl') => {
+    console.log('[DeviceContext] Switching bridge to:', type);
     // Allow switching even if UDL is not available (will show error if needed)
     // Disconnect first if connected
     if (connected) {
@@ -252,6 +253,19 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
       setConnected(false);
       setDeviceInfo(null);
       setUdlDeviceInfo(null);
+    }
+    // Call backend to switch bridge
+    try {
+      const result = await switchBridge(type);
+      console.log('[DeviceContext] Bridge switch result:', result);
+      if (!result.success) {
+        setError('Bridge switch failed: ' + (result.error || 'Unknown error'));
+        return false;
+      }
+    } catch (e) {
+      console.error('[DeviceContext] Bridge switch error:', e);
+      setError('Bridge switch error: ' + (e instanceof Error ? e.message : String(e)));
+      return false;
     }
     setBridgeType(type);
     return true;
