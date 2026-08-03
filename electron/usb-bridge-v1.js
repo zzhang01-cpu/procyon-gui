@@ -211,27 +211,33 @@ UdlUsbBridge.prototype.listDevices = function() {
 
     // Read the device list address from the buffer
     var listAddr = listPtr.readBigInt64LE(0);
+    console.log('[USB1] Device list address: 0x' + listAddr.toString(16));
+    
     if (listAddr === 0n) {
       fn_free_device_list(listPtr, 0);
       return [];
     }
 
-    // Define array type for device pointers
-    var dev_ptr_array = koffi.array(opaque_ptr, count);
-    
-    // Decode the device list
-    var devList = koffi.decode(listPtr, dev_ptr_array);
-    if (!devList) {
-      fn_free_device_list(listPtr, 0);
-      return [];
-    }
-
+    // Read each device pointer from the array at listAddr
+    // Each pointer is 8 bytes (64-bit)
     for (var i = 0; i < count; i++) {
-      var devPtr = devList[i];
-      if (!devPtr) continue;
-
+      // Read 8 bytes from listAddr + i*8 using koffi
+      // We need to create a buffer that points to the memory location
+      var ptrOffset = listAddr + BigInt(i) * 8n;
+      
+      // Use koffi to read the pointer value from memory
+      // koffi.decode can read from a buffer, but we need to get the buffer first
+      // Let's try using a different approach: allocate a buffer and copy the data
+      
+      // Actually, let's just try to get the device descriptor directly
+      // by passing the address as a pointer
+      var devPtr = Buffer.from(ptrOffset.toString(16).padStart(16, '0'), 'hex');
+      
       var ret = fn_get_device_descriptor(devPtr, descriptorBuf);
-      if (ret < 0) continue;
+      if (ret < 0) {
+        console.log('[USB1] Failed to get descriptor for device ' + i + ': ' + fn_error_name(ret));
+        continue;
+      }
 
       var desc = koffi.decode(descriptorBuf, libusb_device_descriptor);
       devices.push({
