@@ -127,7 +127,7 @@ var ctx = null;
 
 function ensureInit() {
   if (initDone) return;
-  var ctxPtr = Buffer.alloc(koffi.sizeof('pointer'));
+  var ctxPtr = Buffer.alloc(8); // pointer size (64-bit)
   var ret = fn_init(ctxPtr);
   if (ret < 0) {
     console.error('[USB1] libusb_init failed: ' + fn_error_name(ret));
@@ -151,7 +151,7 @@ function listDevices() {
   ensureInit();
   if (!ctx) return [];
 
-  var listPtrBuf = Buffer.alloc(koffi.sizeof('pointer'));
+  var listPtrBuf = Buffer.alloc(8); // pointer size (64-bit)
   var count = fn_get_device_list(ctx, listPtrBuf);
   if (count < 0) {
     console.error('[USB1] libusb_get_device_list failed: ' + fn_error_name(count));
@@ -166,7 +166,7 @@ function listDevices() {
 
   for (var i = 0; i < count; i++) {
     // Calculate pointer to device pointer at index i
-    var devPtrAddrBuf = Buffer.alloc(koffi.sizeof('pointer'));
+    var devPtrAddrBuf = Buffer.alloc(8); // pointer size (64-bit)
     // Copy from listPtr + i * pointer_size
     // We need to read the pointer at listPtr[i]
     var listArr = koffi.decode(listPtr, koffi.array(koffi.pointer(koffi.opaque('dev')), count));
@@ -288,7 +288,7 @@ UdlUsbBridge.prototype.connect = async function(options) {
     }
 
     // Open device
-    var handleBuf = Buffer.alloc(koffi.sizeof('pointer'));
+    var handleBuf = Buffer.alloc(8); // pointer size (64-bit)
     var ret = fn_open(devPtr, handleBuf);
     if (ret < 0) {
       if (listPtr) freeDeviceList(listPtr);
