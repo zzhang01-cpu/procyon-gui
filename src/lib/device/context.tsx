@@ -55,6 +55,7 @@ import {
 import {
   isUdlSupported,
   getActiveBridge,
+  switchBridge,
   udlListDevices,
   udlConnect,
   udlDisconnect,
