@@ -293,7 +293,8 @@ UdlUsbBridge.prototype.connect = async function(options) {
       return { success: false, error: 'libusb_open failed: ' + fn_error_name(ret) };
     }
 
-    self.handle = handleBuf.readBigUInt64LE(0);
+    // Keep handle as Buffer for koffi compatibility
+    self.handle = handleBuf;
     self._listPtr = listPtr;
 
     // Set configuration (1 = default)
