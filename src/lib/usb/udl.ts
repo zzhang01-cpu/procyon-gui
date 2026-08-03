@@ -201,6 +201,7 @@ export async function udlListDevices(): Promise<UdlUsbDeviceInfo[]> {
 
 /**
  * Connect to a UDL device
+ * Uses the generic usb:connect handler which routes to activeBridge
  */
 export async function udlConnect(devicePath?: string): Promise<{
   success: boolean;
@@ -211,7 +212,9 @@ export async function udlConnect(devicePath?: string): Promise<{
   if (!api) {
     throw new Error('Not running in Electron environment');
   }
-  return api.udlConnect(devicePath) as Promise<{
+  // Use generic connect handler (routes to activeBridge)
+  const result = await api.connect();
+  return result as Promise<{
     success: boolean;
     info?: UdlDeviceInfo;
     error?: string;
@@ -220,13 +223,15 @@ export async function udlConnect(devicePath?: string): Promise<{
 
 /**
  * Disconnect from UDL device
+ * Uses the generic usb:disconnect handler
  */
 export async function udlDisconnect(): Promise<{ success: boolean; error?: string }> {
   const api = getAPI();
   if (!api) {
     throw new Error('Not running in Electron environment');
   }
-  return api.udlDisconnect() as Promise<{ success: boolean; error?: string }>;
+  const result = await api.disconnect();
+  return result as Promise<{ success: boolean; error?: string }>;
 }
 
 /**

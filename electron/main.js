@@ -93,9 +93,7 @@ function initUsbBridge() {
   });
 
   ipcMain.handle('bridge:switch', async (_event, bridgeType) => {
-    if (bridgeType === 'udl' && !udlSupported) {
-      return { success: false, error: 'UDL bridge not available' };
-    }
+    // Allow switching even if UDL is not fully supported (will fail at connect time if DLL missing)
     // Disconnect current bridge first
     try {
       if (activeBridge && activeBridge.isConnected && activeBridge.isConnected()) {
@@ -105,6 +103,9 @@ function initUsbBridge() {
       console.log('[Bridge] Error disconnecting: ' + e.message);
     }
     if (bridgeType === 'udl') {
+      if (!udlSupported || !udlBridge) {
+        return { success: false, error: 'UDL bridge not available - libusb-1.0.dll not loaded' };
+      }
       activeBridge = udlBridge;
       activeBridgeType = 'udl';
     } else {
