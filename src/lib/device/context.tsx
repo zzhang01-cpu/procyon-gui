@@ -237,7 +237,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const switchBridgeType = useCallback(async (type: 'legacy' | 'udl') => {
-    if (!udlAvailable && type === 'udl') return false;
+    // Allow switching even if UDL is not available (will show error if needed)
     // Disconnect first if connected
     if (connected) {
       try {
@@ -255,7 +255,7 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
     }
     setBridgeType(type);
     return true;
-  }, [udlAvailable, connected, bridgeType]);
+  }, [connected, bridgeType]);
 
   const refreshDevices = useCallback(async () => {
     if (!isElectron()) return;

@@ -23,13 +23,30 @@ var lib1;
 var loaded = false;
 var initDone = false;
 
-// Try to load libusb-1.0.dll
-try {
-  lib1 = koffi.load('libusb-1.0.dll');
-  loaded = true;
-  console.log('[USB1] libusb-1.0.dll loaded successfully');
-} catch (e) {
-  console.log('[USB1] libusb-1.0.dll not available: ' + e.message);
+// Try to load libusb-1.0.dll from multiple locations
+var path = require('path');
+var dllPaths = [
+  'libusb-1.0.dll',  // Current directory
+  path.join(__dirname, '..', 'libusb-1.0.dll'),  // Project root
+  path.join(__dirname, 'libusb-1.0.dll'),  // electron/ directory
+  'C:\\Program Files\\Unified Data Logger\\libusb-1.0.dll',  // UDL install directory
+  'C:\\Windows\\System32\\libusb-1.0.dll',  // System directory
+];
+
+var loadError = null;
+for (var i = 0; i < dllPaths.length; i++) {
+  try {
+    lib1 = koffi.load(dllPaths[i]);
+    loaded = true;
+    console.log('[USB1] libusb-1.0.dll loaded from: ' + dllPaths[i]);
+    break;
+  } catch (e) {
+    loadError = e.message;
+  }
+}
+
+if (!loaded) {
+  console.log('[USB1] libusb-1.0.dll not available: ' + loadError);
   module.exports = { supported: false, error: 'libusb-1.0.dll not found' };
   return;
 }
