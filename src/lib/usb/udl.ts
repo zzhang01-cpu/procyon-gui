@@ -161,7 +161,7 @@ function getAPI(): Record<string, (...args: unknown[]) => Promise<unknown>> | nu
  */
 export function isUdlSupported(): boolean {
   const api = getAPI();
-  return !!api && typeof api.getActiveBridge === 'function';
+  return !!api && typeof api.getBridgeInfo === 'function';
 }
 
 /**
@@ -169,11 +169,11 @@ export function isUdlSupported(): boolean {
  */
 export async function getActiveBridge(): Promise<'legacy' | 'udl'> {
   const api = getAPI();
-  if (!api || typeof api.getActiveBridge !== 'function') {
+  if (!api || typeof api.getBridgeInfo !== 'function') {
     return 'legacy';
   }
-  const result = await api.getActiveBridge();
-  return (result as { type: string }).type as 'legacy' | 'udl';
+  const result = await api.getBridgeInfo();
+  return (result as { activeBridge: string }).activeBridge as 'legacy' | 'udl';
 }
 
 /**
