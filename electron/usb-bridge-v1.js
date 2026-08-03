@@ -196,7 +196,8 @@ UdlUsbBridge.prototype.listDevices = function() {
   }
 
   try {
-    var listPtr = koffi.alloc('void **', 8);
+    // Allocate buffer for the device list pointer (8 bytes for 64-bit pointer)
+    var listPtr = Buffer.alloc(8);
     var count = fn_get_device_list(this.ctx, listPtr);
     if (count < 0) {
       console.error('[USB1] libusb_get_device_list failed: ' + fn_error_name(count));
@@ -208,9 +209,19 @@ UdlUsbBridge.prototype.listDevices = function() {
     var devices = [];
     var descriptorBuf = Buffer.alloc(18);
 
-    // Decode the device list pointer
-    var devList = koffi.decode(listPtr, 'void **');
-    if (!devList || !devList[0]) {
+    // Read the device list address from the buffer
+    var listAddr = listPtr.readBigInt64LE(0);
+    if (listAddr === 0n) {
+      fn_free_device_list(listPtr, 0);
+      return [];
+    }
+
+    // Define array type for device pointers
+    var dev_ptr_array = koffi.array(opaque_ptr, count);
+    
+    // Decode the device list
+    var devList = koffi.decode(listPtr, dev_ptr_array);
+    if (!devList) {
       fn_free_device_list(listPtr, 0);
       return [];
     }
