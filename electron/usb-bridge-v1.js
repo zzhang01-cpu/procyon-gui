@@ -99,12 +99,12 @@ var libusb_device_descriptor = koffi.struct('libusb_device_descriptor', {
 // libusb_device *** is output parameter, but we use pointer to pointer array
 
 // Function declarations (libusb-1.0 API)
-var fn_init = lib1.func('libusb_init', 'int', [libusb_context_ptr + '*']);
+var fn_init = lib1.func('libusb_init', 'int', ['void**']);
 var fn_exit = lib1.func('libusb_exit', 'void', [libusb_context_ptr]);
 var fn_get_device_list = lib1.func('libusb_get_device_list', 'ssize_t', [libusb_context_ptr, 'void**']);
 var fn_free_device_list = lib1.func('libusb_free_device_list', 'void', [libusb_context_ptr, 'void*', 'int']);
 var fn_get_device_descriptor = lib1.func('libusb_get_device_descriptor', 'int', [libusb_device_ptr, 'void*']);
-var fn_open = lib1.func('libusb_open', 'int', [libusb_device_ptr, libusb_device_handle_ptr + '*']);
+var fn_open = lib1.func('libusb_open', 'int', [libusb_device_ptr, 'void**']);
 var fn_close = lib1.func('libusb_close', 'void', [libusb_device_handle_ptr]);
 var fn_claim_interface = lib1.func('libusb_claim_interface', 'int', [libusb_device_handle_ptr, 'int']);
 var fn_release_interface = lib1.func('libusb_release_interface', 'int', [libusb_device_handle_ptr, 'int']);
