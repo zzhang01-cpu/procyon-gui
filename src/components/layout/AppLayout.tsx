@@ -28,6 +28,7 @@ import WorkHistoryPage from '@/app/workHistory/page';
 import ConfigStatusPage from '@/app/configStatus/page';
 import DeviceMonitoringPage from '@/app/deviceMonitoring/page';
 import SettingsPage from '@/app/settings/page';
+import { Header } from './Header';
 
 function AppLayoutContent() {
   const [currentPage, setCurrentPage] = useState('home');
@@ -149,6 +150,9 @@ function AppLayoutContent() {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Header with protocol selector */}
+        <Header currentPage={currentPage} />
+        
         <main className="flex-1 overflow-auto">
           {currentPage === 'home' && <HomePage onNavigate={setCurrentPage} />}
           {currentPage === 'deviceInit' && <DeviceInitPage onNavigate={setCurrentPage} />}
