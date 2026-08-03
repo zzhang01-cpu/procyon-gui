@@ -133,8 +133,8 @@ function ensureInit() {
     console.error('[USB1] libusb_init failed: ' + fn_error_name(ret));
     return;
   }
-  // Read the context pointer from the output buffer
-  ctx = koffi.decode(ctxPtr, koffi.pointer(koffi.opaque()));
+  // Read the context pointer from the output buffer (64-bit address)
+  ctx = ctxPtr.readBigUInt64LE(0);
   initDone = true;
   console.log('[USB1] libusb-1.0 initialized');
 }
@@ -158,19 +158,17 @@ function listDevices() {
     return [];
   }
 
-  var listPtr = koffi.decode(listPtrBuf, koffi.pointer(koffi.opaque()));
+  var listPtr = listPtrBuf.readBigUInt64LE(0);
   if (!listPtr) return [];
 
   var devices = [];
   var descriptorBuf = Buffer.alloc(18); // libusb_device_descriptor is 18 bytes
 
+  // Dereference the list pointer to get the array of device pointers
+  var devPtrArray = koffi.deref(listPtr, koffi.array(libusb_device_ptr, count));
+  
   for (var i = 0; i < count; i++) {
-    // Calculate pointer to device pointer at index i
-    var devPtrAddrBuf = Buffer.alloc(8); // pointer size (64-bit)
-    // Copy from listPtr + i * pointer_size
-    // We need to read the pointer at listPtr[i]
-    var listArr = koffi.decode(listPtr, koffi.array(koffi.pointer(koffi.opaque('dev')), count));
-    var devPtr = listArr[i];
+    var devPtr = devPtrArray[i];
     if (!devPtr) continue;
 
     var ret = fn_get_device_descriptor(devPtr, descriptorBuf);
@@ -295,7 +293,7 @@ UdlUsbBridge.prototype.connect = async function(options) {
       return { success: false, error: 'libusb_open failed: ' + fn_error_name(ret) };
     }
 
-    self.handle = koffi.decode(handleBuf, koffi.pointer(koffi.opaque()));
+    self.handle = handleBuf.readBigUInt64LE(0);
     self._listPtr = listPtr;
 
     // Set configuration (1 = default)
