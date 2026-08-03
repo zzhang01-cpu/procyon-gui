@@ -119,16 +119,14 @@ export function Header({ currentPage }: HeaderProps) {
         </select>
 
         {/* Language Switcher */}
-        <Select value={language} onValueChange={(val) => setLanguage(val as 'zh' | 'en')}>
-          <SelectTrigger className="w-[120px]">
-            <Globe className="h-4 w-4 mr-2" />
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="zh">{t.common.chinese}</SelectItem>
-            <SelectItem value="en">{t.common.english}</SelectItem>
-          </SelectContent>
-        </Select>
+        <select
+          value={language}
+          onChange={(e) => setLanguage(e.target.value as 'zh' | 'en')}
+          className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="zh">{t.common.chinese}</option>
+          <option value="en">{t.common.english}</option>
+        </select>
       </div>
     </header>
   );
