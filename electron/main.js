@@ -119,7 +119,7 @@ function initUsbBridge() {
     var all = [];
     // Legacy devices
     try {
-      var legacyDevs = bridge.listDevices();
+      var legacyDevs = legacyBridge.listDevices();
       if (legacyDevs && Array.isArray(legacyDevs)) {
         for (var i = 0; i < legacyDevs.length; i++) {
           all.push({ ...legacyDevs[i], bridge: 'legacy' });
@@ -392,7 +392,7 @@ app.on('window-all-closed', () => {
 
 // Cleanup on quit
 app.on('before-quit', async () => {
-  if (activeBridge if (bridge && bridge.isConnected())if (bridge && bridge.isConnected()) activeBridge.isConnected if (bridge && bridge.isConnected())if (bridge && bridge.isConnected()) activeBridge.isConnected()) {
+  if (activeBridge && activeBridge.isConnected && activeBridge.isConnected()) {
     await activeBridge.disconnect();
   }
 });
