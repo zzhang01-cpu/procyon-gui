@@ -100,12 +100,13 @@ var libusb_device_descriptor = koffi.struct('libusb_device_descriptor', {
 
 // Function declarations (libusb-1.0 API)
 // Note: Use 'void*' for context/device pointers to accept Buffer values from koffi
+// Use 'void**' for output pointer parameters
 var fn_init = lib1.func('libusb_init', 'int', ['void*']);
 var fn_exit = lib1.func('libusb_exit', 'void', ['void*']);
-var fn_get_device_list = lib1.func('libusb_get_device_list', 'int', ['void*', 'void*']);
+var fn_get_device_list = lib1.func('libusb_get_device_list', 'int', ['void*', 'void**']);
 var fn_free_device_list = lib1.func('libusb_free_device_list', 'void', ['void*', 'int']);
 var fn_get_device_descriptor = lib1.func('libusb_get_device_descriptor', 'int', ['void*', 'void*']);
-var fn_open = lib1.func('libusb_open', 'int', ['void*', 'void*']);
+var fn_open = lib1.func('libusb_open', 'int', ['void*', 'void**']);
 var fn_close = lib1.func('libusb_close', 'void', ['void*']);
 var fn_claim_interface = lib1.func('libusb_claim_interface', 'int', ['void*', 'int']);
 var fn_release_interface = lib1.func('libusb_release_interface', 'int', ['void*', 'int']);
@@ -159,14 +160,17 @@ function listDevices() {
     return [];
   }
 
-  var listPtr = listPtrBuf.readBigUInt64LE(0);
-  if (!listPtr) return [];
-
+  // listPtrBuf now contains a pointer to an array of 'count' device pointers
+  // With 'void**' parameter type, koffi should handle this automatically
+  // Let's decode the buffer as an array of pointers
+  
   var devices = [];
   var descriptorBuf = Buffer.alloc(18); // libusb_device_descriptor is 18 bytes
 
-  // Dereference the list pointer to get the array of device pointers
-  var devPtrArray = koffi.deref(listPtr, koffi.array(libusb_device_ptr, count));
+  // Try to decode the pointer array from listPtrBuf
+  // Since koffi might not automatically dereference, let's try reading it as an array
+  var devPtrArrayType = koffi.array('void*', count);
+  var devPtrArray = koffi.decode(listPtrBuf, devPtrArrayType);
   
   for (var i = 0; i < count; i++) {
     var devPtr = devPtrArray[i];
@@ -193,7 +197,7 @@ function listDevices() {
 
   // Don't free the list yet - we need device pointers
   // Caller must call freeDeviceList when done
-  return { devices: devices, listPtr: listPtr, count: count };
+  return { devices: devices, listPtr: listPtrBuf, count: count };
 }
 
 function freeDeviceList(listPtr) {
