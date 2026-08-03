@@ -134,7 +134,7 @@ function ensureInit() {
     return;
   }
   // Read the context pointer from the output buffer
-  ctx = koffi.decode(ctxPtr, 'pointer');
+  ctx = koffi.decode(ctxPtr, koffi.pointer(koffi.opaque()));
   initDone = true;
   console.log('[USB1] libusb-1.0 initialized');
 }
@@ -158,7 +158,7 @@ function listDevices() {
     return [];
   }
 
-  var listPtr = koffi.decode(listPtrBuf, 'pointer');
+  var listPtr = koffi.decode(listPtrBuf, koffi.pointer(koffi.opaque()));
   if (!listPtr) return [];
 
   var devices = [];
@@ -295,7 +295,7 @@ UdlUsbBridge.prototype.connect = async function(options) {
       return { success: false, error: 'libusb_open failed: ' + fn_error_name(ret) };
     }
 
-    self.handle = koffi.decode(handleBuf, 'pointer');
+    self.handle = koffi.decode(handleBuf, koffi.pointer(koffi.opaque()));
     self._listPtr = listPtr;
 
     // Set configuration (1 = default)
