@@ -173,7 +173,7 @@ export async function getActiveBridge(): Promise<'legacy' | 'udl'> {
     return 'legacy';
   }
   const result = await api.getBridgeInfo();
-  return (result as { activeBridge: string }).activeBridge as 'legacy' | 'udl';
+  return (result as { active: string }).active as 'legacy' | 'udl';
 }
 
 /**
