@@ -25,6 +25,7 @@ var initDone = false;
 
 // Try to load libusb-1.0.dll from multiple locations
 var path = require('path');
+var fs = require('fs');
 var dllPaths = [
   'libusb-1.0.dll',  // Current directory
   path.join(__dirname, '..', 'libusb-1.0.dll'),  // Project root
@@ -33,15 +34,30 @@ var dllPaths = [
   'C:\\Windows\\System32\\libusb-1.0.dll',  // System directory
 ];
 
+console.log('[USB1] Searching for libusb-1.0.dll...');
 var loadError = null;
 for (var i = 0; i < dllPaths.length; i++) {
+  var dllPath = dllPaths[i];
+  console.log('[USB1] Trying: ' + dllPath);
+  
+  // Check if file exists
   try {
-    lib1 = koffi.load(dllPaths[i]);
+    var exists = fs.existsSync(dllPath);
+    console.log('[USB1]   File exists: ' + exists);
+    if (!exists) continue;
+  } catch (e) {
+    console.log('[USB1]   Error checking file: ' + e.message);
+    continue;
+  }
+  
+  try {
+    lib1 = koffi.load(dllPath);
     loaded = true;
-    console.log('[USB1] libusb-1.0.dll loaded from: ' + dllPaths[i]);
+    console.log('[USB1] libusb-1.0.dll loaded successfully from: ' + dllPath);
     break;
   } catch (e) {
     loadError = e.message;
+    console.log('[USB1]   Load failed: ' + e.message);
   }
 }
 
