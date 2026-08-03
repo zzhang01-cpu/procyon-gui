@@ -219,14 +219,6 @@ UdlUsbBridge.prototype.listDevices = function() {
   return [];
 };
 
-    fn_free_device_list(listPtr, 0);
-    return devices;
-  } catch (e) {
-    console.error('[USB1] listDevices error: ' + e.message);
-    return [];
-  }
-};
-
 UdlUsbBridge.prototype.connect = function(devicePath) {
   if (!this.ctx) {
     var initResult = this.init();
