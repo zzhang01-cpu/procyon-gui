@@ -101,7 +101,7 @@ var libusb_device_descriptor = koffi.struct('libusb_device_descriptor', {
 // Function declarations (libusb-1.0 API)
 var fn_init = lib1.func('libusb_init', 'int', ['void**']);
 var fn_exit = lib1.func('libusb_exit', 'void', [libusb_context_ptr]);
-var fn_get_device_list = lib1.func('libusb_get_device_list', 'ssize_t', [libusb_context_ptr, 'void**']);
+var fn_get_device_list = lib1.func('libusb_get_device_list', 'int', [libusb_context_ptr, 'void**']);
 var fn_free_device_list = lib1.func('libusb_free_device_list', 'void', [libusb_context_ptr, 'void*', 'int']);
 var fn_get_device_descriptor = lib1.func('libusb_get_device_descriptor', 'int', [libusb_device_ptr, 'void*']);
 var fn_open = lib1.func('libusb_open', 'int', [libusb_device_ptr, 'void**']);
