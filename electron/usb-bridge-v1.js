@@ -134,6 +134,10 @@ try {
   var fn_error_name = lib1.func('libusb_error_name', 'str', ['int']);
   // libusb_strerror: const char *libusb_strerror(enum libusb_error errcode)
   var fn_strerror = lib1.func('libusb_strerror', 'str', ['int']);
+  // libusb_open_device_with_vid_pid: libusb_device_handle *libusb_open_device_with_vid_pid(libusb_context *ctx, uint16_t vendor_id, uint16_t product_id)
+  var fn_open_device_with_vid_pid = lib1.func('libusb_open_device_with_vid_pid', 'void *', ['void *', 'uint16', 'uint16']);
+  // libusb_get_string_descriptor_ascii: int libusb_get_string_descriptor_ascii(libusb_device_handle *devh, uint8_t desc_index, unsigned char *data, int length)
+  var fn_get_string_descriptor_ascii = lib1.func('libusb_get_string_descriptor_ascii', 'int', ['void *', 'uint8', 'void *', 'int']);
 
   console.log('[USB1] All libusb-1.0 functions bound OK');
   supported = true;
@@ -195,65 +199,25 @@ UdlUsbBridge.prototype.listDevices = function() {
     if (!initResult.success) return [];
   }
 
+  // Use libusb_open_device_with_vid_pid to check if device exists
+  // This is simpler than enumerating all devices
   try {
-    // Allocate buffer for the device list pointer (8 bytes for 64-bit pointer)
-    var listPtr = Buffer.alloc(8);
-    var count = fn_get_device_list(this.ctx, listPtr);
-    if (count < 0) {
-      console.error('[USB1] libusb_get_device_list failed: ' + fn_error_name(count));
-      return [];
+    var handle = fn_open_device_with_vid_pid(this.ctx, PROCYON_VID, PROCYON_PID);
+    if (handle) {
+      console.log('[USB1] Found Procyon CM device via VID/PID');
+      fn_close(handle);
+      return [{
+        vid: PROCYON_VID,
+        pid: PROCYON_PID,
+        deviceName: 'Procyon CM (UDL)',
+      }];
     }
+  } catch (e) {
+    console.error('[USB1] listDevices error: ' + e.message);
+  }
 
-    console.log('[USB1] Found ' + count + ' USB devices');
-
-    var devices = [];
-    var descriptorBuf = Buffer.alloc(18);
-
-    // Read the device list address from the buffer
-    var listAddr = listPtr.readBigInt64LE(0);
-    console.log('[USB1] Device list address: 0x' + listAddr.toString(16));
-    
-    if (listAddr === 0n) {
-      fn_free_device_list(listPtr, 0);
-      return [];
-    }
-
-    // Read each device pointer from the array at listAddr
-    // Each pointer is 8 bytes (64-bit)
-    for (var i = 0; i < count; i++) {
-      // Read 8 bytes from listAddr + i*8 using koffi
-      // We need to create a buffer that points to the memory location
-      var ptrOffset = listAddr + BigInt(i) * 8n;
-      
-      // Use koffi to read the pointer value from memory
-      // koffi.decode can read from a buffer, but we need to get the buffer first
-      // Let's try using a different approach: allocate a buffer and copy the data
-      
-      // Actually, let's just try to get the device descriptor directly
-      // by passing the address as a pointer
-      var devPtr = Buffer.from(ptrOffset.toString(16).padStart(16, '0'), 'hex');
-      
-      var ret = fn_get_device_descriptor(devPtr, descriptorBuf);
-      if (ret < 0) {
-        console.log('[USB1] Failed to get descriptor for device ' + i + ': ' + fn_error_name(ret));
-        continue;
-      }
-
-      var desc = koffi.decode(descriptorBuf, libusb_device_descriptor);
-      devices.push({
-        vid: desc.idVendor,
-        pid: desc.idProduct,
-        bcdUSB: desc.bcdUSB,
-        bDeviceClass: desc.bDeviceClass,
-        bDeviceSubClass: desc.bDeviceSubClass,
-        bDeviceProtocol: desc.bDeviceProtocol,
-        iManufacturer: desc.iManufacturer,
-        iProduct: desc.iProduct,
-        iSerialNumber: desc.iSerialNumber,
-        bNumConfigurations: desc.bNumConfigurations,
-        _devicePtr: devPtr,
-      });
-    }
+  return [];
+};
 
     fn_free_device_list(listPtr, 0);
     return devices;
@@ -270,38 +234,20 @@ UdlUsbBridge.prototype.connect = function(devicePath) {
   }
 
   try {
-    console.log('[USB1] Scanning for Procyon CM device...');
-    var devices = this.listDevices();
+    console.log('[USB1] Opening Procyon CM device (VID=0x' + PROCYON_VID.toString(16) + ', PID=0x' + PROCYON_PID.toString(16) + ')...');
 
-    var targetDev = null;
-    for (var i = 0; i < devices.length; i++) {
-      var dev = devices[i];
-      if (dev.vid === PROCYON_VID && dev.pid === PROCYON_PID) {
-        targetDev = dev;
-        break;
-      }
-    }
-
-    if (!targetDev) {
-      console.error('[USB1] Procyon CM not found (VID=0x' + PROCYON_VID.toString(16) + ', PID=0x' + PROCYON_PID.toString(16) + ')');
+    // Use libusb_open_device_with_vid_pid to open device directly
+    var handle = fn_open_device_with_vid_pid(this.ctx, PROCYON_VID, PROCYON_PID);
+    if (!handle) {
+      console.error('[USB1] Procyon CM not found');
       return Promise.resolve({ success: false, error: 'Procyon CM not found' });
     }
 
-    console.log('[USB1] Found Procyon CM! Opening device...');
-
-    // Open device
-    var handlePtr = koffi.alloc('void *', 8);
-    var ret = fn_open(targetDev._devicePtr, handlePtr);
-    if (ret < 0) {
-      console.error('[USB1] libusb_open failed: ' + fn_error_name(ret));
-      return Promise.resolve({ success: false, error: 'libusb_open failed: ' + fn_error_name(ret) });
-    }
-
-    this.devHandle = handlePtr;
+    this.devHandle = handle;
     console.log('[USB1] Device opened successfully');
 
     // Set configuration
-    ret = fn_set_configuration(this.devHandle, 1);
+    var ret = fn_set_configuration(this.devHandle, 1);
     if (ret < 0 && ret !== -6) { // -6 = LIBUSB_ERROR_BUSY (already configured)
       console.error('[USB1] libusb_set_configuration failed: ' + fn_error_name(ret));
       return Promise.resolve({ success: false, error: 'libusb_set_configuration failed: ' + fn_error_name(ret) });
@@ -318,13 +264,9 @@ UdlUsbBridge.prototype.connect = function(devicePath) {
 
     this.connected = true;
     this.deviceInfo = {
-      vid: targetDev.vid,
-      pid: targetDev.pid,
-      bcdUSB: targetDev.bcdUSB,
-      bDeviceClass: targetDev.bDeviceClass,
-      iManufacturer: targetDev.iManufacturer,
-      iProduct: targetDev.iProduct,
-      iSerialNumber: targetDev.iSerialNumber,
+      vid: PROCYON_VID,
+      pid: PROCYON_PID,
+      deviceName: 'Procyon CM (UDL)',
     };
 
     console.log('[USB1] Connected to Procyon CM (UDL mode)');
