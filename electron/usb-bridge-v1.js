@@ -92,9 +92,9 @@ try {
   });
   console.log('[USB1] libusb_device_descriptor defined OK');
 
-  // Opaque pointer types
-  var _opaque = koffi.opaque('_opaque');
-  var opaque_ptr = koffi.pointer(_opaque);
+  // Opaque pointer types (unique name to avoid conflict with legacy bridge)
+  var _opaque_udl = koffi.opaque('_opaque_udl');
+  var opaque_ptr = koffi.pointer(_opaque_udl);
 
   // --- Function declarations ---
   // libusb_init: int libusb_init(libusb_context **ctx)
