@@ -706,25 +706,32 @@ ProcyonUsbBridge.prototype.getFirmwareVersion = async function() {
   try {
     var resp = await this.sendGetCommand(CMD.GET_FIRMWARE_VERSION);
     console.log('[USB] GET_FIRMWARE_VERSION raw response:', JSON.stringify(resp));
-    if (resp.success && resp.value && resp.value.length > 0) {
-      // Firmware version is returned as ASCII string (e.g. "2.0.6")
-      var ver = resp.value.trim();
-      if (ver.length > 0) {
-        return { success: true, value: ver.startsWith('v') ? ver : 'v' + ver };
-      }
-    }
-    // Fallback: try binary parsing (some firmware versions use binary format)
+    
+    // 优先尝试二进制解析（新固件使用二进制格式）
     if (resp.success && resp.data && resp.data.length >= 3) {
       var major = resp.data[0];
       var minor = resp.data[1];
       var patch = resp.data[2];
-      // Sanity check: if values look like ASCII chars (32-127), it's a string not binary
-      if (major >= 32 && major <= 127 && minor >= 32 && minor <= 127) {
-        // It's actually an ASCII string, use resp.value instead
-        return { success: resp.success, value: resp.value || 'unknown' };
+      var build = resp.data[3] || 0;
+      
+      // 检查是否像二进制版本号（数值较小，不是 ASCII 字符）
+      if (major < 100 && minor < 100 && patch < 100) {
+        var version = 'v' + major + '.' + minor + '.' + patch;
+        if (build > 0) version += '.' + build;
+        console.log('[USB] Firmware version (binary):', version);
+        return { success: true, value: version };
       }
-      return { success: true, value: 'v' + major + '.' + minor + '.' + patch };
     }
+    
+    // 回退到 ASCII 解析（旧固件使用字符串格式）
+    if (resp.success && resp.value && resp.value.length > 0) {
+      var ver = resp.value.trim();
+      if (ver.length > 0) {
+        console.log('[USB] Firmware version (ASCII):', ver);
+        return { success: true, value: ver.startsWith('v') ? ver : 'v' + ver };
+      }
+    }
+    
     return { success: false, value: null };
   } catch (error) {
     return { success: false, value: null, error: error.message };
