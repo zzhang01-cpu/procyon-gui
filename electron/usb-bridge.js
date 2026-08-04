@@ -415,16 +415,26 @@ ProcyonUsbBridge.prototype.connect = async function() {
       console.log('[USB] usb_set_configuration(1) succeeded');
     }
 
-    // Claim interface 1
-    var claimRet = fn_usb_claim_interface(h, INTERFACE_NUMBER);
+    // Try claiming interface 0 first, then interface 1
+    var claimRet = -1;
+    var claimedInterface = -1;
+    for (var iface = 0; iface <= 1; iface++) {
+      claimRet = fn_usb_claim_interface(h, iface);
+      if (claimRet >= 0) {
+        claimedInterface = iface;
+        console.log('[USB] usb_claim_interface(' + iface + ') SUCCEEDED!');
+        break;
+      } else {
+        var claimErr = fn_usb_strerror();
+        console.log('[USB] usb_claim_interface(' + iface + ') failed: ' + claimErr + ' (ret=' + claimRet + ')');
+      }
+    }
+    
     if (claimRet < 0) {
-      var claimErr = fn_usb_strerror();
-      console.log('[USB] usb_claim_interface(' + INTERFACE_NUMBER + ') failed: ' + claimErr + ' (ret=' + claimRet + ')');
       try { fn_usb_close(h); } catch (e) {}
       self.handle = null;
-      return { success: false, error: 'Cannot claim interface ' + INTERFACE_NUMBER + ': ' + claimErr };
+      return { success: false, error: 'Cannot claim any interface (tried 0 and 1)' };
     }
-    console.log('[USB] usb_claim_interface(' + INTERFACE_NUMBER + ') SUCCEEDED!');
 
     self.connected = true;
     await self._readDeviceInfo();
