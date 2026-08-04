@@ -658,7 +658,11 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         } else {
           const battResult = await getBatteryVoltage();
           if (battResult.success) {
-            setDeviceInfo((prev) => prev ? { ...prev, batteryVoltage: battResult.rawMv || battResult.voltage } : prev);
+            // rawMv 是毫伏，voltage 是伏特，统一转换为毫伏显示
+            const batteryMv = battResult.rawMv && battResult.rawMv > 0 
+              ? battResult.rawMv 
+              : (battResult.voltage ? battResult.voltage * 1000 : 0);
+            setDeviceInfo((prev) => prev ? { ...prev, batteryVoltage: batteryMv } : prev);
           }
           const tempResult = await getTemperature();
           if (tempResult.success) {
