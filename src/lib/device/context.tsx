@@ -531,18 +531,16 @@ export function DeviceProvider({ children }: { children: ReactNode }) {
         extResult.recordCount = recordCount;
         setDownloadedData(recordCount > 0 ? [{ _count: recordCount } as unknown as OneSecondRecord] : []);
 
-        // Auto-save CSV if records were parsed
-        if (recordCount > 0) {
-          try {
-            const saveResult = await usbSaveRecordsCsv('') as { filePaths?: string[]; saveDir?: string };
-            if (saveResult.filePaths) {
-              extResult.csvFilePaths = saveResult.filePaths;
-              extResult.csvSaveDir = saveResult.saveDir;
-              console.log('[Download] CSV files saved:', saveResult.filePaths.join(', '));
-            }
-          } catch (csvErr) {
-            console.error('[Download] CSV save failed:', csvErr);
+        // Always try to save CSV (even if no A0 records, save binary + metadata)
+        try {
+          const saveResult = await usbSaveRecordsCsv('') as { filePaths?: string[]; saveDir?: string };
+          if (saveResult.filePaths) {
+            extResult.csvFilePaths = saveResult.filePaths;
+            extResult.csvSaveDir = saveResult.saveDir;
+            console.log('[Download] CSV files saved:', saveResult.filePaths.join(', '));
           }
+        } catch (csvErr) {
+          console.error('[Download] CSV save failed:', csvErr);
         }
       } else {
         setError(result.error || 'Download failed');
