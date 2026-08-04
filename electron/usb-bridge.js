@@ -705,6 +705,7 @@ ProcyonUsbBridge.prototype.sendCommandWithExpectedLength = async function(comman
 ProcyonUsbBridge.prototype.getFirmwareVersion = async function() {
   try {
     var resp = await this.sendGetCommand(CMD.GET_FIRMWARE_VERSION);
+    console.log('[USB] GET_FIRMWARE_VERSION raw response:', JSON.stringify(resp));
     if (resp.success && resp.value && resp.value.length > 0) {
       // Firmware version is returned as ASCII string (e.g. "2.0.6")
       var ver = resp.value.trim();
