@@ -2539,6 +2539,7 @@ ProcyonUsbBridge.prototype.saveRecordsCsv = async function(defaultPath) {
   }
   var cust = (_lastCustomer || 'DRS').replace(/[^a-zA-Z0-9_-]/g, '_');
   var runId = (_lastRunId || '1').replace(/[^a-zA-Z0-9_-]/g, '_');
+  console.log('[v48] saveRecordsCsv: cust=' + cust + ', runId=' + runId);
   try {
     var fs = require('fs');
     var path = require('path');
