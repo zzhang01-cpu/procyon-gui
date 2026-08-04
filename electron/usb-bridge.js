@@ -2429,10 +2429,12 @@ ProcyonUsbBridge.prototype.downloadData = async function(onProgress) {
     // Save per-partition raw data for .pcmbin file generation
     _lastPartitionData = allData.map(function(p) { return { partition: p.partition, data: p.data }; });
     _lastCombinedBuffer = combinedBuffer;
-    // Store device parameters for file naming
+    // Store device parameters for file naming (extract .value from response object)
     try {
-      _lastCustomer = await this.getCustomer();
-      _lastRunId = await this.getRunID();
+      var custResp = await this.getCustomer();
+      var runIdResp = await this.getRunID();
+      _lastCustomer = custResp.value || 'DRS';
+      _lastRunId = runIdResp.value || '1';
     } catch(e) {
       _lastCustomer = 'DRS';
       _lastRunId = '1';
